@@ -356,7 +356,21 @@ class Command(BaseCommand):
         quit_command = 'CTRL-BREAK' if sys.platform == 'win32' else 'CONTROL-C'
         self.stdout.write("Quit the sopds_telebot with %s.\n" % quit_command)
         try:
-            updater = Updater(token=config.SOPDS_TELEBOT_API_TOKEN)
+            if config.SOPDS_TELEBOT_USE_SOCKS:
+                request_kwargs = {
+                    'proxy_url': f'socks5h://{config.SOPDS_TELEBOT_SOCKS_PROXY}',
+                    'urllib3_proxy_kwargs': {
+                        'username': config.SOPDS_TELEBOT_SOCKS_USER,
+                        'password': config.SOPDS_TELEBOT_SOCKS_PASS,
+                    }
+                }
+                updater = Updater(
+                    token=config.SOPDS_TELEBOT_API_TOKEN,
+                    request_kwargs=request_kwargs,
+                )
+            else:
+                updater = Updater(token=config.SOPDS_TELEBOT_API_TOKEN)
+
             start_command_handler = CommandHandler('start', self.startCommand)
             getBook_handler = MessageHandler(Filters.text, self.getBooks)
             download_handler = RegexHandler('^/download\d+$',self.downloadBooks)

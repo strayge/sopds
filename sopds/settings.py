@@ -177,6 +177,10 @@ CONSTANCE_CONFIG = OrderedDict([
     ('SOPDS_TELEBOT_API_TOKEN', ('', _('Telegramm API Token'))),
     ('SOPDS_TELEBOT_AUTH', (True, _('Enable telebot authentication. Test presense telegram username in local users database (case insensetive).'))),
     ('SOPDS_TELEBOT_MAXITEMS', (10, _('Max items on page'))),
+    ('SOPDS_TELEBOT_USE_SOCKS', (False, _('Use proxy for telegram proxy'))),
+    ('SOPDS_TELEBOT_SOCKS_PROXY', ('', _('URL for telegram proxy'))),
+    ('SOPDS_TELEBOT_SOCKS_USER', ('', _('Username for telegram proxy'))),
+    ('SOPDS_TELEBOT_SOCKS_PASS', ('', _('Password for telegram proxy'))),
 
     ('SOPDS_AUTH', (True, _('Enable authentication'))),
     ('SOPDS_ALPHABET_MENU', (True, _('Enable alphabet submenu'))),
@@ -252,6 +256,10 @@ CONSTANCE_CONFIG_FIELDSETS = {
         'SOPDS_TELEBOT_API_TOKEN', 
         'SOPDS_TELEBOT_AUTH', 
         'SOPDS_TELEBOT_MAXITEMS',
+        'SOPDS_TELEBOT_USE_SOCKS',
+        'SOPDS_TELEBOT_SOCKS_PROXY',
+        'SOPDS_TELEBOT_SOCKS_USER',
+        'SOPDS_TELEBOT_SOCKS_PASS',
     ),
     '6. Converters Options': (
         'SOPDS_FB2TOEPUB', 
