@@ -379,8 +379,8 @@ class Command(BaseCommand):
             download_handler = RegexHandler('^/download\d+$',self.downloadBooks)
 
             updater.dispatcher.add_handler(start_command_handler)
-            updater.dispatcher.add_handler(getBook_handler)
             updater.dispatcher.add_handler(download_handler)
+            updater.dispatcher.add_handler(getBook_handler)
             updater.dispatcher.add_handler(CallbackQueryHandler(self.botCallback))
 
             updater.start_polling(clean=True)
