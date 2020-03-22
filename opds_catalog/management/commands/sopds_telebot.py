@@ -44,15 +44,18 @@ def CheckAuthDecorator(func):
             del connections._connections.default
 
         query = update.message if update.message else update.callback_query.message
-        username = update.message.from_user.username if update.message else update.callback_query.from_user.username
-        users = User.objects.filter(username__iexact=username)
+
+        tg_user = update.message.from_user if update.message else update.callback_query.from_user
+        if config.SOPDS_TELEBOT_AUTH_USE_TG_ID:
+            users = User.objects.filter(username__iexact=str(tg_user.id))
+        else:
+            users = User.objects.filter(username__iexact=tg_user.username)
 
         if users and users[0].is_active:
             return func(self, bot, update)
 
-        bot.sendMessage(chat_id=query.chat_id,
-                        text=_("Hello %s!\nUnfortunately you do not have access to information. Please contact the bot administrator.") % username)
-        self.logger.info(_("Denied access for user: %s") % username)
+        bot.sendMessage(chat_id=query.chat_id, text=_("Your id: %s") % tg_user.id)
+        self.logger.info(_("Denied access for user: %s") % f'{tg_user.username} (# {tg_user.id})')
 
         return
 
