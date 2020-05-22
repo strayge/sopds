@@ -28,7 +28,7 @@ query_delimiter = "####"
 def cmdtrans(func):
     def wrapper(self, bot, update):
         translation.activate(config.SOPDS_LANGUAGE)
-        result =  func(self, bot, update)
+        result = func(self, bot, update)
         translation.deactivate()
         return result
 
@@ -61,6 +61,7 @@ def CheckAuthDecorator(func):
 
     return wrapper
 
+
 class Command(BaseCommand):
     help = 'SimpleOPDS Telegram Bot engine.'
     can_import_settings = True
@@ -68,8 +69,8 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('command', help='Use [ start | stop | restart ]')
-        parser.add_argument('--verbose',action='store_true', dest='verbose', default=False, help='Set verbosity level for SimpleOPDS telebot.')
-        parser.add_argument('--daemon',action='store_true', dest='daemonize', default=False, help='Daemonize server')
+        parser.add_argument('--verbose', action='store_true', dest='verbose', default=False, help='Set verbosity level for SimpleOPDS telebot.')
+        parser.add_argument('--daemon', action='store_true', dest='daemonize', default=False, help='Daemonize server')
         
     def handle(self, *args, **options):
         self.pidfile = os.path.join(main_settings.BASE_DIR, config.SOPDS_TELEBOT_PID)
@@ -110,9 +111,14 @@ class Command(BaseCommand):
     @cmdtrans
     @CheckAuthDecorator
     def startCommand(self, bot, update):
-        bot.sendMessage(chat_id=update.message.chat_id, text=_("%(subtitle)s\nHello %(username)s! To search for a book, enter part of her title or author:")%
-                                                             {'subtitle':settings.SUBTITLE,'username':update.message.from_user.username})
-        self.logger.info("Start talking with user: %s"%update.message.from_user)
+        bot.sendMessage(
+            chat_id=update.message.chat_id,
+            text=(
+                    _("%(subtitle)s\nHello %(username)s! To search for a book, enter part of her title or author:") %
+                    {'subtitle': settings.SUBTITLE, 'username': update.message.from_user.username}
+            )
+        )
+        self.logger.info("Start talking with user: %s" % update.message.from_user)
         return
 
     def BookFilter(self, query):
@@ -121,7 +127,7 @@ class Command(BaseCommand):
 
         q_objects = Q()
         q_objects.add(Q(search_title__contains=query.upper()), Q.OR)
-        q_objects.add( Q(authors__search_full_name__contains=query.upper()), Q.OR)
+        q_objects.add(Q(authors__search_full_name__contains=query.upper()), Q.OR)
         books = Book.objects.filter(q_objects).order_by('search_title', '-docdate').distinct()
 
         return books
@@ -186,18 +192,18 @@ class Command(BaseCommand):
         response = ''
         for b in items:
             authors = ', '.join([a['full_name'] for a in b['authors']])
-            doubles = _("(doubles:%s) ")%b['doubles'] if b['doubles'] else ''
+            doubles = _("(doubles:%s) ") % b['doubles'] if b['doubles'] else ''
             response += '<b>%(title)s</b>\n%(author)s\n%(dbl)s/download%(link)s\n\n' % {'title': b['title'], 'author': authors, 'link': b['id'], 'dbl': doubles}
 
         buttons = [
             InlineKeyboardButton('1 <<', callback_data='%s%s%s' % (query, query_delimiter, 1)),
-            InlineKeyboardButton('%s <' % op.previous_page_number , callback_data='%s%s%s' % (query, query_delimiter, op.previous_page_number)),
-            InlineKeyboardButton('[ %s ]' % op.number , callback_data='%s%s%s' % (query, query_delimiter, 'current')),
-            InlineKeyboardButton('> %s' % op.next_page_number , callback_data='%s%s%s' % (query, query_delimiter, op.next_page_number)),
+            InlineKeyboardButton('%s <' % op.previous_page_number, callback_data='%s%s%s' % (query, query_delimiter, op.previous_page_number)),
+            InlineKeyboardButton('[ %s ]' % op.number, callback_data='%s%s%s' % (query, query_delimiter, 'current')),
+            InlineKeyboardButton('> %s' % op.next_page_number, callback_data='%s%s%s' % (query, query_delimiter, op.next_page_number)),
             InlineKeyboardButton('>> %s' % op.num_pages, callback_data='%s%s%s' % (query, query_delimiter, op.num_pages)),
         ]
 
-        markup = InlineKeyboardMarkup([buttons]) if op.num_pages>1 else None
+        markup = InlineKeyboardMarkup([buttons]) if op.num_pages > 1 else None
 
         return {'message': response, 'buttons': markup}
 
@@ -213,7 +219,7 @@ class Command(BaseCommand):
             response = _("I'm searching for the book: %s") % query
 
         bot.send_message(chat_id=update.message.chat_id, text=response)
-        self.logger.info("Send message to user %s: %s" % (update.message.from_user.username,response))
+        self.logger.info("Send message to user %s: %s" % (update.message.from_user.username, response))
 
         if len(query) < 3:
             return
@@ -224,7 +230,7 @@ class Command(BaseCommand):
         if books_count == 0:
             response = _("No results were found for your query, please try again.")
             bot.send_message(chat_id=update.message.chat_id, text=response)
-            self.logger.info("Send message to user %s: %s" % (update.message.from_user.username,response))
+            self.logger.info("Send message to user %s: %s" % (update.message.from_user.username, response))
             return
 
         response = _("Found %s books.\nI create list, after a few seconds, select the file to download:") % books_count
@@ -254,7 +260,7 @@ class Command(BaseCommand):
     @cmdtrans
     @CheckAuthDecorator
     def downloadBooks(self, bot, update):
-        book_id_set = re.findall(r'\d+$',update.message.text)
+        book_id_set = re.findall(r'\d+$', update.message.text)
         if len(book_id_set) == 1:
             try:
                 book_id = int(book_id_set[0])
@@ -315,21 +321,21 @@ class Command(BaseCommand):
 
         if re.match(r'/getfileorig', query):
             document = dl.getFileData(book)
-            #document = config.SOPDS_SITE_ROOT + reverse("opds_catalog:download",kwargs={"book_id": book.id, "zip_flag": 0})
+            # document = config.SOPDS_SITE_ROOT + reverse("opds_catalog:download",kwargs={"book_id": book.id, "zip_flag": 0})
 
         if re.match(r'/getfilezip', query):
             document = dl.getFileDataZip(book)
-            #document = config.SOPDS_SITE_ROOT + reverse("opds_catalog:download", kwargs={"book_id": book.id, "zip_flag": 1})
+            # document = config.SOPDS_SITE_ROOT + reverse("opds_catalog:download", kwargs={"book_id": book.id, "zip_flag": 1})
             filename = filename + '.zip'
 
         if re.match(r'/getfileepub', query):
             document = dl.getFileDataEpub(book)
-            #document = config.SOPDS_SITE_ROOT+reverse("opds_catalog:convert",kwargs={"book_id": book.id, "convert_type": "epub"}))]
+            # document = config.SOPDS_SITE_ROOT+reverse("opds_catalog:convert",kwargs={"book_id": book.id, "convert_type": "epub"}))]
             filename = filename + '.epub'
 
         if re.match(r'/getfilemobi', query):
             document = dl.getFileDataMobi(book)
-            #document = config.SOPDS_SITE_ROOT+reverse("opds_catalog:convert",kwargs={"book_id": book.id, "convert_type": "mobi"}))]
+            # document = config.SOPDS_SITE_ROOT+reverse("opds_catalog:convert",kwargs={"book_id": book.id, "convert_type": "mobi"}))]
             filename = filename + '.mobi'
 
         if document:
@@ -376,7 +382,7 @@ class Command(BaseCommand):
 
             start_command_handler = CommandHandler('start', self.startCommand)
             getBook_handler = MessageHandler(Filters.text, self.getBooks)
-            download_handler = RegexHandler('^/download\d+$',self.downloadBooks)
+            download_handler = RegexHandler('^/download\d+$', self.downloadBooks)
 
             updater.dispatcher.add_handler(start_command_handler)
             updater.dispatcher.add_handler(download_handler)
