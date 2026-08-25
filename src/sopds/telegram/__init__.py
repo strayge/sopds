@@ -1,0 +1,1 @@
+"""Allowlisted aiogram presentation adapter."""

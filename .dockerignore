@@ -1,0 +1,6 @@
+**
+!.dockerignore
+!Dockerfile
+!requirements.freeze.txt
+!src/
+!src/**

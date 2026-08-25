@@ -1,0 +1,1 @@
+"""INPX parser adapter."""

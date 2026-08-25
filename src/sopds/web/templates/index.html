@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SOPDS</title>
+    <script src="{{ url_for('static', path='/vendor/htmx/htmx-2.0.10.min.js') }}"></script>
+    <style>
+      body {
+        max-width: 52rem;
+        margin: 4rem auto;
+        padding: 0 1rem;
+        font-family: system-ui, sans-serif;
+      }
+      .status-ok { color: #18753c; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>SOPDS</h1>
+      <p>The new INPX-backed catalog is ready for implementation.</p>
+      <p
+        id="health"
+        hx-get="/health-fragment"
+        hx-trigger="load, every 30s"
+        hx-swap="innerHTML"
+      >
+        Checking application health…
+      </p>
+    </main>
+  </body>
+</html>

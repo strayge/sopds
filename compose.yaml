@@ -1,0 +1,12 @@
+services:
+  sopds:
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.toml:/config/config.toml:ro
+      - ./library:/library:ro
+      - ./data:/data
