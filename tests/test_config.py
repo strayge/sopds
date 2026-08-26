@@ -44,6 +44,31 @@ def test_load_config_reads_the_single_toml_file(tmp_path: Path) -> None:
     assert config.telegram.token.get_secret_value() == "test-secret-token"
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://user@example.test/catalog",
+        "http://example.test/catalog?mode=opds",
+        "http://example.test/catalog#feed",
+    ],
+)
+def test_base_url_rejects_noncanonical_components(tmp_path: Path, base_url: str) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(VALID_CONFIG.replace("http://localhost:8000", base_url))
+
+    with pytest.raises(ConfigurationError, match="base_url"):
+        load_config(config_path)
+
+
+def test_base_url_accepts_path_prefix(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        VALID_CONFIG.replace("http://localhost:8000", "https://example.test/catalog")
+    )
+
+    assert str(load_config(config_path).server.base_url) == "https://example.test/catalog"
+
+
 def test_enabled_telegram_requires_allowlist_without_leaking_token(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(

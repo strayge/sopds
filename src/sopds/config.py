@@ -30,6 +30,18 @@ class ServerConfig(ConfigModel):
     port: int = 8000
     base_url: AnyHttpUrl
 
+    @model_validator(mode="after")
+    def validate_public_base_url(self) -> Self:
+        """Keep generated public links canonical and free of ambiguous URL components."""
+        url = self.base_url
+        if url.username is not None or url.password is not None:
+            raise ValueError("base_url must not contain userinfo")
+        if url.query is not None:
+            raise ValueError("base_url must not contain a query")
+        if url.fragment is not None:
+            raise ValueError("base_url must not contain a fragment")
+        return self
+
 
 class CatalogConfig(ConfigModel):
     inpx_path: Path

@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
+from datetime import UTC
 
 from sopds.catalog.contracts import (
     BookDetail,
@@ -14,7 +15,11 @@ from sopds.catalog.contracts import (
     CatalogInputError,
     CatalogPage,
     CatalogRequest,
+    CatalogSnapshot,
     CatalogStaleCursorError,
+    NavigationItem,
+    NavigationPage,
+    NavigationRequest,
 )
 from sopds.catalog.search import fts_match_expression, query_tokens
 from sopds.db.repository import CatalogRepository
@@ -22,6 +27,7 @@ from sopds.db.repository import CatalogRepository
 PAGE_SIZE = 50
 MAX_CURSOR_CHARS = 2_048
 MAX_FILTER_CHARS = 128
+MAX_NAME_FILTER_CHARS = 512
 _CURSOR_SIGNATURE_BYTES = 32
 
 
@@ -38,7 +44,7 @@ class CatalogService:
             raise ValueError("Cursor key must not be empty")
         self._repository = repository
         self._cursor_key = cursor_key
-        self._filters_cache: tuple[int, CatalogFilters] | None = None
+        self._filters_cache: tuple[CatalogSnapshot, CatalogFilters] | None = None
         self._filters_lock = asyncio.Lock()
         self._filters_revision = 0
 
@@ -50,12 +56,13 @@ class CatalogService:
         match = fts_match_expression(tokens)
 
         for attempt in range(2):
-            generation_id = await self._repository.active_generation_id()
+            snapshot = await self._repository.active_snapshot()
+            generation_id = snapshot.generation_id
             if generation_id is None:
                 if request.cursor is not None:
                     raise CatalogStaleCursorError("Catalog cursor is stale")
-                return CatalogPage(books=(), next_cursor=None)
-            cursor = _decode_cursor(request.cursor, generation_id, fingerprint, self._cursor_key)
+                return CatalogPage(books=(), next_cursor=None, updated_at=snapshot.updated_at)
+            cursor = _decode_cursor(request.cursor, snapshot, fingerprint, self._cursor_key)
             after = None if cursor is None else (cursor.title_sort, cursor.public_id)
             if match is None:
                 rows = await self._repository.browse_book_ids(
@@ -63,6 +70,8 @@ class CatalogService:
                     language=request.language,
                     genre=request.genre,
                     original_format=request.original_format,
+                    author=request.author,
+                    series=request.series,
                     after=after,
                     limit=PAGE_SIZE + 1,
                 )
@@ -73,6 +82,8 @@ class CatalogService:
                     language=request.language,
                     genre=request.genre,
                     original_format=request.original_format,
+                    author=request.author,
+                    series=request.series,
                     after=after,
                     limit=PAGE_SIZE + 1,
                 )
@@ -80,7 +91,7 @@ class CatalogService:
             books = tuple(
                 await self._repository.summaries(generation_id, [row[0] for row in visible])
             )
-            if await self._repository.active_generation_id() != generation_id:
+            if await self._repository.active_snapshot() != snapshot:
                 if request.cursor is not None:
                     raise CatalogStaleCursorError("Catalog cursor is stale")
                 if attempt == 0:
@@ -91,25 +102,65 @@ class CatalogService:
             if len(rows) > PAGE_SIZE and visible and len(books) == len(visible):
                 last = visible[-1]
                 next_cursor = _encode_cursor(
-                    generation_id,
+                    snapshot,
                     last[1],
                     last[2],
                     fingerprint,
                     self._cursor_key,
                 )
-            return CatalogPage(books=books, next_cursor=next_cursor)
+            return CatalogPage(books=books, next_cursor=next_cursor, updated_at=snapshot.updated_at)
 
         raise AssertionError("Catalog browse retry bound was bypassed")
+
+    async def snapshot(self) -> CatalogSnapshot:
+        return await self._repository.active_snapshot()
+
+    async def navigation(self, request: NavigationRequest) -> NavigationPage:
+        if request.kind not in {"authors", "genres", "series", "languages"}:
+            raise CatalogInputError("Invalid navigation kind")
+        fingerprint = f"navigation:{request.kind}"
+        for attempt in range(2):
+            snapshot = await self._repository.active_snapshot()
+            generation_id = snapshot.generation_id
+            if generation_id is None:
+                if request.cursor is not None:
+                    raise CatalogStaleCursorError("Catalog cursor is stale")
+                return NavigationPage((), None, snapshot.updated_at)
+            cursor = _decode_cursor(request.cursor, snapshot, fingerprint, self._cursor_key)
+            after = None if cursor is None else (cursor.title_sort, cursor.public_id)
+            rows = await self._repository.navigation_items(
+                generation_id, request.kind, after=after, limit=PAGE_SIZE + 1
+            )
+            visible = rows[:PAGE_SIZE]
+            if await self._repository.active_snapshot() != snapshot:
+                if request.cursor is not None:
+                    raise CatalogStaleCursorError("Catalog cursor is stale")
+                if attempt == 0:
+                    continue
+                raise CatalogInputError("Catalog changed while loading; retry the request")
+            next_cursor = None
+            if len(rows) > PAGE_SIZE and visible:
+                last = visible[-1]
+                next_cursor = _encode_cursor(
+                    snapshot, last[1], last[0], fingerprint, self._cursor_key
+                )
+            return NavigationPage(
+                tuple(NavigationItem(value=row[2], label=row[3]) for row in visible),
+                next_cursor,
+                snapshot.updated_at,
+            )
+        raise AssertionError("Catalog navigation retry bound was bypassed")
 
     async def details(self, public_id: str) -> BookDetail | None:
         if not public_id or len(public_id) > 64:
             return None
         for attempt in range(2):
-            generation_id = await self._repository.active_generation_id()
+            snapshot = await self._repository.active_snapshot()
+            generation_id = snapshot.generation_id
             if generation_id is None:
                 return None
             detail = await self._repository.detail(generation_id, public_id)
-            if await self._repository.active_generation_id() != generation_id:
+            if await self._repository.active_snapshot() != snapshot:
                 if attempt == 0:
                     continue
                 raise CatalogInputError("Catalog changed while loading; retry the request")
@@ -118,29 +169,29 @@ class CatalogService:
         raise AssertionError("Catalog detail retry bound was bypassed")
 
     async def filters(self) -> CatalogFilters:
-        generation_id = await self._repository.active_generation_id()
+        snapshot = await self._repository.active_snapshot()
         cached = self._filters_cache
-        if cached is not None and cached[0] == generation_id:
+        if cached is not None and cached[0] == snapshot:
             return cached[1]
 
         async with self._filters_lock:
             for attempt in range(2):
-                generation_id = await self._repository.active_generation_id()
+                snapshot = await self._repository.active_snapshot()
                 cached = self._filters_cache
-                if cached is not None and cached[0] == generation_id:
+                if cached is not None and cached[0] == snapshot:
                     return cached[1]
-                if generation_id is None:
+                if snapshot.generation_id is None:
                     return CatalogFilters(languages=(), genres=(), original_formats=())
 
                 revision = self._filters_revision
-                filters = await self._repository.catalog_filters(generation_id)
-                active_generation_id = await self._repository.active_generation_id()
-                if active_generation_id != generation_id or revision != self._filters_revision:
+                filters = await self._repository.catalog_filters(snapshot.generation_id)
+                active_snapshot = await self._repository.active_snapshot()
+                if active_snapshot != snapshot or revision != self._filters_revision:
                     if attempt == 0:
                         continue
                     raise CatalogInputError("Catalog changed while loading; retry the request")
 
-                self._filters_cache = (generation_id, filters)
+                self._filters_cache = (snapshot, filters)
                 return filters
 
         raise AssertionError("Catalog filter retry bound was bypassed")
@@ -155,26 +206,54 @@ def _validate_filters(request: CatalogRequest) -> None:
     for value in (request.language, request.genre, request.original_format):
         if value is not None and (not value or len(value) > MAX_FILTER_CHARS or "\x00" in value):
             raise CatalogInputError("Invalid catalog filter")
+    for value in (request.author, request.series):
+        if value is not None and (
+            not value or len(value) > MAX_NAME_FILTER_CHARS or "\x00" in value
+        ):
+            raise CatalogInputError("Invalid catalog filter")
 
 
 def _request_fingerprint(request: CatalogRequest, normalized: str) -> str:
     payload = json.dumps(
-        [normalized, request.language, request.genre, request.original_format],
+        [
+            normalized,
+            request.language,
+            request.genre,
+            request.original_format,
+            request.author,
+            request.series,
+        ],
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(payload).hexdigest()[:24]
 
 
+def _snapshot_revision(snapshot: CatalogSnapshot) -> str:
+    value = snapshot.updated_at
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
+
+
 def _encode_cursor(
-    generation_id: int,
+    snapshot: CatalogSnapshot,
     title_sort: str,
     public_id: str,
     fingerprint: str,
     key: bytes,
 ) -> str:
+    if snapshot.generation_id is None:
+        raise AssertionError("A cursor requires an active generation")
     payload = json.dumps(
-        {"v": 1, "g": generation_id, "t": title_sort, "p": public_id, "f": fingerprint},
+        {
+            "v": 2,
+            "g": snapshot.generation_id,
+            "r": _snapshot_revision(snapshot),
+            "t": title_sort,
+            "p": public_id,
+            "f": fingerprint,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
@@ -184,7 +263,7 @@ def _encode_cursor(
 
 def _decode_cursor(
     value: str | None,
-    generation_id: int,
+    snapshot: CatalogSnapshot,
     fingerprint: str,
     key: bytes,
 ) -> _Cursor | None:
@@ -203,14 +282,20 @@ def _decode_cursor(
         if not hmac.compare_digest(signature, expected_signature):
             raise CatalogInputError("Invalid catalog cursor")
         decoded = json.loads(payload)
-        if not isinstance(decoded, dict) or set(decoded) != {"v", "g", "t", "p", "f"}:
+        if not isinstance(decoded, dict) or set(decoded) != {"v", "g", "r", "t", "p", "f"}:
             raise ValueError
         version = decoded["v"]
         cursor_generation = decoded["g"]
+        cursor_revision = decoded["r"]
         cursor_fingerprint = decoded["f"]
         if type(version) is not int or type(cursor_generation) is not int:
             raise ValueError
-        if version != 1 or cursor_generation != generation_id:
+        if (
+            version != 2
+            or cursor_generation != snapshot.generation_id
+            or not isinstance(cursor_revision, str)
+            or cursor_revision != _snapshot_revision(snapshot)
+        ):
             raise CatalogStaleCursorError("Catalog cursor is stale")
         if not isinstance(cursor_fingerprint, str) or cursor_fingerprint != fingerprint:
             raise CatalogInputError("Catalog cursor does not match this query")
@@ -220,7 +305,7 @@ def _decode_cursor(
             raise ValueError
         if len(title_sort) > 1_024 or not public_id or len(public_id) > 64:
             raise ValueError
-        return _Cursor(generation_id, title_sort, public_id)
+        return _Cursor(cursor_generation, title_sort, public_id)
     except CatalogInputError:
         raise
     except (

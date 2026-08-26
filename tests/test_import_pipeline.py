@@ -522,6 +522,7 @@ async def test_archive_availability_updates_in_configured_chunks(
     connection = context.db()
     repository = CatalogRepository(connection, cleanup_batch_size=2)
     generation = await CatalogGeneration.create(using_db=connection, state=GenerationState.ACTIVE)
+    await CatalogState.filter(id=1).using_db(connection).update(active_generation_id=generation.id)
     archive_ids: list[int] = []
     for index in range(5):
         archive = await Archive.create(
@@ -533,9 +534,7 @@ async def test_archive_availability_updates_in_configured_chunks(
         archive_ids.append(archive.id)
 
     original_filter = Archive.filter
-    original_all = Archive.all
     queried_chunks: list[tuple[int, ...]] = []
-    bulk_update_chunks = 0
 
     def tracking_filter(_model: type[Archive], *args: Any, **kwargs: Any) -> QuerySet[Archive]:
         requested_ids = kwargs.get("id__in")
@@ -543,13 +542,7 @@ async def test_archive_availability_updates_in_configured_chunks(
             queried_chunks.append(tuple(cast(list[int], requested_ids)))
         return original_filter(*args, **kwargs)
 
-    def tracking_all(_model: type[Archive], *args: Any, **kwargs: Any) -> QuerySet[Archive]:
-        nonlocal bulk_update_chunks
-        bulk_update_chunks += 1
-        return original_all(*args, **kwargs)
-
     monkeypatch.setattr(Archive, "filter", classmethod(tracking_filter))
-    monkeypatch.setattr(Archive, "all", classmethod(tracking_all))
     await repository.update_archive_availability(dict.fromkeys(archive_ids, True))
     await close_database(context)
 
@@ -558,7 +551,6 @@ async def test_archive_availability_updates_in_configured_chunks(
         tuple(archive_ids[2:4]),
         tuple(archive_ids[4:5]),
     ]
-    assert bulk_update_chunks == 3
     assert _query(app_config.database.path, "SELECT available FROM archive ORDER BY id") == [
         (1,),
         (1,),
@@ -821,6 +813,8 @@ async def test_status_read_failure_after_activation_does_not_fail_catalog(
         ("LIBID", "private" * 19),
         ("LANG", "private" * 5),
         ("EXT", "private" * 5),
+        ("SERNO", "private" * 19),
+        ("KEYWORDS", "private" * 293),
         ("AUTHOR", "\ufdfa" * 29 + ":"),
         ("GENRE", "\ufdfa" * 15 + ":"),
         ("SERIES", "\ufdfa" * 29),
@@ -845,7 +839,9 @@ async def test_oversize_mapped_metadata_fails_safely_without_activation(
     assert _query(app_config.database.path, "SELECT count(*) FROM book") == [(0,)]
 
 
-@pytest.mark.parametrize("field", ["AUTHOR", "GENRE", "TITLE", "SERIES", "LANG"])
+@pytest.mark.parametrize(
+    "field", ["AUTHOR", "GENRE", "TITLE", "SERIES", "SERNO", "LANG", "KEYWORDS"]
+)
 async def test_nul_in_searchable_metadata_fails_safely_without_activation(
     app_config: AppConfig, field: str
 ) -> None:
@@ -865,16 +861,6 @@ async def test_nul_in_searchable_metadata_fails_safely_without_activation(
         (None,)
     ]
     assert _query(app_config.database.path, "SELECT count(*) FROM book_fts") == [(0,)]
-
-
-async def test_nul_in_keywords_remains_lossless(app_config: AppConfig) -> None:
-    keywords = "visible\x00private"
-    _write_inpx(app_config.catalog.inpx_path, _line(KEYWORDS=keywords))
-    async with _coordinator(app_config) as (coordinator, _):
-        result = await coordinator.force_import()
-
-    assert result.outcome is ImportOutcome.IMPORTED
-    assert _query(app_config.database.path, "SELECT keywords FROM book") == [(keywords,)]
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import override
 
 import pytest
@@ -155,6 +156,9 @@ def _app(imports: _Imports | None = None) -> tuple[FastAPI, _Catalog, _Imports]:
     catalog = _Catalog()
     import_provider = imports or _Imports()
     app.state.catalog = catalog
+    app.state.config = SimpleNamespace(
+        server=SimpleNamespace(base_url="https://catalog.example/root/")
+    )
     app.state.import_coordinator = import_provider
     app.state.acquisition = _Acquisition()
     app.state.csrf_token = secrets.token_urlsafe(32)
@@ -179,6 +183,11 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert "A Book" in page.text
     assert "Science fiction" in page.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in page.text
+    assert (
+        '<link rel="alternate" '
+        'type="application/atom+xml;profile=opds-catalog;kind=navigation" '
+        'href="https://catalog.example/root/opds/">'
+    ) in page.text
     assert "next-token" in page.text
     assert (
         'href="/?q=book&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'

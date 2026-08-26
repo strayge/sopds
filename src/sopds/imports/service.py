@@ -436,7 +436,16 @@ def _validate_mapped_metadata(record: InpxRecord) -> None:
         record.title,
         *record.authors,
         *record.genres,
-        *(value for value in (record.series, record.language) if value is not None),
+        *(
+            value
+            for value in (
+                record.series,
+                record.series_number,
+                record.language,
+                record.keywords,
+            )
+            if value is not None
+        ),
     )
     if any("\x00" in value for value in searchable_values):
         raise CatalogDataError("A catalog record contains an unsupported NUL character")
@@ -453,6 +462,10 @@ def _validate_mapped_metadata(record: InpxRecord) -> None:
     if record.series is not None:
         _validate_max_length(record.series, 512)
         _validate_max_length(normalize_sort_key(record.series), 512)
+    if record.series_number is not None:
+        _validate_max_length(record.series_number, 128)
+    if record.keywords is not None:
+        _validate_max_length(record.keywords, 2_048)
     if record.library_id is not None:
         _validate_max_length(record.library_id, 128)
     if record.language is not None:

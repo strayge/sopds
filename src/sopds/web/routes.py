@@ -131,8 +131,13 @@ async def index(
     catalog_request = _catalog_request(q, language, genre, original_format, cursor)
     try:
         context = await _results_context(request, catalog_request)
+        config = getattr(request.app.state, "config", None)
+        opds_url = (
+            str(config.server.base_url).rstrip("/") + "/opds/" if config is not None else "/opds/"
+        )
         context.update(
             filters=await _catalog(request).filters(),
+            opds_url=opds_url,
             import_status=await _imports(request).get_status(),
             csrf_token=cast(str, request.app.state.csrf_token),
             ImportState=ImportState,
