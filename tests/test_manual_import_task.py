@@ -29,14 +29,17 @@ async def test_manual_start_is_nonblocking_singleton_and_shutdown_awaits_finaliz
 
     coordinator._run_reserved_manual_import = blocked_import  # type: ignore[method-assign]
 
+    assert not coordinator.is_import_active()
     assert coordinator.start_manual_import()
     await entered.wait()
+    assert coordinator.is_import_active()
     assert not coordinator.start_manual_import()
     assert not finalized.is_set()
 
     await coordinator.shutdown()
 
     assert finalized.is_set()
+    assert not coordinator.is_import_active()
 
 
 async def test_manual_reservation_cannot_be_overtaken_by_scheduled_check(

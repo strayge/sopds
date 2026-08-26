@@ -135,15 +135,20 @@ async def index(
         opds_url = (
             str(config.server.base_url).rstrip("/") + "/opds/" if config is not None else "/opds/"
         )
+        import_coordinator = _imports(request)
+        current_import_status = await import_coordinator.get_status()
+        import_pending = (
+            current_import_status is None and import_coordinator.is_import_active()
+        )
         context.update(
             filters=await _catalog(request).filters(),
             opds_url=opds_url,
-            import_status=await _imports(request).get_status(),
+            import_status=current_import_status,
             csrf_token=cast(str, request.app.state.csrf_token),
             ImportState=ImportState,
-            message=None,
-            poll=False,
-            pending=False,
+            message="Catalog import is starting" if import_pending else None,
+            poll=import_pending,
+            pending=import_pending,
             poll_after_run_id=None,
         )
         return templates.TemplateResponse(request=request, name="index.html", context=context)
@@ -334,7 +339,8 @@ async def _status_response(
 
 @router.get("/imports/status", response_class=HTMLResponse)
 async def import_status(request: Request, after_run_id: int | None = None) -> Response:
-    status = await _imports(request).get_status()
+    coordinator = _imports(request)
+    status = await coordinator.get_status()
     if after_run_id is not None and (status is None or status.run_id <= after_run_id):
         return await _status_response(
             request,
@@ -343,6 +349,14 @@ async def import_status(request: Request, after_run_id: int | None = None) -> Re
             poll=True,
             pending=True,
             poll_after_run_id=after_run_id,
+        )
+    if status is None and coordinator.is_import_active():
+        return await _status_response(
+            request,
+            None,
+            message="Catalog import is starting",
+            poll=True,
+            pending=True,
         )
     return await _status_response(request, status)
 

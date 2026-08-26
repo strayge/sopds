@@ -121,13 +121,17 @@ class _Acquisition:
 
 
 class _Imports:
-    def __init__(self, status: ImportStatus | None = None) -> None:
+    def __init__(self, status: ImportStatus | None = None, *, active: bool = False) -> None:
         self.status = status
+        self.active = active
         self.accept = True
         self.started = 0
 
     async def get_status(self) -> ImportStatus | None:
         return self.status
+
+    def is_import_active(self) -> bool:
+        return self.active
 
     def start_manual_import(self) -> bool:
         self.started += 1
@@ -332,6 +336,24 @@ async def test_owned_download_cleanup_finishes_despite_repeated_cancellation() -
         await sending
     assert stream.closed
     assert not stream.iterated
+
+
+def test_main_page_polls_while_active_import_has_no_persisted_status() -> None:
+    imports = _Imports(active=True)
+    app, _, _ = _app(imports)
+    with TestClient(app) as client:
+        page = client.get("/")
+        pending = client.get("/imports/status")
+        imports.status = _status(ImportState.RUNNING)
+        started = client.get("/imports/status")
+
+    assert "No import has run yet" not in page.text
+    assert "Catalog import is starting" in page.text
+    assert "Waiting for the import run" in page.text
+    assert 'hx-get="/imports/status"' in page.text
+    assert "Catalog import is starting" in pending.text
+    assert 'hx-get="/imports/status"' in pending.text
+    assert "2 imported" in started.text
 
 
 def test_import_status_polls_only_while_running() -> None:

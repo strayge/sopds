@@ -54,6 +54,15 @@ class ImportCoordinator:
     async def get_status(self) -> ImportStatus | None:
         return await self._repository.latest_status()
 
+    def is_import_active(self) -> bool:
+        """Expose pre-persistence activity so status views do not report an idle system."""
+        task = self._manual_task
+        return (
+            self._manual_reserved
+            or self._import_lock.locked()
+            or (task is not None and not task.done())
+        )
+
     async def check_for_changes(self) -> ImportResult:
         return await self._request(ImportTrigger.SCHEDULED, force=False)
 
