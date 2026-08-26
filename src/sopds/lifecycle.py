@@ -19,6 +19,7 @@ from sopds.db.connection import close_database, initialize_database
 from sopds.db.migrations_runner import validate_migration_state
 from sopds.db.repository import CatalogRepository
 from sopds.imports.coordinator import ImportCoordinator
+from sopds.telegram.runner import TelegramRunner
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,9 +53,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.acquisition = acquisition
         app.state.conversion = conversion
         app.state.converter_registry = registry
+        telegram: TelegramRunner | None = None
+        if config.telegram.enabled:
+            try:
+                telegram = TelegramRunner(config.telegram, catalog, acquisition)
+                resources.push_async_callback(telegram.shutdown)
+            except Exception as error:
+                _LOGGER.warning("Telegram initialization failed: %s", type(error).__name__)
+        app.state.telegram = telegram
 
         await conversion_cache.startup()
         await coordinator.recover()
+        if telegram is not None:
+            try:
+                telegram.start()
+            except Exception as error:
+                _LOGGER.warning("Telegram startup failed: %s", type(error).__name__)
         app.state.started_at = datetime.now(UTC)
         scheduler = asyncio.create_task(
             _scheduled_checks(

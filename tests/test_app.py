@@ -12,7 +12,8 @@ from tortoise.context import TortoiseContext
 from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.app import create_app
 from sopds.catalog.service import CatalogService
-from sopds.config import AppConfig
+from sopds.config import AppConfig, TelegramConfig
+from sopds.conversion.cache import ArtifactCache
 from sopds.conversion.service import ConversionService
 from sopds.db.connection import close_database
 from sopds.imports.coordinator import ImportCoordinator
@@ -78,6 +79,55 @@ def test_missing_inpx_stays_healthy_and_records_immediate_check(
             '<dt>Error</dt><dd class="error">Could not read the configured catalog source</dd>'
             in status.text
         )
+
+
+def test_disabled_lifecycle_does_not_construct_telegram_bot(
+    migrated_app_config: AppConfig,
+) -> None:
+    with (
+        patch("sopds.lifecycle.TelegramRunner") as runner,
+        TestClient(create_app(migrated_app_config)),
+    ):
+        pass
+
+    runner.assert_not_called()
+
+
+def test_telegram_starts_only_after_cache_startup_and_recovery(
+    migrated_app_config: AppConfig,
+) -> None:
+    events: list[str] = []
+    telegram_config = TelegramConfig.model_validate(
+        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
+    )
+    config = migrated_app_config.model_copy(update={"telegram": telegram_config})
+
+    async def cache_startup(_cache: ArtifactCache) -> None:
+        events.append("cache")
+
+    async def recover(_coordinator: ImportCoordinator) -> None:
+        events.append("recover")
+
+    class FakeRunner:
+        def __init__(self, *_args: object) -> None:
+            events.append("constructed")
+
+        def start(self) -> None:
+            assert events == ["constructed", "cache", "recover"]
+            events.append("started")
+
+        async def shutdown(self) -> None:
+            events.append("closed")
+
+    with (
+        patch.object(ArtifactCache, "startup", autospec=True, side_effect=cache_startup),
+        patch.object(ImportCoordinator, "recover", autospec=True, side_effect=recover),
+        patch("sopds.lifecycle.TelegramRunner", FakeRunner),
+        TestClient(create_app(config)),
+    ):
+        assert events == ["constructed", "cache", "recover", "started"]
+
+    assert events[-1] == "closed"
 
 
 def test_lifespan_initializes_and_closes_without_schema_generation(

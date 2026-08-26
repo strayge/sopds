@@ -239,6 +239,13 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         first = await catalog.browse(CatalogRequest())
         assert len(first.books) == 50
         assert first.next_cursor is not None
+        ten = await catalog.browse(CatalogRequest(page_size=10))
+        assert len(ten.books) == 10
+        assert ten.next_cursor is not None
+        with pytest.raises(CatalogInputError, match="does not match"):
+            await catalog.browse(CatalogRequest(cursor=ten.next_cursor, page_size=50))
+        second_ten = await catalog.browse(CatalogRequest(cursor=ten.next_cursor, page_size=10))
+        assert len(second_ten.books) == 10
         second = await catalog.browse(CatalogRequest(cursor=first.next_cursor))
         assert len(second.books) == 5
         assert {book.public_id for book in first.books}.isdisjoint(

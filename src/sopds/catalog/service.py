@@ -25,6 +25,8 @@ from sopds.catalog.search import fts_match_expression, query_tokens
 from sopds.db.repository import CatalogRepository
 
 PAGE_SIZE = 50
+MIN_PAGE_SIZE = 1
+MAX_PAGE_SIZE = 50
 MAX_CURSOR_CHARS = 2_048
 MAX_FILTER_CHARS = 128
 MAX_NAME_FILTER_CHARS = 512
@@ -73,7 +75,7 @@ class CatalogService:
                     author=request.author,
                     series=request.series,
                     after=after,
-                    limit=PAGE_SIZE + 1,
+                    limit=request.page_size + 1,
                 )
             else:
                 rows = await self._repository.search_book_ids(
@@ -85,9 +87,9 @@ class CatalogService:
                     author=request.author,
                     series=request.series,
                     after=after,
-                    limit=PAGE_SIZE + 1,
+                    limit=request.page_size + 1,
                 )
-            visible = rows[:PAGE_SIZE]
+            visible = rows[: request.page_size]
             books = tuple(
                 await self._repository.summaries(generation_id, [row[0] for row in visible])
             )
@@ -99,7 +101,7 @@ class CatalogService:
                 raise CatalogInputError("Catalog changed while loading; retry the request")
 
             next_cursor = None
-            if len(rows) > PAGE_SIZE and visible and len(books) == len(visible):
+            if len(rows) > request.page_size and visible and len(books) == len(visible):
                 last = visible[-1]
                 next_cursor = _encode_cursor(
                     snapshot,
@@ -203,6 +205,11 @@ class CatalogService:
 
 
 def _validate_filters(request: CatalogRequest) -> None:
+    if (
+        type(request.page_size) is not int
+        or not MIN_PAGE_SIZE <= request.page_size <= MAX_PAGE_SIZE
+    ):
+        raise CatalogInputError("Invalid catalog page size")
     for value in (request.language, request.genre, request.original_format):
         if value is not None and (not value or len(value) > MAX_FILTER_CHARS or "\x00" in value):
             raise CatalogInputError("Invalid catalog filter")
@@ -222,6 +229,7 @@ def _request_fingerprint(request: CatalogRequest, normalized: str) -> str:
             request.original_format,
             request.author,
             request.series,
+            request.page_size,
         ],
         ensure_ascii=False,
         separators=(",", ":"),

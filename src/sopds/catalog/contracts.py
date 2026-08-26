@@ -22,6 +22,7 @@ class CatalogRequest:
     cursor: str | None = None
     author: str | None = None
     series: str | None = None
+    page_size: int = 50
 
 
 @dataclass(frozen=True, slots=True)
