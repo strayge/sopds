@@ -9,7 +9,7 @@ from typing import Literal, cast, override
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from starlette.types import Message, Receive, Scope, Send
@@ -54,7 +54,7 @@ _INTERNAL_ERRORS = (
 
 
 class HealthResponse(BaseModel):
-    status: Literal["ok"] = "ok"
+    status: Literal["ok", "unavailable"]
 
 
 def _catalog(request: Request) -> Catalog:
@@ -375,11 +375,24 @@ async def start_import(request: Request) -> Response:
     )
 
 
+async def _database_ready(request: Request, endpoint: str) -> bool:
+    try:
+        await _catalog(request).check_readiness()
+    except Exception as error:
+        _LOGGER.warning("Database readiness check failed at %s: %s", endpoint, type(error).__name__)
+        return False
+    return True
+
+
 @router.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
-    return HealthResponse()
+async def health(request: Request) -> Response:
+    if await _database_ready(request, "/health"):
+        return JSONResponse(HealthResponse(status="ok").model_dump(), status_code=200)
+    return JSONResponse(HealthResponse(status="unavailable").model_dump(), status_code=503)
 
 
 @router.get("/health-fragment", response_class=HTMLResponse)
-async def health_fragment() -> HTMLResponse:
-    return HTMLResponse('<span class="status-ok">Application is healthy</span>')
+async def health_fragment(request: Request) -> HTMLResponse:
+    if await _database_ready(request, "/health-fragment"):
+        return HTMLResponse('<span class="status-ok">Application is healthy</span>')
+    return HTMLResponse('<span class="status-error">Application is unavailable</span>')

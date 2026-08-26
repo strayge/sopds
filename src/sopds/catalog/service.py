@@ -50,6 +50,9 @@ class CatalogService:
         self._filters_lock = asyncio.Lock()
         self._filters_revision = 0
 
+    async def check_readiness(self) -> None:
+        await self._repository.check_readiness()
+
     async def browse(self, request: CatalogRequest) -> CatalogPage:
         _validate_filters(request)
         tokens = query_tokens(request.query)

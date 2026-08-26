@@ -1,5 +1,6 @@
 """Smoke tests for the initial HTTP application."""
 
+import sqlite3
 import time
 from unittest.mock import AsyncMock, patch
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -23,9 +24,71 @@ from sopds.lifecycle import _scheduled_checks
 def test_health_endpoint(migrated_app_config: AppConfig) -> None:
     with TestClient(create_app(migrated_app_config)) as client:
         response = client.get("/health")
+        fragment = client.get("/health-fragment")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert fragment.status_code == 200
+    assert fragment.text == '<span class="status-ok">Application is healthy</span>'
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_status", "expected_body"),
+    [
+        ("/health", 503, {"status": "unavailable"}),
+        (
+            "/health-fragment",
+            200,
+            '<span class="status-error">Application is unavailable</span>',
+        ),
+    ],
+)
+def test_health_endpoints_report_database_failure_without_logging_details(
+    migrated_app_config: AppConfig,
+    path: str,
+    expected_status: int,
+    expected_body: dict[str, str] | str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    error_detail = "sensitive-connection-detail"
+    with (
+        patch.object(
+            CatalogService,
+            "check_readiness",
+            autospec=True,
+            side_effect=RuntimeError(error_detail),
+        ),
+        TestClient(create_app(migrated_app_config)) as client,
+    ):
+        response = client.get(path)
+
+    assert response.status_code == expected_status
+    if isinstance(expected_body, dict):
+        assert response.json() == expected_body
+    else:
+        assert response.text == expected_body
+    assert "RuntimeError" in caplog.text
+    assert error_detail not in caplog.text
+
+
+def test_health_is_unavailable_without_catalog_state_singleton(
+    migrated_app_config: AppConfig,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with TestClient(create_app(migrated_app_config)) as client:
+        connection = sqlite3.connect(migrated_app_config.database.path)
+        try:
+            connection.execute("DELETE FROM catalog_state WHERE id = 1")
+            connection.commit()
+        finally:
+            connection.close()
+
+        response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+    assert "RuntimeError" in caplog.text
+    assert "Catalog database is not ready" not in caplog.text
 
 
 def test_empty_converter_registry_has_no_conversion_route(
@@ -48,6 +111,7 @@ def test_index_uses_server_rendered_template(migrated_app_config: AppConfig) -> 
     assert response.status_code == 200
     assert "INPX-backed catalog" in response.text
     assert 'hx-get="/health-fragment"' in response.text
+    assert ".status-error { color: #a21b1b; }" in response.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
     assert "unpkg.com" not in response.text
 

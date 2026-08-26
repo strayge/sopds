@@ -59,6 +59,10 @@ class CatalogRepository:
         self._connection = connection
         self._cleanup_batch_size = cleanup_batch_size
 
+    async def check_readiness(self) -> None:
+        if not await CatalogState.filter(id=1).using_db(self._connection).exists():
+            raise RuntimeError("Catalog database is not ready")
+
     async def ensure_source(self, namespace: str, path: Path) -> None:
         source = await CatalogSource.filter(id=1).using_db(self._connection).first()
         path_value = str(path)

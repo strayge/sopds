@@ -4,6 +4,7 @@ services:
       context: .
     restart: unless-stopped
     init: true
+    stop_grace_period: 30s
     ports:
       - "8000:8000"
     volumes:
