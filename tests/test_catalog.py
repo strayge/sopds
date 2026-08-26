@@ -171,6 +171,54 @@ async def _seed(repository: CatalogRepository) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Path) -> None:
+    async with _catalog(tmp_path / "catalog.sqlite3") as (_catalog_service, repository):
+        await _seed(repository)
+        connection = repository._connection
+        superseded = await CatalogGeneration.create(
+            using_db=connection, id=3, state=GenerationState.SUPERSEDED
+        )
+        old_archive = await Archive.create(
+            using_db=connection,
+            id=4,
+            generation=superseded,
+            relative_path="old.zip",
+            available=True,
+        )
+        await Book.create(
+            using_db=connection,
+            id=102,
+            generation=superseded,
+            public_id="old",
+            archive=old_archive,
+            member_filename="old.fb2",
+            title="Old",
+            title_sort="old",
+            size=9,
+            original_format="fb2",
+        )
+
+        target = await repository.acquisition_target("book-001")
+        assert target is not None
+        assert target.generation_id == 1
+        assert target.archive_relative_path == "available.zip"
+        assert target.member_filename == "book-001.fb2"
+        assert target.expected_size == 101
+        assert await repository.acquisition_target("hidden") is None
+        assert await repository.acquisition_target("staged") is None
+        assert await repository.acquisition_target("old") is None
+        assert await repository.acquisition_target("missing") is None
+
+        await CatalogState.filter(id=1).using_db(connection).update(active_generation_id=2)
+        await CatalogGeneration.filter(id=1).using_db(connection).delete()
+        assert target.generation_id == 1
+        assert target.title == "Ёжик"
+        activated = await repository.acquisition_target("staged")
+        assert activated is not None
+        assert activated.generation_id == 2
+
+
 def test_normalization_and_safe_fts_terms() -> None:
     assert normalize_text("  ЁЖИК \uff21  ") == "  ежик a  "
     assert query_tokens("Ёжик, BOOK_2!") == ("ежик", "book", "2")

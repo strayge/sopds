@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 
 from fastapi import FastAPI
 
+from sopds.acquisition.service import AcquisitionService
+from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig
 from sopds.db.connection import close_database, initialize_database
@@ -31,8 +33,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         config.catalog.archive_root,
     )
     catalog = CatalogService(repository, app.state.cursor_key)
+    acquisition = AcquisitionService(repository, ZipOriginalStore(config.catalog.archive_root))
     app.state.import_coordinator = coordinator
     app.state.catalog = catalog
+    app.state.acquisition = acquisition
     scheduler: asyncio.Task[None] | None = None
     try:
         await coordinator.recover()
@@ -52,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             with suppress(asyncio.CancelledError):
                 await scheduler
         await coordinator.shutdown()
+        await acquisition.shutdown()
         await close_database(database_context)
 
 

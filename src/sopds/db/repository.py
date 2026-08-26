@@ -13,6 +13,7 @@ from tortoise.query_utils import Prefetch
 from tortoise.queryset import QuerySet
 from tortoise.transactions import in_transaction
 
+from sopds.acquisition.contracts import AcquisitionTarget
 from sopds.catalog.contracts import (
     BookDetail,
     BookSummary,
@@ -546,6 +547,39 @@ class CatalogRepository:
         )
         value = values[0]["active_generation_id"] if values else None
         return int(value) if value is not None else None
+
+    async def acquisition_target(self, public_id: str) -> AcquisitionTarget | None:
+        """Materialize all file coordinates from one active-generation query."""
+        rows = await (
+            Book.filter(
+                public_id=public_id,
+                archive__available=True,
+                generation__active_catalog_states__id=1,
+            )
+            .using_db(self._connection)
+            .limit(1)
+            .values_list(
+                "generation_id",
+                "public_id",
+                "title",
+                "size",
+                "original_format",
+                "archive__relative_path",
+                "member_filename",
+            )
+        )
+        if not rows:
+            return None
+        generation_id, row_public_id, title, size, original_format, archive_path, member = rows[0]
+        return AcquisitionTarget(
+            generation_id=int(generation_id),
+            public_id=str(row_public_id),
+            title=str(title),
+            expected_size=int(size),
+            original_format=str(original_format),
+            archive_relative_path=str(archive_path),
+            member_filename=str(member),
+        )
 
     def _available_books(
         self,

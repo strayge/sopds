@@ -1,13 +1,24 @@
 """Web adapter tests for catalog rendering, status polling, and manual import CSRF."""
 
+import asyncio
 import secrets
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import override
 
+import pytest
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
+from starlette.types import Message, Scope
 
+from sopds.acquisition.contracts import (
+    AcquiredOriginal,
+    AcquisitionCorruptError,
+    AcquisitionNotFoundError,
+    AcquisitionStoreShutdownError,
+)
 from sopds.catalog.contracts import (
     BookDetail,
     BookSummary,
@@ -70,6 +81,39 @@ class _Catalog:
         )
 
 
+class _Stream:
+    def __init__(self, body: bytes = b"original") -> None:
+        self.body = body
+        self.closed = False
+        self.iterated = False
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        self.iterated = True
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[bytes]:
+        yield self.body
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _Acquisition:
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+        self.stream = _Stream()
+
+    async def acquire(self, public_id: str) -> AcquiredOriginal:
+        if self.error is not None:
+            raise self.error
+        return AcquiredOriginal(
+            filename="Книга.fb2",
+            media_type="application/x-fictionbook+xml",
+            content_length=len(self.stream.body),
+            stream=self.stream,
+        )
+
+
 class _Imports:
     def __init__(self, status: ImportStatus | None = None) -> None:
         self.status = status
@@ -107,6 +151,7 @@ def _app(imports: _Imports | None = None) -> tuple[FastAPI, _Catalog, _Imports]:
     import_provider = imports or _Imports()
     app.state.catalog = catalog
     app.state.import_coordinator = import_provider
+    app.state.acquisition = _Acquisition()
     app.state.csrf_token = secrets.token_urlsafe(32)
     static = Path(routes.__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static), name="static")
@@ -158,10 +203,123 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     )
     assert detail.status_code == 200
     assert "Original format" in detail.text
+    assert 'href="/books/public-1/download"' in detail.text
     assert missing.status_code == 404
     assert catalog.requests[0] == CatalogRequest(
         query="book", language="en", genre="sf", original_format="fb2"
     )
+
+
+def test_original_download_headers_body_and_status_mappings() -> None:
+    app, _, _ = _app()
+    acquisition: _Acquisition = app.state.acquisition
+    with TestClient(app) as client:
+        response = client.get("/books/public-1/download")
+        acquisition.error = AcquisitionNotFoundError()
+        missing = client.get("/books/missing/download")
+        acquisition.error = AcquisitionCorruptError()
+        corrupt = client.get("/books/public-1/download")
+        acquisition.error = AcquisitionStoreShutdownError()
+        shutdown = client.get("/books/public-1/download")
+
+    assert response.status_code == 200
+    assert response.content == b"original"
+    assert response.headers["content-type"] == "application/x-fictionbook+xml"
+    assert response.headers["content-length"] == "8"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "filename*=UTF-8''" in response.headers["content-disposition"]
+    assert acquisition.stream.closed
+    assert missing.status_code == 404
+    assert "AcquisitionNotFoundError" not in missing.text
+    assert corrupt.status_code == 500
+    assert shutdown.status_code == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("send failed"), asyncio.CancelledError()])
+async def test_owned_download_response_closes_if_send_fails_before_iteration(
+    failure: BaseException,
+) -> None:
+    stream = _Stream()
+    original = AcquiredOriginal("book.fb2", "application/octet-stream", 8, stream)
+    response = routes._OwnedStreamingResponse(original, "public-1", {})
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/books/public-1/download",
+        "raw_path": b"/books/public-1/download",
+        "query_string": b"",
+        "headers": [],
+        "client": None,
+        "server": None,
+    }
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def fail_send(_message: Message) -> None:
+        raise failure
+
+    with pytest.raises(type(failure)):
+        await response(scope, receive, fail_send)
+
+    assert stream.closed
+    assert not stream.iterated
+
+
+@pytest.mark.asyncio
+async def test_owned_download_cleanup_finishes_despite_repeated_cancellation() -> None:
+    class BlockingCloseStream(_Stream):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_started = asyncio.Event()
+            self.close_release = asyncio.Event()
+
+        @override
+        async def aclose(self) -> None:
+            self.close_started.set()
+            await self.close_release.wait()
+            self.closed = True
+
+    stream = BlockingCloseStream()
+    original = AcquiredOriginal("book.fb2", "application/octet-stream", 8, stream)
+    response = routes._OwnedStreamingResponse(original, "public-1", {})
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/books/public-1/download",
+        "raw_path": b"/books/public-1/download",
+        "query_string": b"",
+        "headers": [],
+        "client": None,
+        "server": None,
+    }
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def cancelled_send(_message: Message) -> None:
+        raise asyncio.CancelledError
+
+    sending = asyncio.create_task(response(scope, receive, cancelled_send))
+    await stream.close_started.wait()
+    sending.cancel()
+    await asyncio.sleep(0)
+    sending.cancel()
+    await asyncio.sleep(0)
+    assert not sending.done()
+    stream.close_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await sending
+    assert stream.closed
+    assert not stream.iterated
 
 
 def test_import_status_polls_only_while_running() -> None:

@@ -1,20 +1,56 @@
 """Server-rendered catalog and operational status routes."""
 
+import asyncio
+import logging
 import secrets
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, cast, override
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from starlette.types import Message, Receive, Scope, Send
 
+from sopds.acquisition.contracts import (
+    AcquiredOriginal,
+    Acquisition,
+    AcquisitionAmbiguousMemberError,
+    AcquisitionCorruptError,
+    AcquisitionDirectoryMemberError,
+    AcquisitionEncryptedMemberError,
+    AcquisitionError,
+    AcquisitionMemberNotFoundError,
+    AcquisitionNotFoundError,
+    AcquisitionSizeMismatchError,
+    AcquisitionStoreShutdownError,
+    AcquisitionSymlinkMemberError,
+    AcquisitionUnavailableError,
+    AcquisitionUnsafePathError,
+)
+from sopds.acquisition.service import content_disposition
 from sopds.catalog.contracts import Catalog, CatalogInputError, CatalogRequest
 from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
 
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+_LOGGER = logging.getLogger(__name__)
+_NOT_FOUND_ERRORS = (
+    AcquisitionNotFoundError,
+    AcquisitionUnavailableError,
+    AcquisitionMemberNotFoundError,
+)
+_INTERNAL_ERRORS = (
+    AcquisitionUnsafePathError,
+    AcquisitionAmbiguousMemberError,
+    AcquisitionEncryptedMemberError,
+    AcquisitionDirectoryMemberError,
+    AcquisitionSymlinkMemberError,
+    AcquisitionSizeMismatchError,
+    AcquisitionCorruptError,
+)
 
 
 class HealthResponse(BaseModel):
@@ -27,6 +63,10 @@ def _catalog(request: Request) -> Catalog:
 
 def _imports(request: Request) -> ImportStatusProvider:
     return cast(ImportStatusProvider, request.app.state.import_coordinator)
+
+
+def _acquisition(request: Request) -> Acquisition:
+    return cast(Acquisition, request.app.state.acquisition)
 
 
 def _catalog_request(
@@ -149,6 +189,117 @@ async def book_detail(request: Request, public_id: str) -> Response:
         name="book_detail.html",
         context={"book": book},
     )
+
+
+async def _stream_original(original: AcquiredOriginal, public_id: str) -> AsyncIterator[bytes]:
+    try:
+        async for chunk in original.stream:
+            yield chunk
+    except AcquisitionError:
+        _LOGGER.exception(
+            "Original download failed after streaming began",
+            extra={"book_public_id": public_id},
+        )
+        raise
+    finally:
+        await original.stream.aclose()
+
+
+async def _close_owned_stream(
+    original: AcquiredOriginal, public_id: str, *, response_started: bool
+) -> bool:
+    """Finish response-owned cleanup even when its caller is repeatedly cancelled."""
+    cleanup = asyncio.create_task(original.stream.aclose())
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        cleanup.result()
+    except BaseException:
+        _LOGGER.exception(
+            "Original download cleanup failed",
+            extra={"book_public_id": public_id, "response_started": response_started},
+        )
+    return cancelled
+
+
+class _OwnedStreamingResponse(StreamingResponse):
+    """Own an acquired stream for the complete ASGI response lifecycle."""
+
+    def __init__(self, original: AcquiredOriginal, public_id: str, headers: dict[str, str]) -> None:
+        self._original = original
+        self._public_id = public_id
+        super().__init__(
+            _stream_original(original, public_id),
+            status_code=200,
+            headers=headers,
+        )
+
+    @override
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        response_started = False
+
+        async def owned_send(message: Message) -> None:
+            nonlocal response_started
+            await send(message)
+            if message["type"] == "http.response.start":
+                response_started = True
+
+        try:
+            await super().__call__(scope, receive, owned_send)
+        except BaseException:
+            try:
+                await _close_owned_stream(
+                    self._original,
+                    self._public_id,
+                    response_started=response_started,
+                )
+            finally:
+                raise
+        else:
+            if await _close_owned_stream(
+                self._original,
+                self._public_id,
+                response_started=response_started,
+            ):
+                raise asyncio.CancelledError
+
+
+@router.get("/books/{public_id}/download")
+async def download_original(request: Request, public_id: str) -> Response:
+    try:
+        original = await _acquisition(request).acquire(public_id)
+    except _NOT_FOUND_ERRORS as error:
+        raise HTTPException(status_code=404, detail="Original is unavailable") from error
+    except AcquisitionStoreShutdownError as error:
+        raise HTTPException(status_code=503, detail="Service is shutting down") from error
+    except _INTERNAL_ERRORS as error:
+        _LOGGER.exception(
+            "Original download could not be opened",
+            extra={"book_public_id": public_id, "failure_type": type(error).__name__},
+        )
+        raise HTTPException(status_code=500, detail="Original cannot be served") from error
+    except AcquisitionError as error:
+        _LOGGER.exception(
+            "Original download failed",
+            extra={"book_public_id": public_id, "failure_type": type(error).__name__},
+        )
+        raise HTTPException(status_code=500, detail="Original cannot be served") from error
+
+    try:
+        headers = {
+            "Content-Type": original.media_type,
+            "Content-Length": str(original.content_length),
+            "Content-Disposition": content_disposition(original.filename),
+            "X-Content-Type-Options": "nosniff",
+        }
+        return _OwnedStreamingResponse(original, public_id, headers)
+    except BaseException:
+        await original.stream.aclose()
+        raise
 
 
 async def _status_response(

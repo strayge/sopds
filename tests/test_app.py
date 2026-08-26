@@ -7,6 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from fastapi.testclient import TestClient
 from tortoise.context import TortoiseContext
 
+from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.app import create_app
 from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig
@@ -102,6 +103,29 @@ def test_lifespan_shuts_down_manual_work_before_database_close(
         assert client.get("/health").status_code == 200
 
     assert shutdown_complete
+
+
+def test_lifespan_closes_acquisition_before_database(
+    migrated_app_config: AppConfig,
+) -> None:
+    acquisition_closed = False
+
+    async def shutdown(_store: ZipOriginalStore) -> None:
+        nonlocal acquisition_closed
+        acquisition_closed = True
+
+    async def close_after_acquisition(context: TortoiseContext) -> None:
+        assert acquisition_closed
+        await close_database(context)
+
+    with (
+        patch.object(ZipOriginalStore, "shutdown", autospec=True, side_effect=shutdown),
+        patch("sopds.lifecycle.close_database", autospec=True, side_effect=close_after_acquisition),
+        TestClient(create_app(migrated_app_config)) as client,
+    ):
+        assert client.get("/health").status_code == 200
+
+    assert acquisition_closed
 
 
 def test_scheduled_availability_refresh_updates_web_filters(
