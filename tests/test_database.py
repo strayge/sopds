@@ -57,7 +57,6 @@ RELATIONAL_TABLES = {
 }
 
 
-@pytest.mark.asyncio
 async def test_fresh_migration_is_idempotent(tmp_path: Path) -> None:
     database_path = tmp_path / "nested" / "catalog.sqlite3"
 
@@ -74,7 +73,6 @@ async def test_fresh_migration_is_idempotent(tmp_path: Path) -> None:
     ]
 
 
-@pytest.mark.asyncio
 async def test_migrations_create_relational_and_fts_schema(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -92,7 +90,6 @@ async def test_migrations_create_relational_and_fts_schema(tmp_path: Path) -> No
     assert {"book_fts_data", "book_fts_idx", "book_fts_content", "book_fts_docsize"} <= tables
 
 
-@pytest.mark.asyncio
 async def test_migration_indexes_reference_real_table_columns(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -121,7 +118,6 @@ async def test_migration_indexes_reference_real_table_columns(tmp_path: Path) ->
     assert found_relation_indexes == RELATION_INDEXES
 
 
-@pytest.mark.asyncio
 async def test_singleton_tables_reject_noncanonical_rows(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -137,7 +133,6 @@ async def test_singleton_tables_reject_noncanonical_rows(tmp_path: Path) -> None
             )
 
 
-@pytest.mark.asyncio
 async def test_fts_projection_supports_match_queries(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -159,7 +154,6 @@ async def test_fts_projection_supports_match_queries(tmp_path: Path) -> None:
     assert result == [(7, 3)]
 
 
-@pytest.mark.asyncio
 async def test_runtime_connection_has_required_sqlite_pragmas(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -177,7 +171,6 @@ async def test_runtime_connection_has_required_sqlite_pragmas(tmp_path: Path) ->
     assert busy_timeout[0]["timeout"] == SQLITE_BUSY_TIMEOUT_MS
 
 
-@pytest.mark.asyncio
 async def test_runtime_connection_enforces_foreign_keys(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -192,7 +185,6 @@ async def test_runtime_connection_enforces_foreign_keys(tmp_path: Path) -> None:
         await close_database(context)
 
 
-@pytest.mark.asyncio
 async def test_book_round_trips_parser_compatible_optional_values(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -228,7 +220,6 @@ async def test_book_round_trips_parser_compatible_optional_values(tmp_path: Path
     assert loaded.rating == 5
 
 
-@pytest.mark.asyncio
 async def test_deleting_generation_cascades_all_relational_rows(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -268,7 +259,6 @@ async def test_deleting_generation_cascades_all_relational_rows(tmp_path: Path) 
     assert remaining == {table: 0 for table in remaining}
 
 
-@pytest.mark.asyncio
 async def test_initialize_database_exits_context_when_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -302,7 +292,6 @@ async def test_initialize_database_exits_context_when_cleanup_fails(
     assert failing_context.exited
 
 
-@pytest.mark.asyncio
 async def test_close_database_exits_context_when_connection_close_fails() -> None:
     class FailingContext:
         exited = False
@@ -325,7 +314,6 @@ async def test_close_database_exits_context_when_connection_close_fails() -> Non
     assert failing_context.exited
 
 
-@pytest.mark.asyncio
 async def test_runtime_validation_rejects_pending_migrations(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -336,7 +324,6 @@ async def test_runtime_validation_rejects_pending_migrations(tmp_path: Path) -> 
         await validate_migration_state(database_path)
 
 
-@pytest.mark.asyncio
 async def test_runtime_validation_rejects_missing_dependency_row(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -347,7 +334,6 @@ async def test_runtime_validation_rejects_missing_dependency_row(tmp_path: Path)
         await validate_migration_state(database_path)
 
 
-@pytest.mark.asyncio
 async def test_runtime_validation_rejects_unknown_migration_record(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
@@ -361,7 +347,6 @@ async def test_runtime_validation_rejects_unknown_migration_record(tmp_path: Pat
         await validate_migration_state(database_path)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("object_name", ["book", "book_fts"])
 async def test_runtime_validation_rejects_dropped_required_schema_object(
     tmp_path: Path,

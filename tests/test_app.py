@@ -4,6 +4,8 @@ import time
 from unittest.mock import AsyncMock, patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from tortoise.context import TortoiseContext
 
@@ -11,6 +13,7 @@ from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.app import create_app
 from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig
+from sopds.conversion.service import ConversionService
 from sopds.db.connection import close_database
 from sopds.imports.coordinator import ImportCoordinator
 from sopds.lifecycle import _scheduled_checks
@@ -22,6 +25,19 @@ def test_health_endpoint(migrated_app_config: AppConfig) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_empty_converter_registry_has_no_conversion_route(
+    migrated_app_config: AppConfig,
+) -> None:
+    app = create_app(migrated_app_config)
+    with TestClient(app):
+        assert len(app.state.converter_registry) == 0
+        assert not any(
+            route.path.startswith("/conversion")
+            for route in app.routes
+            if isinstance(route, APIRoute)
+        )
 
 
 def test_index_uses_server_rendered_template(migrated_app_config: AppConfig) -> None:
@@ -103,6 +119,61 @@ def test_lifespan_shuts_down_manual_work_before_database_close(
         assert client.get("/health").status_code == 200
 
     assert shutdown_complete
+
+
+def test_lifespan_runs_all_later_cleanup_when_coordinator_shutdown_fails(
+    migrated_app_config: AppConfig,
+) -> None:
+    cleanup_order: list[str] = []
+    conversion_shutdown = ConversionService.shutdown
+    acquisition_shutdown = ZipOriginalStore.shutdown
+
+    async def fail_coordinator_shutdown(_coordinator: ImportCoordinator) -> None:
+        cleanup_order.append("coordinator")
+        raise RuntimeError("shutdown failed")
+
+    async def track_conversion_shutdown(service: ConversionService) -> None:
+        cleanup_order.append("conversion")
+        await conversion_shutdown(service)
+
+    async def track_acquisition_shutdown(store: ZipOriginalStore) -> None:
+        cleanup_order.append("acquisition")
+        await acquisition_shutdown(store)
+
+    async def track_database_close(context: TortoiseContext) -> None:
+        cleanup_order.append("database")
+        await close_database(context)
+
+    with (
+        pytest.raises(RuntimeError, match="shutdown failed"),
+        patch.object(
+            ImportCoordinator,
+            "shutdown",
+            autospec=True,
+            side_effect=fail_coordinator_shutdown,
+        ),
+        patch.object(
+            ConversionService,
+            "shutdown",
+            autospec=True,
+            side_effect=track_conversion_shutdown,
+        ),
+        patch.object(
+            ZipOriginalStore,
+            "shutdown",
+            autospec=True,
+            side_effect=track_acquisition_shutdown,
+        ),
+        patch(
+            "sopds.lifecycle.close_database",
+            autospec=True,
+            side_effect=track_database_close,
+        ),
+        TestClient(create_app(migrated_app_config)) as client,
+    ):
+        assert client.get("/health").status_code == 200
+
+    assert cleanup_order == ["coordinator", "conversion", "acquisition", "database"]
 
 
 def test_lifespan_closes_acquisition_before_database(

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from datetime import UTC, datetime
 
 from fastapi import FastAPI
@@ -12,6 +12,9 @@ from sopds.acquisition.service import AcquisitionService
 from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig
+from sopds.conversion.cache import ArtifactCache
+from sopds.conversion.registry import ConverterRegistry
+from sopds.conversion.service import ConversionService
 from sopds.db.connection import close_database, initialize_database
 from sopds.db.migrations_runner import validate_migration_state
 from sopds.db.repository import CatalogRepository
@@ -25,20 +28,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Supervise catalog work so no task or connection outlives database shutdown."""
     config: AppConfig = app.state.config
     await validate_migration_state(config.database.path)
-    database_context = await initialize_database(config.database.path)
-    repository = CatalogRepository(database_context.db())
-    coordinator = ImportCoordinator(
-        repository,
-        config.catalog.inpx_path,
-        config.catalog.archive_root,
-    )
-    catalog = CatalogService(repository, app.state.cursor_key)
-    acquisition = AcquisitionService(repository, ZipOriginalStore(config.catalog.archive_root))
-    app.state.import_coordinator = coordinator
-    app.state.catalog = catalog
-    app.state.acquisition = acquisition
-    scheduler: asyncio.Task[None] | None = None
-    try:
+    async with AsyncExitStack() as resources:
+        database_context = await initialize_database(config.database.path)
+        resources.push_async_callback(close_database, database_context)
+        repository = CatalogRepository(database_context.db())
+        coordinator = ImportCoordinator(
+            repository,
+            config.catalog.inpx_path,
+            config.catalog.archive_root,
+        )
+        catalog = CatalogService(repository, app.state.cursor_key)
+        acquisition = AcquisitionService(repository, ZipOriginalStore(config.catalog.archive_root))
+        resources.push_async_callback(acquisition.shutdown)
+        registry = ConverterRegistry()
+        conversion_cache = ArtifactCache(
+            config.conversion.cache_dir, config.conversion.cache_ttl_seconds
+        )
+        conversion = ConversionService(acquisition, registry, conversion_cache)
+        resources.push_async_callback(conversion.shutdown)
+        resources.push_async_callback(coordinator.shutdown)
+        app.state.import_coordinator = coordinator
+        app.state.catalog = catalog
+        app.state.acquisition = acquisition
+        app.state.conversion = conversion
+        app.state.converter_registry = registry
+
+        await conversion_cache.startup()
         await coordinator.recover()
         app.state.started_at = datetime.now(UTC)
         scheduler = asyncio.create_task(
@@ -49,15 +64,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             name="catalog-change-checker",
         )
+        cleanup_scheduler = asyncio.create_task(
+            _scheduled_conversion_cleanup(
+                conversion_cache, config.conversion.cleanup_interval_seconds
+            ),
+            name="conversion-cache-cleaner",
+        )
+        resources.push_async_callback(_stop_schedulers, scheduler, cleanup_scheduler)
         yield
-    finally:
-        if scheduler is not None:
-            scheduler.cancel()
-            with suppress(asyncio.CancelledError):
-                await scheduler
-        await coordinator.shutdown()
-        await acquisition.shutdown()
-        await close_database(database_context)
+
+
+async def _stop_schedulers(*tasks: asyncio.Task[None]) -> None:
+    """Cancel every scheduler and still observe all task completions when one fails."""
+    for task in tasks:
+        task.cancel()
+    async with AsyncExitStack() as pending:
+        for task in reversed(tasks):
+            pending.push_async_callback(_await_cancelled_scheduler, task)
+
+
+async def _await_cancelled_scheduler(task: asyncio.Task[None]) -> None:
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def _scheduled_conversion_cleanup(cache: ArtifactCache, interval_seconds: float) -> None:
+    """Periodically expire cache files while isolating cleanup failures."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await cache.cleanup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Scheduled conversion cache cleanup failed")
 
 
 async def _scheduled_checks(

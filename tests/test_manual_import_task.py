@@ -5,8 +5,6 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from sopds.db.repository import CatalogRepository
 from sopds.imports.coordinator import ImportCoordinator
 from sopds.imports.fingerprint import SourceFingerprint
@@ -14,7 +12,6 @@ from sopds.imports.service import CatalogImportService
 from sopds.imports.status import ImportOutcome, ImportResult, ImportTrigger
 
 
-@pytest.mark.asyncio
 async def test_manual_start_is_nonblocking_singleton_and_shutdown_awaits_finalization() -> None:
     coordinator = ImportCoordinator(
         cast(CatalogRepository, object()), Path("catalog.inpx"), Path("archives")
@@ -42,7 +39,6 @@ async def test_manual_start_is_nonblocking_singleton_and_shutdown_awaits_finaliz
     assert finalized.is_set()
 
 
-@pytest.mark.asyncio
 async def test_manual_reservation_cannot_be_overtaken_by_scheduled_check(
     tmp_path: Path,
 ) -> None:

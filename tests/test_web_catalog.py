@@ -18,6 +18,7 @@ from sopds.acquisition.contracts import (
     AcquisitionCorruptError,
     AcquisitionNotFoundError,
     AcquisitionStoreShutdownError,
+    SourceRevision,
 )
 from sopds.catalog.contracts import (
     BookDetail,
@@ -29,6 +30,8 @@ from sopds.catalog.contracts import (
 )
 from sopds.imports.status import ImportState, ImportStatus, ImportTrigger
 from sopds.web import routes
+
+_REVISION = SourceRevision(1, 2, 3)
 
 
 class _Catalog:
@@ -111,6 +114,8 @@ class _Acquisition:
             media_type="application/x-fictionbook+xml",
             content_length=len(self.stream.body),
             stream=self.stream,
+            source_format="fb2",
+            source_revision=_REVISION,
         )
 
 
@@ -235,13 +240,12 @@ def test_original_download_headers_body_and_status_mappings() -> None:
     assert shutdown.status_code == 503
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [RuntimeError("send failed"), asyncio.CancelledError()])
 async def test_owned_download_response_closes_if_send_fails_before_iteration(
     failure: BaseException,
 ) -> None:
     stream = _Stream()
-    original = AcquiredOriginal("book.fb2", "application/octet-stream", 8, stream)
+    original = AcquiredOriginal("book.fb2", "application/octet-stream", 8, stream, "fb2", _REVISION)
     response = routes._OwnedStreamingResponse(original, "public-1", {})
     scope: Scope = {
         "type": "http",
@@ -270,7 +274,6 @@ async def test_owned_download_response_closes_if_send_fails_before_iteration(
     assert not stream.iterated
 
 
-@pytest.mark.asyncio
 async def test_owned_download_cleanup_finishes_despite_repeated_cancellation() -> None:
     class BlockingCloseStream(_Stream):
         def __init__(self) -> None:
@@ -285,7 +288,7 @@ async def test_owned_download_cleanup_finishes_despite_repeated_cancellation() -
             self.closed = True
 
     stream = BlockingCloseStream()
-    original = AcquiredOriginal("book.fb2", "application/octet-stream", 8, stream)
+    original = AcquiredOriginal("book.fb2", "application/octet-stream", 8, stream, "fb2", _REVISION)
     response = routes._OwnedStreamingResponse(original, "public-1", {})
     scope: Scope = {
         "type": "http",

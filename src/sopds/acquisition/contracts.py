@@ -64,6 +64,24 @@ class AcquisitionTarget:
     member_filename: str
 
 
+@dataclass(frozen=True, slots=True)
+class SourceRevision:
+    """Metadata identity for one exact member in one archive revision."""
+
+    archive_size: int
+    archive_mtime_ns: int
+    member_crc32: int
+
+
+@dataclass(frozen=True, slots=True)
+class OriginalDescription:
+    public_id: str
+    title: str
+    source_format: str
+    content_length: int
+    revision: SourceRevision
+
+
 @runtime_checkable
 class AsyncByteStream(Protocol):
     """A caller-owned stream that must be closed, including after cancellation."""
@@ -73,12 +91,19 @@ class AsyncByteStream(Protocol):
     async def aclose(self) -> None: ...
 
 
+class ObservedOriginalStream(AsyncByteStream, Protocol):
+    @property
+    def source_revision(self) -> SourceRevision: ...
+
+
 class AcquisitionRepository(Protocol):
     async def acquisition_target(self, public_id: str) -> AcquisitionTarget | None: ...
 
 
 class OriginalStore(Protocol):
-    async def open(self, target: AcquisitionTarget) -> AsyncByteStream: ...
+    async def describe(self, target: AcquisitionTarget) -> SourceRevision: ...
+
+    async def open(self, target: AcquisitionTarget) -> ObservedOriginalStream: ...
 
     async def shutdown(self) -> None: ...
 
@@ -89,7 +114,11 @@ class AcquiredOriginal:
     media_type: str
     content_length: int
     stream: AsyncByteStream
+    source_format: str
+    source_revision: SourceRevision
 
 
 class Acquisition(Protocol):
+    async def describe(self, public_id: str) -> OriginalDescription: ...
+
     async def acquire(self, public_id: str) -> AcquiredOriginal: ...

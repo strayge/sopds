@@ -1,7 +1,5 @@
 """Lifecycle-owned streaming of original ZIP members."""
 
-from __future__ import annotations
-
 import asyncio
 import lzma
 import os
@@ -27,7 +25,8 @@ from sopds.acquisition.contracts import (
     AcquisitionTarget,
     AcquisitionUnavailableError,
     AcquisitionUnsafePathError,
-    AsyncByteStream,
+    ObservedOriginalStream,
+    SourceRevision,
 )
 
 ZIP_WORKERS = 4
@@ -54,10 +53,17 @@ _CORRUPT_IO_ERRORS: tuple[type[BaseException], ...] = (
 
 
 class _OpenedMember:
-    def __init__(self, archive: zipfile.ZipFile, member: IO[bytes], source: BinaryIO) -> None:
+    def __init__(
+        self,
+        archive: zipfile.ZipFile,
+        member: IO[bytes],
+        source: BinaryIO,
+        revision: SourceRevision,
+    ) -> None:
         self.archive = archive
         self.member = member
         self.source = source
+        self.revision = revision
 
     def read(self) -> bytes:
         return self.member.read(CHUNK_SIZE)
@@ -167,7 +173,10 @@ def _close_archive_source(archive: zipfile.ZipFile | None, source: BinaryIO | No
             source.close()
 
 
-def _open_member(root: Path, target: AcquisitionTarget) -> _OpenedMember:
+def _inspect_member(
+    root: Path, target: AcquisitionTarget
+) -> tuple[zipfile.ZipFile, BinaryIO, zipfile.ZipInfo, SourceRevision]:
+    """Open and validate archive metadata without reading the member body."""
     _validate_catalog_path(target.archive_relative_path)
     _validate_catalog_path(target.member_filename)
     try:
@@ -201,8 +210,13 @@ def _open_member(root: Path, target: AcquisitionTarget) -> _OpenedMember:
             raise AcquisitionEncryptedMemberError("Original member is encrypted")
         if info.file_size != target.expected_size:
             raise AcquisitionSizeMismatchError("Original size does not match catalog metadata")
-        member = archive.open(info, mode="r")
-        return _OpenedMember(archive, member, source)
+        archive_stat = os.fstat(source.fileno())
+        revision = SourceRevision(
+            archive_size=archive_stat.st_size,
+            archive_mtime_ns=archive_stat.st_mtime_ns,
+            member_crc32=info.CRC,
+        )
+        return archive, source, info, revision
     except (
         AcquisitionMemberNotFoundError,
         AcquisitionAmbiguousMemberError,
@@ -217,6 +231,30 @@ def _open_member(root: Path, target: AcquisitionTarget) -> _OpenedMember:
         with suppress(*_CORRUPT_IO_ERRORS):
             _close_archive_source(archive, source)
         raise
+    except asyncio.CancelledError:
+        with suppress(*_CORRUPT_IO_ERRORS):
+            _close_archive_source(archive, source)
+        raise
+    except _CORRUPT_IO_ERRORS as error:
+        with suppress(*_CORRUPT_IO_ERRORS):
+            _close_archive_source(archive, source)
+        raise AcquisitionCorruptError("Original archive cannot be read") from error
+
+
+def _describe_member(root: Path, target: AcquisitionTarget) -> SourceRevision:
+    archive, source, _info, revision = _inspect_member(root, target)
+    try:
+        return revision
+    finally:
+        with suppress(*_CORRUPT_IO_ERRORS):
+            _close_archive_source(archive, source)
+
+
+def _open_member(root: Path, target: AcquisitionTarget) -> _OpenedMember:
+    archive, source, info, revision = _inspect_member(root, target)
+    try:
+        member = archive.open(info, mode="r")
+        return _OpenedMember(archive, member, source, revision)
     except asyncio.CancelledError:
         with suppress(*_CORRUPT_IO_ERRORS):
             _close_archive_source(archive, source)
@@ -298,7 +336,24 @@ class ZipOriginalStore:
             finally:
                 self._admission.release()
 
-    async def open(self, target: AcquisitionTarget) -> AsyncByteStream:
+    async def describe(self, target: AcquisitionTarget) -> SourceRevision:
+        async with self._state_lock:
+            if self._closing:
+                raise AcquisitionStoreShutdownError("Original store is shutting down")
+        await self._admission.acquire()
+        task = asyncio.current_task()
+        if task is None:
+            self._admission.release()
+            raise RuntimeError("Acquisition must run inside an asyncio task")
+        try:
+            await self._begin_open(task)
+            return await self._worker(lambda: _describe_member(self._root, target))
+        finally:
+            async with self._state_lock:
+                self._opening.discard(task)
+            self._admission.release()
+
+    async def open(self, target: AcquisitionTarget) -> ObservedOriginalStream:
         async with self._state_lock:
             if self._closing:
                 raise AcquisitionStoreShutdownError("Original store is shutting down")
@@ -370,6 +425,10 @@ class _ZipMemberStream:
         self._lock = asyncio.Lock()
         self._closed = False
         self._iterated = False
+
+    @property
+    def source_revision(self) -> SourceRevision:
+        return self._opened.revision
 
     def __aiter__(self) -> AsyncIterator[bytes]:
         if self._iterated:

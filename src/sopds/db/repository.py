@@ -1,7 +1,5 @@
 """Catalog persistence through Tortoise models and explicit FTS boundaries."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path

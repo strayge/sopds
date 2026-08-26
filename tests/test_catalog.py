@@ -171,7 +171,6 @@ async def _seed(repository: CatalogRepository) -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "catalog.sqlite3") as (_catalog_service, repository):
         await _seed(repository)
@@ -233,7 +232,6 @@ def test_normalization_and_safe_fts_terms() -> None:
         query_tokens(" ".join(f"w{index}" for index in range(17)))
 
 
-@pytest.mark.asyncio
 async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "catalog.sqlite3") as (catalog, repository):
         await _seed(repository)
@@ -305,7 +303,6 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
             await restarted.browse(CatalogRequest(cursor=first.next_cursor))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["availability", "cleanup"])
 async def test_hydration_omits_books_that_stop_being_visible(tmp_path: Path, change: str) -> None:
     async with _catalog(tmp_path / f"{change}.sqlite3") as (catalog, repository):
@@ -335,7 +332,6 @@ async def test_hydration_omits_books_that_stop_being_visible(tmp_path: Path, cha
         assert all(book.public_id != "book-000" for book in page.books)
 
 
-@pytest.mark.asyncio
 async def test_browse_retries_activation_change_but_cursor_becomes_stale(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "activation.sqlite3") as (catalog, repository):
         await _seed(repository)
@@ -371,7 +367,6 @@ async def test_browse_retries_activation_change_but_cursor_becomes_stale(tmp_pat
             await catalog.browse(CatalogRequest(cursor=first_page.next_cursor))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("public_id", "expected_title"),
     [("staged", "Staged unique"), ("book-001", None)],
@@ -406,7 +401,6 @@ async def test_details_retries_activation_change_during_hydration(
         assert actual_title == expected_title
 
 
-@pytest.mark.asyncio
 async def test_details_rejects_two_activation_changes(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "detail-repeated-activation.sqlite3") as (
         catalog,
@@ -437,7 +431,6 @@ async def test_details_rejects_two_activation_changes(tmp_path: Path) -> None:
         assert generation_ids == [1, 2]
 
 
-@pytest.mark.asyncio
 async def test_filters_cache_avoids_repeated_repository_scan(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "filter-cache.sqlite3") as (catalog, repository):
         await _seed(repository)
@@ -458,7 +451,6 @@ async def test_filters_cache_avoids_repeated_repository_scan(tmp_path: Path) -> 
         assert calls == 1
 
 
-@pytest.mark.asyncio
 async def test_concurrent_filter_cache_misses_are_single_flight(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "filter-single-flight.sqlite3") as (catalog, repository):
         await _seed(repository)
@@ -488,7 +480,6 @@ async def test_concurrent_filter_cache_misses_are_single_flight(tmp_path: Path) 
         assert calls == 1
 
 
-@pytest.mark.asyncio
 async def test_filters_retry_when_generation_changes_during_scan(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "filter-activation.sqlite3") as (catalog, repository):
         await _seed(repository)

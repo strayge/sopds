@@ -1,7 +1,5 @@
 """Shared orchestration and HTTP-safe metadata for original acquisition."""
 
-from __future__ import annotations
-
 import re
 import unicodedata
 from urllib.parse import quote
@@ -10,6 +8,8 @@ from sopds.acquisition.contracts import (
     AcquiredOriginal,
     AcquisitionNotFoundError,
     AcquisitionRepository,
+    AcquisitionTarget,
+    OriginalDescription,
     OriginalStore,
 )
 
@@ -39,17 +39,34 @@ class AcquisitionService:
         self._repository = repository
         self._store = store
 
-    async def acquire(self, public_id: str) -> AcquiredOriginal:
+    async def _target(self, public_id: str) -> AcquisitionTarget:
         if not public_id or len(public_id) > 64 or "\x00" in public_id:
             raise AcquisitionNotFoundError("Original is unavailable")
         target = await self._repository.acquisition_target(public_id)
         if target is None:
             raise AcquisitionNotFoundError("Original is unavailable")
+        return target
+
+    async def describe(self, public_id: str) -> OriginalDescription:
+        target = await self._target(public_id)
+        revision = await self._store.describe(target)
+        return OriginalDescription(
+            public_id=target.public_id,
+            title=target.title,
+            source_format=target.original_format,
+            content_length=target.expected_size,
+            revision=revision,
+        )
+
+    async def acquire(self, public_id: str) -> AcquiredOriginal:
+        target = await self._target(public_id)
         stream = await self._store.open(target)
         return AcquiredOriginal(
             filename=safe_download_filename(target.title, target.original_format),
             media_type=media_type_for(target.original_format),
             content_length=target.expected_size,
+            source_format=target.original_format,
+            source_revision=stream.source_revision,
             stream=stream,
         )
 

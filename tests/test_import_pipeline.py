@@ -155,7 +155,6 @@ def test_import_batch_size_must_be_positive_at_service_boundary(batch_size: int)
         ImportCoordinator(repository, source_path, archive_root, batch_size=batch_size)
 
 
-@pytest.mark.asyncio
 async def test_named_book_row_fields_persist_through_orm_bulk_boundary(
     app_config: AppConfig,
 ) -> None:
@@ -254,7 +253,6 @@ async def test_named_book_row_fields_persist_through_orm_bulk_boundary(
         await close_database(context)
 
 
-@pytest.mark.asyncio
 async def test_bulk_and_single_record_batches_persist_identical_catalogs(
     app_config: AppConfig,
 ) -> None:
@@ -281,7 +279,6 @@ async def test_bulk_and_single_record_batches_persist_identical_catalogs(
     assert _catalog_snapshot(bulk_config.database.path) == single_record_batches
 
 
-@pytest.mark.asyncio
 async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config: AppConfig) -> None:
     _write_inpx(app_config.catalog.inpx_path, _line(), _line(FILE="gone", DEL="1"))
     archive_path = app_config.catalog.archive_root / "nested" / "books.zip"
@@ -332,7 +329,6 @@ async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config:
     assert normalize_sort_key("  ЁЖ ") == "  еж "
 
 
-@pytest.mark.asyncio
 async def test_fingerprint_fast_paths_and_forced_generation(app_config: AppConfig) -> None:
     _write_inpx(app_config.catalog.inpx_path, _line())
     async with _coordinator(app_config) as (coordinator, _):
@@ -355,7 +351,6 @@ async def test_fingerprint_fast_paths_and_forced_generation(app_config: AppConfi
     ) == [(1,)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["parser", "duplicate"])
 async def test_failed_import_preserves_active_generation_and_fingerprint(
     app_config: AppConfig, failure: str
@@ -390,7 +385,6 @@ async def test_failed_import_preserves_active_generation_and_fingerprint(
         ) == [(0, 1)]
 
 
-@pytest.mark.asyncio
 async def test_source_mutation_preserving_metadata_after_parse_prevents_activation(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -423,7 +417,6 @@ async def test_source_mutation_preserving_metadata_after_parse_prevents_activati
     ]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("restore_metadata", [False, True])
 async def test_source_mutation_during_count_validation_prevents_activation(
     app_config: AppConfig,
@@ -457,7 +450,6 @@ async def test_source_mutation_during_count_validation_prevents_activation(
     ]
 
 
-@pytest.mark.asyncio
 async def test_concurrent_request_is_not_queued(app_config: AppConfig) -> None:
     _write_inpx(app_config.catalog.inpx_path, _line())
     async with _coordinator(app_config) as (coordinator, _):
@@ -482,7 +474,6 @@ async def test_concurrent_request_is_not_queued(app_config: AppConfig) -> None:
     assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(1,)]
 
 
-@pytest.mark.asyncio
 async def test_recovery_cleans_interrupted_generation_and_fts(app_config: AppConfig) -> None:
     await apply_migrations(app_config.database.path)
     context = await initialize_database(app_config.database.path)
@@ -523,7 +514,6 @@ async def test_recovery_cleans_interrupted_generation_and_fts(app_config: AppCon
     assert _query(app_config.database.path, "SELECT count(*) FROM book_fts") == [(0,)]
 
 
-@pytest.mark.asyncio
 async def test_archive_availability_updates_in_configured_chunks(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -578,7 +568,6 @@ async def test_archive_availability_updates_in_configured_chunks(
     ]
 
 
-@pytest.mark.asyncio
 async def test_archive_availability_refreshes_without_new_run(app_config: AppConfig) -> None:
     _write_inpx(app_config.catalog.inpx_path, _line())
     archive = app_config.catalog.archive_root / "nested" / "books.zip"
@@ -594,7 +583,6 @@ async def test_archive_availability_refreshes_without_new_run(app_config: AppCon
     assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(1,)]
 
 
-@pytest.mark.asyncio
 async def test_source_identity_change_clears_matching_metadata_fingerprint(
     app_config: AppConfig,
 ) -> None:
@@ -617,7 +605,6 @@ async def test_source_identity_change_clears_matching_metadata_fingerprint(
     assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(2,)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["during_setup", "after_setup"])
 async def test_cancellation_around_atomic_setup_cleans_known_state(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch, stage: str
@@ -658,7 +645,6 @@ async def test_cancellation_around_atomic_setup_cleans_known_state(
     assert _query(app_config.database.path, "SELECT state FROM catalog_generation") == [("failed",)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["before", "during", "just_after"])
 async def test_cancellation_around_activation_never_fails_an_activated_generation(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch, stage: str
@@ -715,7 +701,6 @@ async def test_cancellation_around_activation_never_fails_an_activated_generatio
         assert active is not None
 
 
-@pytest.mark.asyncio
 async def test_activation_failure_while_cancellation_is_pending_uses_failure_path(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -766,7 +751,6 @@ async def test_activation_failure_while_cancellation_is_pending_uses_failure_pat
     ) == [(0,)]
 
 
-@pytest.mark.asyncio
 async def test_cancellation_during_failure_finalization_waits_for_database_outcome(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -806,7 +790,6 @@ async def test_cancellation_during_failure_finalization_waits_for_database_outco
     assert _query(app_config.database.path, "SELECT state FROM catalog_generation") == [("failed",)]
 
 
-@pytest.mark.asyncio
 async def test_status_read_failure_after_activation_does_not_fail_catalog(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -828,7 +811,6 @@ async def test_status_read_failure_after_activation_does_not_fail_catalog(
     ) == [("active",)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -863,7 +845,6 @@ async def test_oversize_mapped_metadata_fails_safely_without_activation(
     assert _query(app_config.database.path, "SELECT count(*) FROM book") == [(0,)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["AUTHOR", "GENRE", "TITLE", "SERIES", "LANG"])
 async def test_nul_in_searchable_metadata_fails_safely_without_activation(
     app_config: AppConfig, field: str
@@ -886,7 +867,6 @@ async def test_nul_in_searchable_metadata_fails_safely_without_activation(
     assert _query(app_config.database.path, "SELECT count(*) FROM book_fts") == [(0,)]
 
 
-@pytest.mark.asyncio
 async def test_nul_in_keywords_remains_lossless(app_config: AppConfig) -> None:
     keywords = "visible\x00private"
     _write_inpx(app_config.catalog.inpx_path, _line(KEYWORDS=keywords))
@@ -897,7 +877,6 @@ async def test_nul_in_keywords_remains_lossless(app_config: AppConfig) -> None:
     assert _query(app_config.database.path, "SELECT keywords FROM book") == [(keywords,)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("lines", "batch_size", "expected"),
     [
@@ -922,7 +901,6 @@ async def test_failed_batch_counters_include_only_committed_books(
     ) == [expected]
 
 
-@pytest.mark.asyncio
 async def test_projection_count_mismatch_prevents_activation(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -946,7 +924,6 @@ async def test_projection_count_mismatch_prevents_activation(
     ]
 
 
-@pytest.mark.asyncio
 async def test_archive_symlink_escape_is_unavailable_on_import_and_refresh(
     app_config: AppConfig,
 ) -> None:
@@ -965,7 +942,6 @@ async def test_archive_symlink_escape_is_unavailable_on_import_and_refresh(
     assert refreshed == [(0,)]
 
 
-@pytest.mark.asyncio
 async def test_cleanup_inactive_deletes_large_generation_in_bounded_batches(
     app_config: AppConfig,
 ) -> None:
@@ -1043,7 +1019,6 @@ async def test_cleanup_inactive_deletes_large_generation_in_bounded_batches(
     ]
 
 
-@pytest.mark.asyncio
 async def test_hash_rejects_metadata_instability(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1065,7 +1040,6 @@ async def test_hash_rejects_metadata_instability(
         await hash_source(app_config.catalog.inpx_path, metadata)
 
 
-@pytest.mark.asyncio
 async def test_repository_state_guards_cannot_fail_an_active_generation(
     app_config: AppConfig,
 ) -> None:

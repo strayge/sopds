@@ -1,7 +1,5 @@
 """Streaming generation import and atomic activation orchestration."""
 
-from __future__ import annotations
-
 import asyncio
 import base64
 import hashlib

@@ -1,7 +1,5 @@
 """Strict, bounded-memory parsing of INPX catalog archives."""
 
-from __future__ import annotations
-
 import re
 import stat
 from collections.abc import Generator, Iterator

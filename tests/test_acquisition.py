@@ -1,7 +1,5 @@
 """Original acquisition, streaming, and presentation tests."""
 
-from __future__ import annotations
-
 import asyncio
 import io
 import os
@@ -74,7 +72,33 @@ def _assert_no_extraction(root: Path) -> None:
     assert not list(root.glob("**/original.fb2"))
 
 
-@pytest.mark.asyncio
+async def test_description_revision_uses_archive_and_member_crc32(tmp_path: Path) -> None:
+    archive_path = tmp_path / "books.zip"
+    _zip(archive_path, [("original.fb2", b"content")])
+    store = ZipOriginalStore(tmp_path)
+
+    first = await store.describe(_target())
+    second = await store.describe(_target())
+    stream = await store.open(_target())
+
+    archive_stat = archive_path.stat()
+    assert first == second == stream.source_revision
+    assert first.archive_size == archive_stat.st_size
+    assert first.archive_mtime_ns == archive_stat.st_mtime_ns
+    assert first.member_crc32 == zlib.crc32(b"content")
+    await stream.aclose()
+
+    os.utime(
+        archive_path,
+        ns=(archive_stat.st_atime_ns, archive_stat.st_mtime_ns + 1_000_000_000),
+    )
+    changed = await store.describe(_target())
+
+    assert changed != first
+    assert changed.archive_mtime_ns != first.archive_mtime_ns
+    await store.shutdown()
+
+
 async def test_streams_original_in_bounded_chunks_and_releases_admission(tmp_path: Path) -> None:
     body = b"x" * (CHUNK_SIZE * 2 + 17)
     _zip(tmp_path / "books.zip", [("original.fb2", body)])
@@ -91,7 +115,6 @@ async def test_streams_original_in_bounded_chunks_and_releases_admission(tmp_pat
     _assert_no_extraction(tmp_path)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "archive",
     [
@@ -111,7 +134,6 @@ async def test_rejects_unsafe_archive_paths(tmp_path: Path, archive: str) -> Non
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "member", ["", "/book.fb2", "../book.fb2", "C:/book.fb2", "a\\b.fb2", "bad\r.fb2"]
 )
@@ -123,7 +145,6 @@ async def test_rejects_unsafe_member_paths(tmp_path: Path, member: str) -> None:
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_allows_in_root_symlink_chain_and_rejects_escape(tmp_path: Path) -> None:
     inside = tmp_path / "inside"
     inside.mkdir()
@@ -141,7 +162,6 @@ async def test_allows_in_root_symlink_chain_and_rejects_escape(tmp_path: Path) -
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_rejects_archive_replaced_by_outside_symlink_during_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -166,7 +186,6 @@ async def test_rejects_archive_replaced_by_outside_symlink_during_open(
         outside.unlink()
 
 
-@pytest.mark.asyncio
 async def test_disappearance_between_resolution_and_open_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -183,7 +202,6 @@ async def test_disappearance_between_resolution_and_open_is_unavailable(
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_fifo_archive_fails_promptly_without_consuming_admission_or_worker(
     tmp_path: Path,
 ) -> None:
@@ -202,7 +220,6 @@ async def test_fifo_archive_fails_promptly_without_consuming_admission_or_worker
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_directory_archive_is_rejected_as_unsafe(tmp_path: Path) -> None:
     (tmp_path / "books.zip").mkdir()
     store = ZipOriginalStore(tmp_path)
@@ -213,7 +230,6 @@ async def test_directory_archive_is_rejected_as_unsafe(tmp_path: Path) -> None:
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_exact_member_selection_missing_duplicate_directory_and_symlink(
     tmp_path: Path,
 ) -> None:
@@ -253,7 +269,6 @@ async def test_exact_member_selection_missing_duplicate_directory_and_symlink(
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_encrypted_member_is_rejected_before_open(tmp_path: Path) -> None:
     _zip(tmp_path / "books.zip", [("original.fb2", b"content")])
     payload = bytearray((tmp_path / "books.zip").read_bytes())
@@ -269,7 +284,6 @@ async def test_encrypted_member_is_rejected_before_open(tmp_path: Path) -> None:
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_crc_corruption_is_detected_while_streaming_and_cleans_up(tmp_path: Path) -> None:
     with zipfile.ZipFile(tmp_path / "books.zip", "w", zipfile.ZIP_STORED) as archive:
         archive.writestr("original.fb2", b"content")
@@ -287,7 +301,6 @@ async def test_crc_corruption_is_detected_while_streaming_and_cleans_up(tmp_path
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_size_malformed_and_truncated_archives_are_typed(tmp_path: Path) -> None:
     _zip(tmp_path / "books.zip", [("original.fb2", b"content")])
     store = ZipOriginalStore(tmp_path)
@@ -306,7 +319,6 @@ async def test_size_malformed_and_truncated_archives_are_typed(tmp_path: Path) -
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_corrupt_deflate_decoder_error_is_typed_and_cleans_up(tmp_path: Path) -> None:
     body = b"highly compressible content" * 100
     _zip(tmp_path / "books.zip", [("original.fb2", body)])
@@ -327,7 +339,6 @@ async def test_corrupt_deflate_decoder_error_is_typed_and_cleans_up(tmp_path: Pa
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_read_failure_cleans_up_and_releases_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -344,7 +355,6 @@ async def test_read_failure_cleans_up_and_releases_admission(
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_fifth_stream_waits_for_an_admission_slot(tmp_path: Path) -> None:
     _zip(tmp_path / "books.zip", [("original.fb2", b"content")])
     store = ZipOriginalStore(tmp_path)
@@ -360,7 +370,6 @@ async def test_fifth_stream_waits_for_an_admission_slot(tmp_path: Path) -> None:
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_cancellation_after_registration_releases_exactly_one_slot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -398,7 +407,6 @@ async def test_cancellation_after_registration_releases_exactly_one_slot(
     await store.shutdown()
 
 
-@pytest.mark.asyncio
 async def test_shutdown_closes_streams_and_rejects_admission(tmp_path: Path) -> None:
     _zip(tmp_path / "books.zip", [("original.fb2", b"content")])
     store = ZipOriginalStore(tmp_path)
@@ -411,7 +419,6 @@ async def test_shutdown_closes_streams_and_rejects_admission(tmp_path: Path) -> 
         await store.open(_target())
 
 
-@pytest.mark.asyncio
 async def test_cancelled_first_shutdown_does_not_cancel_executor_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -443,7 +450,6 @@ async def test_cancelled_first_shutdown_does_not_cancel_executor_cleanup(
     assert completed.is_set()
 
 
-@pytest.mark.asyncio
 async def test_cancellation_closes_stream_and_releases_slot(tmp_path: Path) -> None:
     body = b"x" * (CHUNK_SIZE * 3)
     _zip(tmp_path / "books.zip", [("original.fb2", body)])

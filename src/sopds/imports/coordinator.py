@@ -1,7 +1,5 @@
 """Singleton import coordination, change checks, and recovery."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from contextlib import suppress
