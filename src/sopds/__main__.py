@@ -1,12 +1,15 @@
 """Command-line entry point for the single-process server."""
 
 import argparse
+import asyncio
 from pathlib import Path
 
 import uvicorn
 
 from sopds.app import create_app
 from sopds.config import ConfigurationError, load_config
+from sopds.db.connection import DatabaseError
+from sopds.db.migrations_runner import MigrationError, apply_migrations
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +30,11 @@ def main() -> None:
     try:
         config = load_config(arguments.config)
     except ConfigurationError as error:
+        parser.error(str(error))
+
+    try:
+        asyncio.run(apply_migrations(config.database.path))
+    except (DatabaseError, MigrationError) as error:
         parser.error(str(error))
 
     uvicorn.run(

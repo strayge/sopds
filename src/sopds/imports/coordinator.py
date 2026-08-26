@@ -1,0 +1,105 @@
+"""Singleton import coordination, change checks, and recovery."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from sopds.db.models import ImportState, ImportTrigger
+from sopds.db.repository import DEFAULT_BATCH_SIZE, CatalogRepository
+from sopds.imports.availability import archive_availability_rows
+from sopds.imports.fingerprint import SourceFingerprint, hash_source, stat_source
+from sopds.imports.service import CatalogImportService
+from sopds.imports.status import ImportOutcome, ImportResult, ImportStatus
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class ImportCoordinator:
+    """Reject overlapping requests in the single-process, single-Uvicorn-worker runtime.
+
+    The lock is intentionally process-local. Production must retain the documented one-process,
+    one-worker deployment invariant unless coordination is replaced with a database lease.
+    """
+
+    def __init__(
+        self,
+        repository: CatalogRepository,
+        source_path: Path,
+        archive_root: Path,
+        *,
+        namespace: str = "default",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> None:
+        self._repository = repository
+        self._source_path = source_path
+        self._archive_root = archive_root
+        self._namespace = namespace
+        self._service = CatalogImportService(
+            repository, source_path, archive_root, namespace=namespace, batch_size=batch_size
+        )
+        self._import_lock = asyncio.Lock()
+
+    async def recover(self) -> None:
+        await self._repository.ensure_source(self._namespace, self._source_path)
+        await self._repository.recover()
+
+    async def get_status(self) -> ImportStatus | None:
+        return await self._repository.latest_status()
+
+    async def check_for_changes(self) -> ImportResult:
+        return await self._request(ImportTrigger.SCHEDULED, force=False)
+
+    async def force_import(self) -> ImportResult:
+        return await self._request(ImportTrigger.MANUAL, force=True)
+
+    async def _request(self, trigger: ImportTrigger, *, force: bool) -> ImportResult:
+        if self._import_lock.locked():
+            return ImportResult(ImportOutcome.ALREADY_RUNNING, await self.get_status())
+        await self._import_lock.acquire()
+        try:
+            if trigger is ImportTrigger.SCHEDULED:
+                await self.refresh_archive_availability()
+            await self._repository.ensure_source(self._namespace, self._source_path)
+            try:
+                metadata = await stat_source(self._source_path)
+            except OSError as error:
+                return await self._record_source_failure(trigger, error)
+            successful = await self._repository.successful_fingerprint()
+            if not force and successful is not None and metadata.same_metadata(successful):
+                return ImportResult(ImportOutcome.UNCHANGED, await self.get_status())
+            try:
+                fingerprint = await hash_source(self._source_path, metadata)
+            except OSError as error:
+                return await self._record_source_failure(trigger, error, metadata)
+            if not force and successful is not None and fingerprint.sha256 == successful.sha256:
+                await self._repository.update_fingerprint_metadata(fingerprint)
+                return ImportResult(ImportOutcome.CONTENT_UNCHANGED, await self.get_status())
+            result = await self._service.import_source(trigger, fingerprint)
+            await self._repository.cleanup_inactive()
+            return result
+        finally:
+            self._import_lock.release()
+
+    async def _record_source_failure(
+        self,
+        trigger: ImportTrigger,
+        error: OSError,
+        fingerprint: SourceFingerprint | None = None,
+    ) -> ImportResult:
+        _LOGGER.warning("Catalog source check failed: %s", type(error).__name__)
+        run_id = await self._repository.create_run(trigger, fingerprint)
+        await self._repository.finish_failed(
+            run_id,
+            None,
+            ImportState.FAILED,
+            "Could not read the configured catalog source",
+            (0, 0, 0, 0),
+        )
+        return ImportResult(ImportOutcome.FAILED, await self.get_status())
+
+    async def refresh_archive_availability(self) -> None:
+        archives = await self._repository.active_archives()
+        values = await asyncio.to_thread(archive_availability_rows, self._archive_root, archives)
+        await self._repository.update_archive_availability(values)

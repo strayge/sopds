@@ -1,10 +1,12 @@
 """Shared test configuration."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from sopds.config import AppConfig
+from sopds.db.migrations_runner import apply_migrations
 
 
 @pytest.fixture
@@ -34,3 +36,10 @@ def app_config(tmp_path: Path) -> AppConfig:
             },
         }
     )
+
+
+@pytest.fixture
+def migrated_app_config(app_config: AppConfig) -> AppConfig:
+    """Mirror production by applying migrations before application lifespan."""
+    asyncio.run(apply_migrations(app_config.database.path))
+    return app_config

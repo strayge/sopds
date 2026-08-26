@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN useradd --create-home --uid 10001 sopds
+RUN useradd --create-home --uid 1000 sopds
 
 COPY requirements.freeze.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.freeze.txt
