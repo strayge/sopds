@@ -2,9 +2,12 @@
 
 import argparse
 import asyncio
+from copy import deepcopy
 from pathlib import Path
+from typing import Any, cast
 
 import uvicorn
+from uvicorn.config import LOGGING_CONFIG
 
 from sopds.app import create_app
 from sopds.config import ConfigurationError, load_config
@@ -22,6 +25,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to the application TOML file",
     )
     return parser
+
+
+def _logging_config() -> dict[str, Any]:
+    config = deepcopy(LOGGING_CONFIG)
+    loggers = cast(dict[str, Any], config["loggers"])
+    loggers["sopds"] = {
+        "handlers": ["default"],
+        "level": "INFO",
+        "propagate": False,
+    }
+    return config
 
 
 def main() -> None:
@@ -42,6 +56,7 @@ def main() -> None:
         host=config.server.host,
         port=config.server.port,
         workers=1,
+        log_config=_logging_config(),
     )
 
 

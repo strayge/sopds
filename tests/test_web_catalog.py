@@ -349,7 +349,7 @@ def test_import_status_polls_only_while_running() -> None:
     assert "Completed" in terminal.text
 
 
-def test_manual_import_requires_csrf_and_reports_acceptance_or_conflict() -> None:
+def test_manual_import_requires_csrf_and_reports_current_run() -> None:
     imports = _Imports(_status(ImportState.RUNNING))
     app, _, _ = _app(imports)
     csrf_token = app.state.csrf_token
@@ -361,7 +361,7 @@ def test_manual_import_requires_csrf_and_reports_acceptance_or_conflict() -> Non
         imports.status = _status(ImportState.RUNNING, run_id=2)
         started = client.get("/imports/status?after_run_id=1")
         imports.accept = False
-        conflict = client.post("/imports", headers={"X-CSRF-Token": csrf_token})
+        already_running = client.post("/imports", headers={"X-CSRF-Token": csrf_token})
 
     assert missing.status_code == 403
     assert invalid.status_code == 403
@@ -371,6 +371,6 @@ def test_manual_import_requires_csrf_and_reports_acceptance_or_conflict() -> Non
     assert "after_run_id=1" in accepted.text
     assert "Waiting for the import run" in pending.text
     assert "2 imported" in started.text
-    assert conflict.status_code == 409
-    assert "already running" in conflict.text
+    assert already_running.status_code == 200
+    assert "already running" in already_running.text
     assert imports.started == 2

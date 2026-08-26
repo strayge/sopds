@@ -74,7 +74,9 @@ class ImportCoordinator:
             or self._manual_reserved
             or (self._manual_task is not None and not self._manual_task.done())
         ):
+            _LOGGER.info("Manual catalog import rejected because another import is running")
             return False
+        _LOGGER.info("Manual catalog import accepted")
         self._manual_reserved = True
         try:
             task = asyncio.create_task(
@@ -114,9 +116,18 @@ class ImportCoordinator:
             and current is self._manual_task
         )
         if (self._manual_reserved and not owns_manual_reservation) or self._import_lock.locked():
+            _LOGGER.info(
+                "Catalog import request rejected because another import is running (trigger=%s)",
+                trigger.value,
+            )
             return ImportResult(ImportOutcome.ALREADY_RUNNING, await self.get_status())
         await self._import_lock.acquire()
         try:
+            _LOGGER.info(
+                "Catalog source check started (trigger=%s, force=%s)",
+                trigger.value,
+                force,
+            )
             if trigger is ImportTrigger.SCHEDULED:
                 await self.refresh_archive_availability()
             await self._repository.ensure_source(self._namespace, self._source_path)
@@ -126,6 +137,7 @@ class ImportCoordinator:
                 return await self._record_source_failure(trigger, error)
             successful = await self._repository.successful_fingerprint()
             if not force and successful is not None and metadata.same_metadata(successful):
+                _LOGGER.info("Catalog source metadata is unchanged")
                 return ImportResult(ImportOutcome.UNCHANGED, await self.get_status())
             try:
                 fingerprint = await hash_source(self._source_path, metadata)
@@ -133,9 +145,15 @@ class ImportCoordinator:
                 return await self._record_source_failure(trigger, error, metadata)
             if not force and successful is not None and fingerprint.sha256 == successful.sha256:
                 await self._repository.update_fingerprint_metadata(fingerprint)
+                _LOGGER.info("Catalog source content is unchanged")
                 return ImportResult(ImportOutcome.CONTENT_UNCHANGED, await self.get_status())
             result = await self._service.import_source(trigger, fingerprint)
             await self._repository.cleanup_inactive()
+            _LOGGER.info(
+                "Catalog import request finished (trigger=%s, outcome=%s)",
+                trigger.value,
+                result.outcome.value,
+            )
             return result
         finally:
             self._import_lock.release()

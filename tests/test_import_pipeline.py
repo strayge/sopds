@@ -279,6 +279,33 @@ async def test_bulk_and_single_record_batches_persist_identical_catalogs(
     assert _catalog_snapshot(bulk_config.database.path) == single_record_batches
 
 
+async def test_import_emits_start_progress_and_completion_logs(
+    app_config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(service_module, "_PROGRESS_RECORD_INTERVAL", 1)
+    caplog.set_level("INFO", logger="sopds.imports")
+    _write_inpx(app_config.catalog.inpx_path, _line(), _line(FILE="gone", DEL="1"))
+
+    async with _coordinator(app_config) as (coordinator, _):
+        result = await coordinator.check_for_changes()
+
+    assert result.outcome is ImportOutcome.IMPORTED
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Catalog source check started" in message for message in messages)
+    assert any("Catalog import started" in message for message in messages)
+    assert any(
+        "Catalog import progress" in message
+        and "read=2" in message
+        and "imported=1" in message
+        and "deleted=1" in message
+        for message in messages
+    )
+    assert any("Catalog import activated" in message for message in messages)
+    assert any("outcome=imported" in message for message in messages)
+
+
 async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config: AppConfig) -> None:
     _write_inpx(app_config.catalog.inpx_path, _line(), _line(FILE="gone", DEL="1"))
     archive_path = app_config.catalog.archive_root / "nested" / "books.zip"

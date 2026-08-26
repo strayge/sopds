@@ -31,6 +31,7 @@ from sopds.imports.inpx import InpxParserError, InpxRecord, InpxRecordIterator, 
 from sopds.imports.status import ImportOutcome, ImportResult, ImportState, ImportTrigger
 
 _LOGGER = logging.getLogger(__name__)
+_PROGRESS_RECORD_INTERVAL = 100_000
 
 
 class SourceChangedError(RuntimeError):
@@ -121,8 +122,15 @@ class CatalogImportService:
     ) -> ImportResult:
         counters = [0, 0, 0, 0]
         run_id, generation_id = await self._setup_import(trigger, fingerprint, counters)
+        _LOGGER.info(
+            "Catalog import started (run_id=%d, generation_id=%d, trigger=%s)",
+            run_id,
+            generation_id,
+            trigger.value,
+        )
         worker: _ParserWorker | None = None
         activation_committed = False
+        next_progress_record = _PROGRESS_RECORD_INTERVAL
         try:
             ids = _MutableIds.from_counters(await self._repository.id_counters())
             archives: dict[str, int] = {}
@@ -148,6 +156,16 @@ class CatalogImportService:
                     raise
                 counters[1] += imported
                 await self._repository.update_run_counters(run_id, _counter_tuple(counters))
+                if counters[0] >= next_progress_record:
+                    _LOGGER.info(
+                        "Catalog import progress "
+                        "(run_id=%d, read=%d, imported=%d, deleted=%d, rejected=%d)",
+                        run_id,
+                        *counters,
+                    )
+                    next_progress_record = (
+                        counters[0] // _PROGRESS_RECORD_INTERVAL + 1
+                    ) * _PROGRESS_RECORD_INTERVAL
             if counters[0] != counters[1] + counters[2] or counters[3] != 0:
                 raise CatalogDataError("Import counters failed structural validation")
             await self._repository.validate_generation_counts(generation_id, counters[1])
@@ -170,6 +188,13 @@ class CatalogImportService:
                     activation_committed = True
                 raise
             activation_committed = True
+            _LOGGER.info(
+                "Catalog import activated "
+                "(run_id=%d, generation_id=%d, read=%d, imported=%d, deleted=%d, rejected=%d)",
+                run_id,
+                generation_id,
+                *counters,
+            )
             try:
                 status = await self._repository.latest_status()
             except Exception:
@@ -178,6 +203,12 @@ class CatalogImportService:
             return ImportResult(ImportOutcome.IMPORTED, status)
         except asyncio.CancelledError:
             if not activation_committed:
+                _LOGGER.warning(
+                    "Catalog import interrupted "
+                    "(run_id=%d, read=%d, imported=%d, deleted=%d, rejected=%d)",
+                    run_id,
+                    *counters,
+                )
                 await self._finish_failed(
                     run_id,
                     generation_id,
@@ -190,7 +221,11 @@ class CatalogImportService:
             if activation_committed:
                 _LOGGER.exception("Catalog import follow-up failed after activation")
                 return ImportResult(ImportOutcome.IMPORTED, None)
-            _LOGGER.exception("Catalog import failed")
+            _LOGGER.exception(
+                "Catalog import failed (run_id=%d, read=%d, imported=%d, deleted=%d, rejected=%d)",
+                run_id,
+                *counters,
+            )
             if isinstance(error, InpxParserError):
                 counters[3] += 1
             await self._finish_failed(

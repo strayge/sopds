@@ -369,7 +369,6 @@ async def start_import(request: Request) -> Response:
     return await _status_response(
         request,
         await coordinator.get_status(),
-        status_code=409,
         message="An import is already running",
         poll=True,
     )
