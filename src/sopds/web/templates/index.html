@@ -3,28 +3,68 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SOPDS</title>
+    <title>SOPDS catalog</title>
     <script src="{{ url_for('static', path='/vendor/htmx/htmx-2.0.10.min.js') }}"></script>
     <style>
-      body {
-        max-width: 52rem;
-        margin: 4rem auto;
-        padding: 0 1rem;
-        font-family: system-ui, sans-serif;
-      }
+      body { max-width: 64rem; margin: 2rem auto; padding: 0 1rem; font-family: system-ui, sans-serif; }
+      form { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; }
+      label { display: grid; gap: .2rem; }
+      input, select, button { padding: .45rem; }
+      .book { padding: .8rem 0; border-bottom: 1px solid #ddd; }
+      .muted { color: #666; }
+      .error { color: #a21b1b; }
       .status-ok { color: #18753c; }
     </style>
   </head>
   <body>
-    <main>
+    <header>
       <h1>SOPDS</h1>
-      <p>The new INPX-backed catalog is ready for implementation.</p>
-      <p
-        id="health"
-        hx-get="/health-fragment"
-        hx-trigger="load, every 30s"
-        hx-swap="innerHTML"
-      >
+      <p class="muted">INPX-backed catalog</p>
+    </header>
+    <main>
+      <form action="/" method="get" hx-get="/catalog-fragment" hx-target="#catalog-results">
+        <label>Search
+          <input name="q" value="{{ catalog_request.query }}" maxlength="200" placeholder="Title, author, or series">
+        </label>
+        <label>Language
+          <select name="language">
+            <option value="">All</option>
+            {% for option in filters.languages %}<option value="{{ option.value }}"{% if catalog_request.language == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Genre
+          <select name="genre">
+            <option value="">All</option>
+            {% for option in filters.genres %}<option value="{{ option.value }}"{% if catalog_request.genre == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Format
+          <select name="original_format">
+            <option value="">All</option>
+            {% for option in filters.original_formats %}<option value="{{ option.value }}"{% if catalog_request.original_format == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+          </select>
+        </label>
+        <button type="submit">Find</button>
+      </form>
+
+      <section id="catalog-results">
+        {% include "partials/catalog_results.html" %}
+      </section>
+
+      <section aria-labelledby="import-heading">
+        <h2 id="import-heading">Catalog import</h2>
+        <button
+          type="button"
+          hx-post="/imports"
+          hx-target="#import-status"
+          hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
+        >Import now</button>
+        <div id="import-status">
+          {% include "partials/import_status.html" %}
+        </div>
+      </section>
+
+      <p id="health" hx-get="/health-fragment" hx-trigger="load, every 30s" hx-swap="innerHTML">
         Checking application health…
       </p>
     </main>

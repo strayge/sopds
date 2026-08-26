@@ -1,0 +1,16 @@
+<div{% if poll or (status and status.state == ImportState.RUNNING) %} hx-get="/imports/status{% if poll_after_run_id is not none %}?after_run_id={{ poll_after_run_id }}{% endif %}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  {% if message %}<p>{{ message }}</p>{% endif %}
+  {% if pending %}
+    <p class="muted">Waiting for the import run to begin…</p>
+  {% elif status %}
+    <dl>
+      <dt>Trigger</dt><dd>{{ status.trigger.value }}</dd>
+      <dt>State</dt><dd>{{ status.state.value }}</dd>
+      <dt>Records</dt><dd>{{ status.records_imported }} imported, {{ status.records_deleted }} deleted, {{ status.records_rejected }} rejected ({{ status.records_read }} read)</dd>
+      {% if status.error_summary %}<dt>Error</dt><dd class="error">{{ status.error_summary }}</dd>{% endif %}
+      {% if status.finished_at %}<dt>Completed</dt><dd>{{ status.finished_at }}</dd>{% endif %}
+    </dl>
+  {% else %}
+    <p>No import has run yet.</p>
+  {% endif %}
+</div>

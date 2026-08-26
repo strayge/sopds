@@ -1,0 +1,18 @@
+{% if page.books %}
+  <p class="muted">Showing {{ page.books|length }} books</p>
+  {% for book in page.books %}
+    <article class="book">
+      <a href="/books/{{ book.public_id }}"><strong>{{ book.title }}</strong></a>
+      {% if book.authors %}<div>{{ book.authors|join(', ') }}</div>{% endif %}
+      <div class="muted">
+        {% if book.series %}{{ book.series }}{% if book.series_number %} #{{ book.series_number }}{% endif %} · {% endif %}
+        {{ book.original_format }}{% if book.language %} · {{ book.language }}{% endif %}
+      </div>
+    </article>
+  {% endfor %}
+  {% if next_href %}
+    <p><a href="{{ next_href }}" hx-get="{{ next_hx_url }}" hx-target="#catalog-results" hx-swap="innerHTML">Next page</a></p>
+  {% endif %}
+{% else %}
+  <p>No available books found.</p>
+{% endif %}

@@ -7,7 +7,6 @@ import base64
 import hashlib
 import logging
 import sqlite3
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
@@ -15,7 +14,7 @@ from pathlib import Path
 
 from tortoise.exceptions import BaseORMException
 
-from sopds.db.models import ImportState, ImportTrigger
+from sopds.catalog.search import normalize_text
 from sopds.db.repository import DEFAULT_BATCH_SIZE, CatalogRepository, IdCounters
 from sopds.db.rows import (
     ArchiveRow,
@@ -31,7 +30,7 @@ from sopds.db.rows import (
 from sopds.imports.availability import archive_availability
 from sopds.imports.fingerprint import SourceFingerprint, hash_source
 from sopds.imports.inpx import InpxParserError, InpxRecord, InpxRecordIterator, parse_inpx
-from sopds.imports.status import ImportOutcome, ImportResult
+from sopds.imports.status import ImportOutcome, ImportResult, ImportState, ImportTrigger
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -408,11 +407,11 @@ class CatalogImportService:
                 BookSearchRow(
                     book_id=book_id,
                     generation_id=generation_id,
-                    title=record.title,
-                    authors=" ".join(record.authors),
-                    series=record.series or "",
-                    genres=" ".join(record.genres),
-                    language=record.language or "",
+                    title=normalize_text(record.title),
+                    authors=normalize_text(" ".join(record.authors)),
+                    series=normalize_text(record.series or ""),
+                    genres=normalize_text(" ".join(record.genres)),
+                    language=normalize_text(record.language or ""),
                 )
             )
         await self._repository.write_batch(
@@ -431,7 +430,7 @@ class CatalogImportService:
 
 
 def normalize_sort_key(value: str) -> str:
-    return unicodedata.normalize("NFKC", value).casefold().replace("\u0451", "\u0435")
+    return normalize_text(value)
 
 
 def _validate_mapped_metadata(record: InpxRecord) -> None:

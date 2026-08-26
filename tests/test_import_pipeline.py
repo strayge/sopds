@@ -28,8 +28,6 @@ from sopds.db.models import (
     GenerationState,
     Genre,
     ImportRun,
-    ImportState,
-    ImportTrigger,
     Series,
 )
 from sopds.db.repository import CatalogRepository, IdCounters
@@ -45,7 +43,7 @@ from sopds.imports.fingerprint import (
 )
 from sopds.imports.inpx import InpxRecord
 from sopds.imports.service import CatalogImportService, derive_public_id, normalize_sort_key
-from sopds.imports.status import ImportOutcome, ImportResult
+from sopds.imports.status import ImportOutcome, ImportResult, ImportState, ImportTrigger
 
 _FIELDS = (
     "AUTHOR",
@@ -330,7 +328,7 @@ async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config:
     ]
     assert _query(
         app_config.database.path, "SELECT title,authors,series,genres,language FROM book_fts"
-    ) == [("Ёжик", "Иван Ёлкин Jane Doe", "Серия", "sf prose", "ru")]
+    ) == [("ежик", "иван елкин jane doe", "серия", "sf prose", "ru")]
     assert normalize_sort_key("  ЁЖ ") == "  еж "
 
 

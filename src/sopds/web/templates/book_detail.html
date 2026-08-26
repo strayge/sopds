@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ book.title }} · SOPDS</title></head>
+  <body>
+    <main>
+      <p><a href="/">← Catalog</a></p>
+      <h1>{{ book.title }}</h1>
+      {% if book.authors %}<p><strong>Authors:</strong> {{ book.authors|join(', ') }}</p>{% endif %}
+      {% if book.series %}<p><strong>Series:</strong> {{ book.series }}{% if book.series_number %} #{{ book.series_number }}{% endif %}</p>{% endif %}
+      {% if book.genres %}<p><strong>Genres:</strong> {% for code, label in book.genres %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+      <p><strong>Original format:</strong> {{ book.original_format }}</p>
+      {% if book.language %}<p><strong>Language:</strong> {{ book.language }}</p>{% endif %}
+      {% if book.published_date %}<p><strong>Published:</strong> {{ book.published_date }}</p>{% endif %}
+      <p><strong>Size:</strong> {{ book.size }} bytes</p>
+      {% if book.rating is not none %}<p><strong>Rating:</strong> {{ book.rating }}</p>{% endif %}
+      {% if book.keywords %}<p><strong>Keywords:</strong> {{ book.keywords }}</p>{% endif %}
+    </main>
+  </body>
+</html>

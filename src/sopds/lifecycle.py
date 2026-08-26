@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from fastapi import FastAPI
 
+from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig
 from sopds.db.connection import close_database, initialize_database
 from sopds.db.migrations_runner import validate_migration_state
@@ -23,18 +24,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: AppConfig = app.state.config
     await validate_migration_state(config.database.path)
     database_context = await initialize_database(config.database.path)
+    repository = CatalogRepository(database_context.db())
     coordinator = ImportCoordinator(
-        CatalogRepository(database_context.db()),
+        repository,
         config.catalog.inpx_path,
         config.catalog.archive_root,
     )
+    catalog = CatalogService(repository, app.state.cursor_key)
     app.state.import_coordinator = coordinator
+    app.state.catalog = catalog
     scheduler: asyncio.Task[None] | None = None
     try:
         await coordinator.recover()
         app.state.started_at = datetime.now(UTC)
         scheduler = asyncio.create_task(
-            _scheduled_checks(coordinator, config.catalog.check_interval_hours * 3600),
+            _scheduled_checks(
+                coordinator,
+                catalog,
+                config.catalog.check_interval_hours * 3600,
+            ),
             name="catalog-change-checker",
         )
         yield
@@ -43,10 +51,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             scheduler.cancel()
             with suppress(asyncio.CancelledError):
                 await scheduler
+        await coordinator.shutdown()
         await close_database(database_context)
 
 
-async def _scheduled_checks(coordinator: ImportCoordinator, interval_seconds: int) -> None:
+async def _scheduled_checks(
+    coordinator: ImportCoordinator,
+    catalog: CatalogService,
+    interval_seconds: float,
+) -> None:
     """Run immediately, then isolate failures and wait before every retry."""
     while True:
         try:
@@ -55,4 +68,5 @@ async def _scheduled_checks(coordinator: ImportCoordinator, interval_seconds: in
             raise
         except Exception:
             _LOGGER.exception("Scheduled catalog check failed")
+        catalog.invalidate_filters()
         await asyncio.sleep(interval_seconds)

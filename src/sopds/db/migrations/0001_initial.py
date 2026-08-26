@@ -4,7 +4,8 @@ from tortoise.indexes import Index
 from tortoise.migrations import operations as ops
 from tortoise.migrations.constraints import CheckConstraint
 
-from sopds.db.models import GenerationState, ImportState, ImportTrigger
+from sopds.db.models import GenerationState
+from sopds.imports.status import ImportState, ImportTrigger
 
 
 class Migration(migrations.Migration):

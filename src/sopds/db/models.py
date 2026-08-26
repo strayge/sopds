@@ -6,17 +6,7 @@ from tortoise import fields
 from tortoise.migrations.constraints import CheckConstraint
 from tortoise.models import Model
 
-
-class ImportTrigger(StrEnum):
-    SCHEDULED = "scheduled"
-    MANUAL = "manual"
-
-
-class ImportState(StrEnum):
-    RUNNING = "running"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    INTERRUPTED = "interrupted"
+from sopds.imports.status import ImportState, ImportTrigger
 
 
 class GenerationState(StrEnum):

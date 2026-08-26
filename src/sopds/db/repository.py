@@ -7,9 +7,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from tortoise.backends.base.client import BaseDBAsyncClient
+from tortoise.expressions import Q
 from tortoise.functions import Max
+from tortoise.query_utils import Prefetch
+from tortoise.queryset import QuerySet
 from tortoise.transactions import in_transaction
 
+from sopds.catalog.contracts import (
+    BookDetail,
+    BookSummary,
+    CatalogFilters,
+    FilterOption,
+)
 from sopds.db.configuration import CONNECTION_NAME
 from sopds.db.models import (
     Archive,
@@ -23,13 +32,11 @@ from sopds.db.models import (
     GenerationState,
     Genre,
     ImportRun,
-    ImportState,
-    ImportTrigger,
     Series,
 )
 from sopds.db.rows import CatalogWriteBatch
 from sopds.imports.fingerprint import SourceFingerprint
-from sopds.imports.status import ImportStatus
+from sopds.imports.status import ImportState, ImportStatus, ImportTrigger
 
 DEFAULT_BATCH_SIZE = 2_000
 
@@ -532,3 +539,207 @@ class CatalogRepository:
                     batch_size=self._cleanup_batch_size,
                 )
             )
+
+    async def active_generation_id(self) -> int | None:
+        values = await (
+            CatalogState.filter(id=1).using_db(self._connection).values("active_generation_id")
+        )
+        value = values[0]["active_generation_id"] if values else None
+        return int(value) if value is not None else None
+
+    def _available_books(
+        self,
+        generation_id: int,
+        *,
+        language: str | None,
+        genre: str | None,
+        original_format: str | None,
+    ) -> QuerySet[Book]:
+        query = Book.filter(
+            generation_id=generation_id,
+            archive__available=True,
+        ).using_db(self._connection)
+        if language is not None:
+            query = query.filter(language=language)
+        if genre is not None:
+            query = query.filter(genre_links__genre__code=genre)
+        if original_format is not None:
+            query = query.filter(original_format=original_format)
+        return query
+
+    async def browse_book_ids(
+        self,
+        generation_id: int,
+        *,
+        language: str | None,
+        genre: str | None,
+        original_format: str | None,
+        after: tuple[str, str] | None,
+        limit: int,
+    ) -> list[tuple[int, str, str]]:
+        query = self._available_books(
+            generation_id,
+            language=language,
+            genre=genre,
+            original_format=original_format,
+        )
+        if after is not None:
+            title_sort, public_id = after
+            query = query.filter(
+                Q(title_sort__gt=title_sort) | Q(title_sort=title_sort, public_id__gt=public_id)
+            )
+        rows = await (
+            query.distinct()
+            .order_by("title_sort", "public_id")
+            .limit(limit)
+            .values_list("id", "title_sort", "public_id")
+        )
+        return [
+            (int(book_id), str(title_sort), str(public_id))
+            for book_id, title_sort, public_id in rows
+        ]
+
+    async def search_book_ids(
+        self,
+        generation_id: int,
+        match: str,
+        *,
+        language: str | None,
+        genre: str | None,
+        original_format: str | None,
+        after: tuple[str, str] | None,
+        limit: int,
+    ) -> list[tuple[int, str, str]]:
+        sql = (
+            "SELECT b.id,b.title_sort,b.public_id FROM book_fts "
+            "JOIN book b ON b.id=book_fts.book_id "
+            "JOIN archive a ON a.id=b.archive_id "
+            "WHERE book_fts MATCH ? AND b.generation_id=? "
+            "AND book_fts.generation_id=? AND a.available=1"
+        )
+        parameters: list[int | str] = [match, generation_id, generation_id]
+        if language is not None:
+            sql += " AND b.language=?"
+            parameters.append(language)
+        if original_format is not None:
+            sql += " AND b.original_format=?"
+            parameters.append(original_format)
+        if genre is not None:
+            sql += (
+                " AND EXISTS (SELECT 1 FROM book_genre bg JOIN genre g ON g.id=bg.genre_id "
+                "WHERE bg.book_id=b.id AND g.code=?)"
+            )
+            parameters.append(genre)
+        if after is not None:
+            sql += " AND (b.title_sort>? OR (b.title_sort=? AND b.public_id>?))"
+            parameters.extend((after[0], after[0], after[1]))
+        sql += " ORDER BY b.title_sort,b.public_id LIMIT ?"
+        parameters.append(limit)
+        _, rows = await self._connection.execute_query(sql, parameters)
+        return [(int(row["id"]), str(row["title_sort"]), str(row["public_id"])) for row in rows]
+
+    async def summaries(self, generation_id: int, book_ids: list[int]) -> list[BookSummary]:
+        if not book_ids:
+            return []
+        books = await self._hydrated_books(
+            Book.filter(
+                id__in=book_ids,
+                generation_id=generation_id,
+                archive__available=True,
+            )
+        )
+        by_id = {int(book.id): self._summary(book) for book in books}
+        return [by_id[book_id] for book_id in book_ids if book_id in by_id]
+
+    async def detail(self, generation_id: int, public_id: str) -> BookDetail | None:
+        books = await self._hydrated_books(
+            Book.filter(
+                generation_id=generation_id,
+                public_id=public_id,
+                archive__available=True,
+            )
+        )
+        if not books:
+            return None
+        book = books[0]
+        return BookDetail(
+            public_id=book.public_id,
+            title=book.title,
+            authors=tuple(link.author.name for link in book.author_links),
+            genres=tuple(
+                sorted(
+                    ((link.genre.code, link.genre.label) for link in book.genre_links),
+                    key=lambda item: (item[1].casefold(), item[0]),
+                )
+            ),
+            series=book.series.name if book.series is not None else None,
+            series_number=book.series_number,
+            size=book.size,
+            libid=book.libid,
+            published_date=book.published_date,
+            language=book.language,
+            original_format=book.original_format,
+            rating=book.rating,
+            keywords=book.keywords,
+        )
+
+    async def _hydrated_books(self, query: QuerySet[Book]) -> list[Book]:
+        return await (
+            query.using_db(self._connection)
+            .select_related("series")
+            .prefetch_related(
+                Prefetch(
+                    "author_links",
+                    queryset=BookAuthor.all().order_by("position").select_related("author"),
+                ),
+                Prefetch(
+                    "genre_links",
+                    queryset=BookGenre.all().select_related("genre"),
+                ),
+            )
+        )
+
+    @staticmethod
+    def _summary(book: Book) -> BookSummary:
+        return BookSummary(
+            public_id=book.public_id,
+            title=book.title,
+            authors=tuple(link.author.name for link in book.author_links),
+            series=book.series.name if book.series is not None else None,
+            series_number=book.series_number,
+            language=book.language,
+            original_format=book.original_format,
+        )
+
+    async def catalog_filters(self, generation_id: int) -> CatalogFilters:
+        base = Book.filter(
+            generation_id=generation_id,
+            archive__generation_id=generation_id,
+            archive__available=True,
+        ).using_db(self._connection)
+        languages = sorted(
+            str(value)
+            for value in await base.exclude(language=None)
+            .distinct()
+            .values_list("language", flat=True)
+        )
+        formats = sorted(
+            str(value) for value in await base.distinct().values_list("original_format", flat=True)
+        )
+        genre_rows = await (
+            Genre.filter(
+                generation_id=generation_id,
+                book_links__book__generation_id=generation_id,
+                book_links__book__archive__generation_id=generation_id,
+                book_links__book__archive__available=True,
+            )
+            .using_db(self._connection)
+            .distinct()
+            .order_by("label_sort", "code")
+            .values_list("code", "label")
+        )
+        return CatalogFilters(
+            languages=tuple(FilterOption(value=value, label=value) for value in languages),
+            genres=tuple(FilterOption(value=code, label=label) for code, label in genre_rows),
+            original_formats=tuple(FilterOption(value=value, label=value) for value in formats),
+        )

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from pathlib import Path
 
-from sopds.db.models import ImportState, ImportTrigger
 from sopds.db.repository import DEFAULT_BATCH_SIZE, CatalogRepository
 from sopds.imports.availability import archive_availability_rows
 from sopds.imports.fingerprint import SourceFingerprint, hash_source, stat_source
 from sopds.imports.service import CatalogImportService
-from sopds.imports.status import ImportOutcome, ImportResult, ImportStatus
+from sopds.imports.status import (
+    ImportOutcome,
+    ImportResult,
+    ImportState,
+    ImportStatus,
+    ImportTrigger,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +46,8 @@ class ImportCoordinator:
             repository, source_path, archive_root, namespace=namespace, batch_size=batch_size
         )
         self._import_lock = asyncio.Lock()
+        self._manual_task: asyncio.Task[ImportResult] | None = None
+        self._manual_reserved = False
 
     async def recover(self) -> None:
         await self._repository.ensure_source(self._namespace, self._source_path)
@@ -54,8 +62,60 @@ class ImportCoordinator:
     async def force_import(self) -> ImportResult:
         return await self._request(ImportTrigger.MANUAL, force=True)
 
+    async def _run_reserved_manual_import(self) -> ImportResult:
+        try:
+            return await self._request(ImportTrigger.MANUAL, force=True)
+        finally:
+            if asyncio.current_task() is self._manual_task:
+                self._manual_reserved = False
+
+    def start_manual_import(self) -> bool:
+        """Reserve admission synchronously so later scheduled checks cannot overtake it."""
+        if (
+            self._import_lock.locked()
+            or self._manual_reserved
+            or (self._manual_task is not None and not self._manual_task.done())
+        ):
+            return False
+        self._manual_reserved = True
+        try:
+            task = asyncio.create_task(
+                self._run_reserved_manual_import(), name="manual-catalog-import"
+            )
+        except Exception:
+            self._manual_reserved = False
+            raise
+        self._manual_task = task
+        task.add_done_callback(self._manual_done)
+        return True
+
+    def _manual_done(self, task: asyncio.Task[ImportResult]) -> None:
+        if self._manual_task is task:
+            self._manual_task = None
+            self._manual_reserved = False
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            _LOGGER.exception("Manual catalog import task failed")
+
+    async def shutdown(self) -> None:
+        task = self._manual_task
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._manual_reserved = False
+
     async def _request(self, trigger: ImportTrigger, *, force: bool) -> ImportResult:
-        if self._import_lock.locked():
+        current = asyncio.current_task()
+        owns_manual_reservation = (
+            trigger is ImportTrigger.MANUAL
+            and self._manual_reserved
+            and current is self._manual_task
+        )
+        if (self._manual_reserved and not owns_manual_reservation) or self._import_lock.locked():
             return ImportResult(ImportOutcome.ALREADY_RUNNING, await self.get_status())
         await self._import_lock.acquire()
         try:

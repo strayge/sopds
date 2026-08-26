@@ -3,9 +3,21 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Protocol
 
-from sopds.db.models import ImportState, ImportTrigger
 from sopds.imports.fingerprint import SourceFingerprint
+
+
+class ImportTrigger(StrEnum):
+    SCHEDULED = "scheduled"
+    MANUAL = "manual"
+
+
+class ImportState(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
 
 
 class ImportOutcome(StrEnum):
@@ -37,3 +49,9 @@ class ImportStatus:
 class ImportResult:
     outcome: ImportOutcome
     status: ImportStatus | None
+
+
+class ImportStatusProvider(Protocol):
+    async def get_status(self) -> ImportStatus | None: ...
+
+    def start_manual_import(self) -> bool: ...
