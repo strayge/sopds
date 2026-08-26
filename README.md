@@ -116,6 +116,18 @@ PYTHONPATH=src lint-imports
 pytest
 ```
 
+## Database migrations
+
+Define schema changes in `src/sopds/db/models.py`, then generate a native Tortoise
+migration instead of writing one manually:
+
+```shell
+PYTHONPATH=src tortoise -c your_module.TORTOISE_ORM makemigrations catalog -n concise_name
+pytest tests/test_database.py
+```
+
+The referenced configuration object should be created with `build_tortoise_config()`.
+
 ## Refresh dependencies
 
 Regenerate the pinned requirement files with uv:

@@ -108,7 +108,7 @@ class Archive(Model):
     class Meta:
         table = "archive"
         unique_together = (("generation", "relative_path"),)
-        indexes = (("generation", "available"),)
+        indexes = (("generation_id", "available"),)
 
 
 class Author(Model):
@@ -124,7 +124,7 @@ class Author(Model):
     class Meta:
         table = "author"
         unique_together = (("generation", "name_sort", "name"),)
-        indexes = (("generation", "name_sort", "id"),)
+        indexes = (("generation_id", "name_sort", "id"),)
 
 
 class Genre(Model):
@@ -141,7 +141,7 @@ class Genre(Model):
     class Meta:
         table = "genre"
         unique_together = (("generation", "code"),)
-        indexes = (("generation", "label_sort", "id"),)
+        indexes = (("generation_id", "label_sort", "id"),)
 
 
 class Series(Model):
@@ -157,7 +157,7 @@ class Series(Model):
     class Meta:
         table = "series"
         unique_together = (("generation", "name_sort", "name"),)
-        indexes = (("generation", "name_sort", "id"),)
+        indexes = (("generation_id", "name_sort", "id"),)
 
 
 class Book(Model):
@@ -194,10 +194,11 @@ class Book(Model):
             ("archive", "member_filename"),
         )
         indexes = (
-            ("generation", "title_sort", "public_id"),
-            ("generation", "series", "series_number", "public_id"),
-            ("generation", "language", "title_sort", "public_id"),
-            ("generation", "libid"),
+            ("series_id",),
+            ("generation_id", "title_sort", "public_id"),
+            ("generation_id", "series_id", "series_number", "public_id"),
+            ("generation_id", "language", "title_sort", "public_id"),
+            ("generation_id", "libid"),
         )
 
 
@@ -214,7 +215,7 @@ class BookAuthor(Model):
     class Meta:
         table = "book_author"
         unique_together = (("book", "author"), ("book", "position"))
-        indexes = (("author", "book"),)
+        indexes = (("author_id", "book_id"),)
 
 
 class BookGenre(Model):
@@ -229,4 +230,4 @@ class BookGenre(Model):
     class Meta:
         table = "book_genre"
         unique_together = (("book", "genre"),)
-        indexes = (("genre", "book"),)
+        indexes = (("genre_id", "book_id"),)

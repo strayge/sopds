@@ -31,6 +31,7 @@ from sopds.db.models import (
 RELATION_INDEXES = {
     ("archive", ("generation_id", "available")),
     ("author", ("generation_id", "name_sort", "id")),
+    ("book", ("series_id",)),
     ("book", ("generation_id", "title_sort", "public_id")),
     ("book", ("generation_id", "series_id", "series_number", "public_id")),
     ("book", ("generation_id", "language", "title_sort", "public_id")),
@@ -70,6 +71,7 @@ async def test_fresh_migration_is_idempotent(tmp_path: Path) -> None:
     assert history == [
         ("catalog", "0001_initial"),
         ("catalog", "0002_fts5"),
+        ("catalog", "0003_book_series_index"),
     ]
 
 
@@ -318,9 +320,9 @@ async def test_runtime_validation_rejects_pending_migrations(tmp_path: Path) -> 
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
     with sqlite3.connect(database_path) as connection:
-        connection.execute("DELETE FROM tortoise_migrations WHERE name = '0002_fts5'")
+        connection.execute("DELETE FROM tortoise_migrations WHERE name = '0003_book_series_index'")
 
-    with pytest.raises(PendingMigrationsError, match="0002_fts5"):
+    with pytest.raises(PendingMigrationsError, match="0003_book_series_index"):
         await validate_migration_state(database_path)
 
 
