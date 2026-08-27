@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC
 
 from sopds.catalog.contracts import (
+    AuthorBookCounts,
     BookDetail,
     CatalogFilters,
     CatalogInputError,
@@ -81,6 +82,7 @@ class CatalogService:
                     original_format=request.original_format,
                     author=request.author,
                     series=request.series,
+                    without_series=request.without_series,
                     after=after,
                     limit=request.page_size + 1,
                 )
@@ -93,6 +95,7 @@ class CatalogService:
                     original_format=request.original_format,
                     author=request.author,
                     series=request.series,
+                    without_series=request.without_series,
                     after=after,
                     limit=request.page_size + 1,
                 )
@@ -134,12 +137,36 @@ class CatalogService:
                 raise CatalogInputError("Catalog changed while loading; retry the request")
         raise AssertionError("Catalog statistics retry bound was bypassed")
 
+    async def author_book_counts(self, author: str) -> AuthorBookCounts:
+        if not author or len(author) > MAX_NAME_FILTER_CHARS or "\x00" in author:
+            raise CatalogInputError("Invalid author")
+        for attempt in range(2):
+            snapshot = await self._repository.active_snapshot()
+            if snapshot.generation_id is None:
+                return AuthorBookCounts(
+                    series=0,
+                    without_series=0,
+                    total=0,
+                    updated_at=snapshot.updated_at,
+                )
+            counts = await self._repository.author_book_counts(snapshot.generation_id, author)
+            if await self._repository.active_snapshot() == snapshot:
+                return AuthorBookCounts(
+                    series=counts.series,
+                    without_series=counts.without_series,
+                    total=counts.total,
+                    updated_at=snapshot.updated_at,
+                )
+            if attempt == 1:
+                raise CatalogInputError("Catalog changed while loading; retry the request")
+        raise AssertionError("Author count retry bound was bypassed")
+
     async def navigation(self, request: NavigationRequest) -> NavigationPage:
         if request.kind not in {"authors", "genres", "series", "languages", "titles"}:
             raise CatalogInputError("Invalid navigation kind")
         if request.kind in {"authors", "series", "titles"}:
             return await self._adaptive_navigation(request)
-        if request.prefix or request.exact:
+        if request.prefix or request.exact or request.author is not None:
             raise CatalogInputError("Prefixes are not supported for this navigation kind")
 
         fingerprint = f"navigation:{request.kind}"
@@ -183,10 +210,19 @@ class CatalogService:
             or type(request.exact) is not bool
         ):
             raise CatalogInputError("Invalid navigation prefix")
+        if request.author is not None and (
+            request.kind != "series"
+            or not request.author
+            or len(request.author) > MAX_NAME_FILTER_CHARS
+            or "\x00" in request.author
+        ):
+            raise CatalogInputError("Invalid navigation author")
         requested_prefix = normalize_text(request.prefix)
         if len(requested_prefix) > MAX_PREFIX_CHARS:
             raise CatalogInputError("Invalid navigation prefix")
-        fingerprint = f"navigation:{request.kind}:{requested_prefix}:{int(request.exact)}"
+        fingerprint = (
+            f"navigation:{request.kind}:{requested_prefix}:{int(request.exact)}:{request.author}"
+        )
 
         for attempt in range(2):
             snapshot = await self._repository.active_snapshot()
@@ -202,7 +238,10 @@ class CatalogService:
             if not request.exact:
                 while True:
                     buckets = await self._repository.navigation_prefix_buckets(
-                        generation_id, request.kind, prefix
+                        generation_id,
+                        request.kind,
+                        prefix,
+                        author=request.author,
                     )
                     total = sum(count for _, count in buckets)
                     if total <= NAVIGATION_GROUP_THRESHOLD:
@@ -221,7 +260,7 @@ class CatalogService:
                         group_items.append(
                             NavigationItem(
                                 prefix,
-                                f"{prefix.capitalize()} (exact) ({terminal_count})",
+                                f"{prefix.capitalize()} (exact)",
                                 terminal_count,
                                 exact=True,
                             )
@@ -229,7 +268,7 @@ class CatalogService:
                     group_items.extend(
                         NavigationItem(
                             prefix + character,
-                            f"{(prefix + character).capitalize()}… ({count})",
+                            f"{(prefix + character).capitalize()}…",
                             count,
                         )
                         for character, count in children
@@ -258,6 +297,7 @@ class CatalogService:
                 request.kind,
                 prefix,
                 exact=request.exact,
+                author=request.author,
                 after=after,
                 limit=PAGE_SIZE + 1,
             )
@@ -286,7 +326,9 @@ class CatalogService:
             leaf_items = (
                 ()
                 if request.kind == "titles"
-                else tuple(NavigationItem(value=row[3], label=row[4]) for row in visible)
+                else tuple(
+                    NavigationItem(value=row[3], label=row[4], count=row[5]) for row in visible
+                )
             )
             return NavigationPage(
                 leaf_items,
@@ -365,6 +407,10 @@ def _validate_filters(request: CatalogRequest) -> None:
             not value or len(value) > MAX_NAME_FILTER_CHARS or "\x00" in value
         ):
             raise CatalogInputError("Invalid catalog filter")
+    if type(request.without_series) is not bool or (
+        request.without_series and request.series is not None
+    ):
+        raise CatalogInputError("Invalid series filter")
 
 
 def _request_fingerprint(request: CatalogRequest, normalized: str) -> str:
@@ -376,6 +422,7 @@ def _request_fingerprint(request: CatalogRequest, normalized: str) -> str:
             request.original_format,
             request.author,
             request.series,
+            request.without_series,
             request.search_field.value,
             request.page_size,
         ],

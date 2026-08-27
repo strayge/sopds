@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from sopds.catalog.contracts import (
+    AuthorBookCounts,
     BookSummary,
     CatalogFilters,
     CatalogPage,
@@ -67,9 +68,15 @@ class _Catalog:
 
     async def navigation(self, request: NavigationRequest) -> NavigationPage:
         self.navigation_requests.append(request)
+        if request.kind == "authors" and request.prefix == "formatted":
+            return NavigationPage(
+                (NavigationItem("Surname,Given,Middle,", "Surname,Given,Middle,", 12),),
+                None,
+                _UPDATED,
+            )
         if request.kind == "authors" and request.prefix == "з":
             return NavigationPage(
-                (NavigationItem("зна", "Зна… (120)", 120),),
+                (NavigationItem("зна", "Зна…", 120),),
                 None,
                 _UPDATED,
                 prefix="з",
@@ -77,7 +84,7 @@ class _Catalog:
             )
         if request.kind == "titles" and self.group_titles and not request.prefix:
             return NavigationPage(
-                (NavigationItem("a", "A… (120)", 120),),
+                (NavigationItem("a", "A…", 120),),
                 None,
                 _UPDATED,
                 grouped=True,
@@ -91,7 +98,7 @@ class _Catalog:
                     BookSummary(
                         public_id="book/one",
                         title="A & <Book>\x01",
-                        authors=(),
+                        authors=("Surname,Given,",),
                         series="Series",
                         series_number="2",
                         language="ru",
@@ -114,6 +121,11 @@ class _Catalog:
 
     async def details(self, _public_id: str) -> None:
         return None
+
+    async def author_book_counts(self, author: str) -> AuthorBookCounts:
+        if author == "Solo,Author,":
+            return AuthorBookCounts(0, 4, 4, _UPDATED)
+        return AuthorBookCounts(2, 3, 5, _UPDATED)
 
     async def filters(self) -> CatalogFilters:
         return CatalogFilters((), (), ())
@@ -185,7 +197,7 @@ def test_root_redirect_navigation_kinds_and_configured_relative_urls() -> None:
         "2025-02-03T04:05:06.123456Z"
     )
     entries = root.findall("atom:entry", {"atom": ATOM})
-    assert all(entry.findtext("atom:content", namespaces={"atom": ATOM}) for entry in entries)
+    assert all(entry.find("atom:content", {"atom": ATOM}) is None for entry in entries)
     assert all(
         (entry.findtext("atom:id", namespaces={"atom": ATOM}) or "").startswith("urn:sopds:")
         for entry in entries
@@ -253,11 +265,27 @@ def test_grouped_navigation_links_to_child_prefix_and_meaningful_parent() -> Non
     entry_link = root.find("atom:entry/atom:link", {"atom": ATOM})
     assert entry_link is not None
     assert entry_link.get("type") == NAVIGATION_TYPE
+    entry = root.find("atom:entry", {"atom": ATOM})
+    assert entry is not None
+    assert entry.findtext("atom:title", namespaces={"atom": ATOM}) == "Зна…"
+    assert entry.findtext("atom:content", namespaces={"atom": ATOM}) == "120 authors"
     assert entry_link.get("href") == ("/base/opds/authors/?prefix=%D0%B7%D0%BD%D0%B0&parent=%D0%B7")
     up_link = root.find("atom:link[@rel='up']", {"atom": ATOM})
     assert up_link is not None
     assert up_link.get("href") == "/base/opds/authors/?prefix=%D0%B0"
     assert catalog.navigation_requests == [NavigationRequest("authors", prefix="з")]
+
+
+def test_author_navigation_formats_inpx_components_without_duplicate_content() -> None:
+    app, _ = _app()
+    with TestClient(app) as client:
+        response = client.get("/opds/authors/", params={"prefix": "formatted"})
+
+    root = ET.fromstring(response.content)  # noqa: S314
+    entry = root.find("atom:entry", {"atom": ATOM})
+    assert entry is not None
+    assert entry.findtext("atom:title", namespaces={"atom": ATOM}) == ("Surname Given Middle")
+    assert entry.findtext("atom:content", namespaces={"atom": ATOM}) == "12 books"
 
 
 def test_root_prefix_group_returns_to_title_navigation_root() -> None:
@@ -268,7 +296,11 @@ def test_root_prefix_group_returns_to_title_navigation_root() -> None:
         leaf = client.get("/opds/titles/", params={"prefix": "a", "parent_root": "1"})
 
     grouped_root = ET.fromstring(grouped.content)  # noqa: S314
-    child_link = grouped_root.find("atom:entry/atom:link", {"atom": ATOM})
+    child_entry = grouped_root.find("atom:entry", {"atom": ATOM})
+    assert child_entry is not None
+    assert child_entry.findtext("atom:title", namespaces={"atom": ATOM}) == "A…"
+    assert child_entry.findtext("atom:content", namespaces={"atom": ATOM}) == "120 books"
+    child_link = child_entry.find("atom:link", {"atom": ATOM})
     assert child_link is not None
     assert child_link.get("href") == "/base/opds/titles/?prefix=a&parent_root=1"
     leaf_root = ET.fromstring(leaf.content)  # noqa: S314
@@ -287,10 +319,70 @@ def test_title_navigation_leaf_is_an_acquisition_feed() -> None:
     entry = root.find("atom:entry", {"atom": ATOM})
     assert entry is not None
     assert entry.findtext("atom:title", namespaces={"atom": ATOM}) == "A & <Book>�"
+    assert entry.findtext("atom:author/atom:name", namespaces={"atom": ATOM}) == ("Surname Given")
     acquisition = entry.find(f"atom:link[@rel='{ACQUISITION_REL}']", {"atom": ATOM})
     assert acquisition is not None
     assert acquisition.get("href") == "/base/books/book%2Fone/download"
     assert catalog.navigation_requests == [NavigationRequest("titles")]
+
+
+def test_author_catalog_groups_series_and_standalone_books_with_counts() -> None:
+    app, _ = _app()
+    with TestClient(app) as client:
+        response = client.get("/opds/authors/catalog/", params={"author": "Surname,Given,"})
+
+    root = ET.fromstring(response.content)  # noqa: S314
+    entries = root.findall("atom:entry", {"atom": ATOM})
+    assert [entry.findtext("atom:title", namespaces={"atom": ATOM}) for entry in entries] == [
+        "By series",
+        "Books without series",
+        "All books",
+    ]
+    assert [entry.findtext("atom:content", namespaces={"atom": ATOM}) for entry in entries] == [
+        "2 series",
+        "3 books",
+        "5 books",
+    ]
+    links = [entry.find("atom:link", {"atom": ATOM}) for entry in entries]
+    assert all(link is not None for link in links)
+    assert [link.get("type") for link in links if link is not None] == [
+        NAVIGATION_TYPE,
+        ACQUISITION_TYPE,
+        ACQUISITION_TYPE,
+    ]
+    assert [link.get("href") for link in links if link is not None] == [
+        "/base/opds/series/?author=Surname%2CGiven%2C",
+        "/base/opds/books/?author=Surname%2CGiven%2C&without_series=1",
+        "/base/opds/books/?author=Surname%2CGiven%2C",
+    ]
+
+
+def test_author_without_series_redirects_directly_to_all_books() -> None:
+    app, _ = _app()
+    with TestClient(app) as client:
+        response = client.get(
+            "/opds/authors/catalog/",
+            params={"author": "Solo,Author,"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/base/opds/books/?author=Solo%2CAuthor%2C"
+
+
+def test_author_series_navigation_keeps_author_filter() -> None:
+    app, catalog = _app()
+    with TestClient(app) as client:
+        response = client.get("/opds/series/", params={"author": "A & B"})
+
+    root = ET.fromstring(response.content)  # noqa: S314
+    link = root.find("atom:entry/atom:link", {"atom": ATOM})
+    assert link is not None
+    assert link.get("href") == "/base/opds/books/?series=A+%26+B&author=A+%26+B"
+    up = root.find("atom:link[@rel='up']", {"atom": ATOM})
+    assert up is not None
+    assert up.get("href") == "/base/opds/authors/catalog/?author=A+%26+B"
+    assert catalog.navigation_requests == [NavigationRequest("series", author="A & B")]
 
 
 def test_navigation_destinations_drop_cursor_and_opensearch_keeps_template_literal() -> None:
@@ -302,7 +394,7 @@ def test_navigation_destinations_drop_cursor_and_opensearch_keeps_template_liter
     root = ET.fromstring(navigation.content)  # noqa: S314
     entry_link = root.find("atom:entry/atom:link", {"atom": ATOM})
     assert entry_link is not None
-    assert entry_link.get("href") == ("/base/opds/books/?author=A+%26+B")
+    assert entry_link.get("href") == ("/base/opds/authors/catalog/?author=A+%26+B")
     self_link = root.find("atom:link[@rel='self']", {"atom": ATOM})
     assert self_link is not None and "cursor=opaque" in (self_link.get("href") or "")
     assert catalog.navigation_requests == [NavigationRequest("authors", "opaque")]

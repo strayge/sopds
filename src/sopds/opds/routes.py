@@ -10,6 +10,7 @@ from sopds.catalog.contracts import (
     Catalog,
     CatalogInputError,
     CatalogRequest,
+    NavigationItem,
     NavigationRequest,
 )
 from sopds.config import AppConfig
@@ -18,6 +19,7 @@ from sopds.opds.render import (
     NAVIGATION_TYPE,
     OPENSEARCH_TYPE,
     acquisition_feed,
+    display_author_name,
     item_entries,
     navigation_feed,
     open_search,
@@ -69,13 +71,38 @@ async def root(request: Request) -> Response:
     start_url, search_url = _common(base_path)
     snapshot = await _catalog(request).snapshot()
     entries = (
-        (stable_id("navigation:books"), "Books", f"{base_path}/opds/titles/", NAVIGATION_TYPE),
-        (stable_id("navigation:authors"), "Authors", f"{base_path}/opds/authors/", NAVIGATION_TYPE),
-        (stable_id("navigation:genres"), "Genres", f"{base_path}/opds/genres/", NAVIGATION_TYPE),
-        (stable_id("navigation:series"), "Series", f"{base_path}/opds/series/", NAVIGATION_TYPE),
+        (
+            stable_id("navigation:books"),
+            "Books",
+            None,
+            f"{base_path}/opds/titles/",
+            NAVIGATION_TYPE,
+        ),
+        (
+            stable_id("navigation:authors"),
+            "Authors",
+            None,
+            f"{base_path}/opds/authors/",
+            NAVIGATION_TYPE,
+        ),
+        (
+            stable_id("navigation:genres"),
+            "Genres",
+            None,
+            f"{base_path}/opds/genres/",
+            NAVIGATION_TYPE,
+        ),
+        (
+            stable_id("navigation:series"),
+            "Series",
+            None,
+            f"{base_path}/opds/series/",
+            NAVIGATION_TYPE,
+        ),
         (
             stable_id("navigation:languages"),
             "Languages",
+            None,
             f"{base_path}/opds/languages/",
             NAVIGATION_TYPE,
         ),
@@ -105,6 +132,7 @@ async def books(
     author: str | None = None,
     genre: str | None = None,
     series: str | None = None,
+    without_series: bool = False,
     language: str | None = None,
     original_format: str | None = None,
     cursor: str | None = None,
@@ -116,6 +144,7 @@ async def books(
         author=author or None,
         genre=genre or None,
         series=series or None,
+        without_series=without_series,
         language=language or None,
         original_format=original_format or None,
         cursor=cursor or None,
@@ -125,6 +154,7 @@ async def books(
         "author": catalog_request.author,
         "genre": catalog_request.genre,
         "series": catalog_request.series,
+        "without_series": "1" if catalog_request.without_series else None,
         "language": catalog_request.language,
         "original_format": catalog_request.original_format,
     }
@@ -148,7 +178,13 @@ async def books(
         )
         if value is not None
     ]
-    up_url = f"{base_path}/opds/{active_origins[0][0]}/" if len(active_origins) == 1 else start_url
+    up_url = (
+        query_url(base_path, "/opds/authors/catalog/", {"author": catalog_request.author})
+        if catalog_request.author is not None
+        else (
+            f"{base_path}/opds/{active_origins[0][0]}/" if len(active_origins) == 1 else start_url
+        )
+    )
     body = acquisition_feed(
         feed_id=stable_id("feed:books", state),
         title="Books",
@@ -178,6 +214,7 @@ async def _navigation(
     exact: bool = False,
     parent: str | None = None,
     parent_root: bool = False,
+    author: str | None = None,
 ) -> Response:
     if parent is not None and (len(parent) > 1_024 or "\x00" in parent):
         return _bad_request()
@@ -185,7 +222,7 @@ async def _navigation(
     start_url, search_url = _common(base_path)
     try:
         page = await _catalog(request).navigation(
-            NavigationRequest(kind, cursor or None, prefix, exact)
+            NavigationRequest(kind, cursor or None, prefix, exact, author)
         )
     except CatalogInputError:
         return _bad_request()
@@ -195,6 +232,7 @@ async def _navigation(
         "exact": "1" if exact else None,
         "parent": parent,
         "parent_root": "1" if parent_root else None,
+        "author": author,
     }
     self_url = query_url(base_path, path, {**state, "cursor": cursor})
     next_url = (
@@ -203,9 +241,11 @@ async def _navigation(
         else None
     )
     if parent_root:
-        up_url = query_url(base_path, path, {})
+        up_url = query_url(base_path, path, {"author": author})
     elif parent is not None:
-        up_url = query_url(base_path, path, {"prefix": parent})
+        up_url = query_url(base_path, path, {"prefix": parent, "author": author})
+    elif kind == "series" and author is not None:
+        up_url = query_url(base_path, "/opds/authors/catalog/", {"author": author})
     else:
         up_url = start_url
 
@@ -219,13 +259,14 @@ async def _navigation(
                     "exact": "1" if item.exact else None,
                     "parent": prefix or None,
                     "parent_root": "1" if not prefix else None,
+                    "author": author,
                 },
             )
             for item in page.items
         )
         entries = item_entries(kind, page.items, destination_urls, NAVIGATION_TYPE)
         body = navigation_feed(
-            feed_id=stable_id(f"feed:{kind}:prefix", [page.prefix, exact]),
+            feed_id=stable_id(f"feed:{kind}:prefix", [page.prefix, exact, author]),
             title=kind.title(),
             updated_at=page.updated_at,
             self_url=self_url,
@@ -264,14 +305,35 @@ async def _navigation(
         "series": "series",
         "languages": "language",
     }[kind]
-    destination_urls = tuple(
-        query_url(base_path, "/opds/books/", {filter_name: item.value}) for item in page.items
+    if kind == "authors":
+        destination_urls = tuple(
+            query_url(
+                base_path,
+                "/opds/authors/catalog/",
+                {"author": item.value},
+            )
+            for item in page.items
+        )
+    else:
+        destination_urls = tuple(
+            query_url(
+                base_path,
+                "/opds/books/",
+                {filter_name: item.value, "author": author},
+            )
+            for item in page.items
+        )
+    entries = item_entries(
+        kind,
+        page.items,
+        destination_urls,
+        NAVIGATION_TYPE if kind == "authors" else ACQUISITION_TYPE,
+        count_kind="titles" if kind in {"authors", "series"} else None,
     )
-    entries = item_entries(kind, page.items, destination_urls)
     body = navigation_feed(
         feed_id=(
-            stable_id(f"feed:{kind}", [page.prefix, exact])
-            if kind in {"authors", "series"} and (page.prefix or exact)
+            stable_id(f"feed:{kind}", [page.prefix, exact, author])
+            if kind in {"authors", "series"} and (page.prefix or exact or author)
             else stable_id(f"feed:{kind}")
         ),
         title=kind.title(),
@@ -311,6 +373,71 @@ async def authors(
     )
 
 
+@router.get("/authors/catalog")
+async def canonical_author_catalog(request: Request) -> RedirectResponse:
+    return _canonical_redirect(request, "/opds/authors/catalog/")
+
+
+@router.get("/authors/catalog/")
+async def author_catalog(request: Request, author: str) -> Response:
+    base_path = _base_path(request)
+    start_url, search_url = _common(base_path)
+    try:
+        counts = await _catalog(request).author_book_counts(author)
+    except CatalogInputError:
+        return _bad_request()
+    all_books_url = query_url(base_path, "/opds/books/", {"author": author})
+    if counts.series == 0:
+        return RedirectResponse(all_books_url, status_code=307)
+
+    items = [
+        NavigationItem("series", "By series", counts.series, count_kind="series"),
+    ]
+    urls = [query_url(base_path, "/opds/series/", {"author": author})]
+    media_types = [NAVIGATION_TYPE]
+    if counts.without_series:
+        items.append(
+            NavigationItem(
+                "without-series",
+                "Books without series",
+                counts.without_series,
+                count_kind="titles",
+            )
+        )
+        urls.append(
+            query_url(
+                base_path,
+                "/opds/books/",
+                {"author": author, "without_series": "1"},
+            )
+        )
+        media_types.append(ACQUISITION_TYPE)
+    items.append(NavigationItem("all", "All books", counts.total, count_kind="titles"))
+    urls.append(all_books_url)
+    media_types.append(ACQUISITION_TYPE)
+    entries = tuple(
+        item_entries(
+            "author-catalog",
+            (item,),
+            (url,),
+            media_type,
+        )[0]
+        for item, url, media_type in zip(items, urls, media_types, strict=True)
+    )
+    self_url = query_url(base_path, "/opds/authors/catalog/", {"author": author})
+    body = navigation_feed(
+        feed_id=stable_id("feed:author-catalog", author),
+        title=f"Books by {display_author_name(author)}",
+        updated_at=counts.updated_at,
+        self_url=self_url,
+        start_url=start_url,
+        up_url=f"{base_path}/opds/authors/",
+        search_url=search_url,
+        entries=entries,
+    )
+    return _xml(body, NAVIGATION_TYPE)
+
+
 @router.get("/genres")
 async def canonical_genres(request: Request) -> RedirectResponse:
     return _canonical_redirect(request, "/opds/genres/")
@@ -334,6 +461,7 @@ async def series(
     exact: bool = False,
     parent: str | None = None,
     parent_root: bool = False,
+    author: str | None = None,
 ) -> Response:
     return await _navigation(
         request,
@@ -343,6 +471,7 @@ async def series(
         exact=exact,
         parent=parent,
         parent_root=parent_root,
+        author=author,
     )
 
 

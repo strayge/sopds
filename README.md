@@ -78,7 +78,9 @@ the ZIP archives. No converted formats are currently offered.
 
 OPDS author, series, and title browsing groups lists larger than 100 entries by
 normalized name prefixes. Prefixes with only one possible continuation are
-collapsed until the next useful branch.
+collapsed until the next useful branch. Authors with series are divided into
+series, standalone books, and all books; authors without series open their book
+list directly.
 
 ## Telegram
 

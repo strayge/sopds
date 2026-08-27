@@ -14,6 +14,7 @@ from tortoise.transactions import in_transaction
 
 from sopds.acquisition.contracts import AcquisitionTarget
 from sopds.catalog.contracts import (
+    AuthorBookCounts,
     BookDetail,
     BookSummary,
     CatalogFilters,
@@ -732,6 +733,7 @@ class CatalogRepository:
         original_format: str | None,
         author: str | None,
         series: str | None,
+        without_series: bool = False,
     ) -> QuerySet[Book]:
         query = Book.filter(
             Q(series_id=None) | Q(series__generation_id=generation_id),
@@ -755,6 +757,8 @@ class CatalogRepository:
             )
         if series is not None:
             query = query.filter(series__generation_id=generation_id, series__name=series)
+        if without_series:
+            query = query.filter(series_id=None)
         return query
 
     async def browse_book_ids(
@@ -766,6 +770,7 @@ class CatalogRepository:
         original_format: str | None,
         author: str | None,
         series: str | None,
+        without_series: bool = False,
         after: tuple[str, str] | None,
         limit: int,
     ) -> list[tuple[int, str, str]]:
@@ -776,6 +781,7 @@ class CatalogRepository:
             original_format=original_format,
             author=author,
             series=series,
+            without_series=without_series,
         )
         if after is not None:
             title_sort, public_id = after
@@ -803,6 +809,7 @@ class CatalogRepository:
         original_format: str | None,
         author: str | None,
         series: str | None,
+        without_series: bool = False,
         after: tuple[str, str] | None,
         limit: int,
     ) -> list[tuple[int, str, str]]:
@@ -846,6 +853,8 @@ class CatalogRepository:
                 "AND s.generation_id=? AND s.name=?)"
             )
             parameters.extend((generation_id, series))
+        if without_series:
+            sql += " AND b.series_id IS NULL"
         if after is not None:
             sql += " AND (b.title_sort>? OR (b.title_sort=? AND b.public_id>?))"
             parameters.extend((after[0], after[0], after[1]))
@@ -973,24 +982,49 @@ class CatalogRepository:
             book_links__book__archive__available=True,
         ).using_db(self._connection)
 
-    def _available_series(self, generation_id: int) -> QuerySet[Series]:
-        available_series_ids = (
-            Book.filter(
-                generation_id=generation_id,
-                archive__generation_id=generation_id,
-                archive__available=True,
-                series__generation_id=generation_id,
-            )
-            .exclude(series_id=None)
-            .values("series_id")
-        )
-        return Series.filter(
+    def _available_series(self, generation_id: int, author: str | None = None) -> QuerySet[Series]:
+        query = Series.filter(
             generation_id=generation_id,
-            id__in=Subquery(available_series_ids),
+            books__generation_id=generation_id,
+            books__archive__generation_id=generation_id,
+            books__archive__available=True,
         ).using_db(self._connection)
+        if author is not None:
+            query = query.filter(
+                books__author_links__author__generation_id=generation_id,
+                books__author_links__author__name=author,
+            )
+        return query
+
+    async def author_book_counts(self, generation_id: int, author: str) -> AuthorBookCounts:
+        books = self._available_books(
+            generation_id,
+            language=None,
+            genre=None,
+            original_format=None,
+            author=author,
+            series=None,
+        )
+        total = await books.distinct().count()
+        without_series = await books.filter(series_id=None).distinct().count()
+        series_ids = (
+            await self._available_series(generation_id, author)
+            .distinct()
+            .values_list("id", flat=True)
+        )
+        return AuthorBookCounts(
+            series=len(series_ids),
+            without_series=without_series,
+            total=total,
+        )
 
     async def navigation_prefix_buckets(
-        self, generation_id: int, kind: str, prefix: str
+        self,
+        generation_id: int,
+        kind: str,
+        prefix: str,
+        *,
+        author: str | None = None,
     ) -> list[tuple[str, int]]:
         prefix_end = prefix + "\U0010ffff"
         next_character = _Substring(
@@ -1008,7 +1042,7 @@ class CatalogRepository:
             if prefix:
                 query = query.filter(name_sort__gte=prefix, name_sort__lt=prefix_end)
         elif kind == "series":
-            query = self._available_series(generation_id)
+            query = self._available_series(generation_id, author)
             if prefix:
                 query = query.filter(name_sort__gte=prefix, name_sort__lt=prefix_end)
         elif kind == "titles":
@@ -1042,9 +1076,10 @@ class CatalogRepository:
         prefix: str,
         *,
         exact: bool,
+        author: str | None,
         after: tuple[str, str] | None,
         limit: int,
-    ) -> list[tuple[int, str, str, str, str]]:
+    ) -> list[tuple[int, str, str, str, str, int | None]]:
         prefix_end = prefix + "\U0010ffff"
         if kind == "authors":
             author_query = self._available_authors(generation_id)
@@ -1057,16 +1092,25 @@ class CatalogRepository:
                     Q(name_sort__gt=after[0]) | Q(name_sort=after[0], id__gt=int(after[1]))
                 )
             rows = await (
-                author_query.distinct()
+                author_query.annotate(book_count=Count("book_links__book__id", distinct=True))
+                .distinct()
                 .order_by("name_sort", "id")
                 .limit(limit)
-                .values_list("id", "name_sort", "name")
+                .values_list("id", "name_sort", "name", "book_count")
             )
             return [
-                (int(row[0]), str(row[1]), str(row[0]), str(row[2]), str(row[2])) for row in rows
+                (
+                    int(row[0]),
+                    str(row[1]),
+                    str(row[0]),
+                    str(row[2]),
+                    str(row[2]),
+                    int(row[3]),
+                )
+                for row in rows
             ]
         if kind == "series":
-            series_query = self._available_series(generation_id)
+            series_query = self._available_series(generation_id, author)
             if exact:
                 series_query = series_query.filter(name_sort=prefix)
             elif prefix:
@@ -1076,13 +1120,22 @@ class CatalogRepository:
                     Q(name_sort__gt=after[0]) | Q(name_sort=after[0], id__gt=int(after[1]))
                 )
             rows = await (
-                series_query.distinct()
+                series_query.annotate(book_count=Count("books__id", distinct=True))
+                .distinct()
                 .order_by("name_sort", "id")
                 .limit(limit)
-                .values_list("id", "name_sort", "name")
+                .values_list("id", "name_sort", "name", "book_count")
             )
             return [
-                (int(row[0]), str(row[1]), str(row[0]), str(row[2]), str(row[2])) for row in rows
+                (
+                    int(row[0]),
+                    str(row[1]),
+                    str(row[0]),
+                    str(row[2]),
+                    str(row[2]),
+                    int(row[3]),
+                )
+                for row in rows
             ]
         if kind == "titles":
             title_query = self._available_books(
@@ -1108,7 +1161,8 @@ class CatalogRepository:
                 .values_list("id", "title_sort", "public_id", "title")
             )
             return [
-                (int(row[0]), str(row[1]), str(row[2]), str(row[2]), str(row[3])) for row in rows
+                (int(row[0]), str(row[1]), str(row[2]), str(row[2]), str(row[3]), None)
+                for row in rows
             ]
         raise ValueError("Invalid adaptive navigation kind")
 

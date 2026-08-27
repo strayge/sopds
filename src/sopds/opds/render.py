@@ -102,7 +102,7 @@ def navigation_feed(
     start_url: str,
     up_url: str | None,
     search_url: str,
-    entries: tuple[tuple[str, str, str, str], ...],
+    entries: tuple[tuple[str, str, str | None, str, str], ...],
     next_url: str | None = None,
 ) -> bytes:
     root = _feed(
@@ -116,14 +116,22 @@ def navigation_feed(
         search_url=search_url,
         next_url=next_url,
     )
-    for entry_id, entry_title, href, media_type in entries:
+    for entry_id, entry_title, entry_content, href, media_type in entries:
         entry = _element(root, "entry")
         _element(entry, "id", entry_id)
         _element(entry, "title", entry_title)
         _element(entry, "updated", rfc3339(updated_at))
-        _element(entry, "content", entry_title, type="text")
+        if entry_content is not None:
+            _element(entry, "content", entry_content, type="text")
         _link(entry, SUBSECTION_REL, href, media_type)
     return cast(bytes, ET.tostring(root, encoding="utf-8", xml_declaration=True))
+
+
+def display_author_name(value: str) -> str:
+    """Present INPX name components without exposing their storage delimiters."""
+    if "," not in value:
+        return value
+    return " ".join(component.strip() for component in value.split(",") if component.strip())
 
 
 def item_entries(
@@ -131,9 +139,30 @@ def item_entries(
     items: tuple[NavigationItem, ...],
     destination_urls: tuple[str, ...],
     media_type: str = ACQUISITION_TYPE,
-) -> tuple[tuple[str, str, str, str], ...]:
+    count_kind: str | None = None,
+) -> tuple[tuple[str, str, str | None, str, str], ...]:
+    count_labels = {
+        "authors": ("author", "authors"),
+        "series": ("series", "series"),
+        "titles": ("book", "books"),
+    }
+
+    def content(item: NavigationItem) -> str | None:
+        if item.count is None:
+            return None
+        singular, plural = count_labels.get(
+            item.count_kind or count_kind or kind, ("entry", "entries")
+        )
+        return f"{item.count} {singular if item.count == 1 else plural}"
+
     return tuple(
-        (stable_id("navigation", [kind, item.value]), item.label, href, media_type)
+        (
+            stable_id("navigation", [kind, item.value]),
+            display_author_name(item.label) if kind == "authors" else item.label,
+            content(item),
+            href,
+            media_type,
+        )
         for item, href in zip(items, destination_urls, strict=True)
     )
 
@@ -169,9 +198,9 @@ def acquisition_feed(
         _element(entry, "title", book.title)
         _element(entry, "updated", rfc3339(book.updated_at))
         authors = book.authors or ("Unknown author",)
-        for author_name in authors:
+        for name in authors:
             author = _element(entry, "author")
-            _element(author, "name", author_name)
+            _element(author, "name", display_author_name(name))
         for code, label in book.genres:
             _element(entry, "category", term=code, label=label)
         if book.language:

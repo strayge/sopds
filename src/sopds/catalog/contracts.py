@@ -30,6 +30,7 @@ class CatalogRequest:
     cursor: str | None = None
     author: str | None = None
     series: str | None = None
+    without_series: bool = False
     search_field: SearchField = SearchField.ALL
     page_size: int = 50
 
@@ -104,6 +105,7 @@ class NavigationRequest:
     cursor: str | None = None
     prefix: str = ""
     exact: bool = False
+    author: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +114,7 @@ class NavigationItem:
     label: str
     count: int | None = None
     exact: bool = False
+    count_kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +125,14 @@ class NavigationPage:
     prefix: str = ""
     grouped: bool = False
     books: tuple[BookSummary, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorBookCounts:
+    series: int
+    without_series: int
+    total: int
+    updated_at: datetime = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,3 +156,5 @@ class Catalog(Protocol):
     async def statistics(self) -> CatalogStatistics: ...
 
     async def navigation(self, request: NavigationRequest) -> NavigationPage: ...
+
+    async def author_book_counts(self, author: str) -> AuthorBookCounts: ...
