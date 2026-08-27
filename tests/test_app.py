@@ -106,16 +106,46 @@ def test_empty_converter_registry_has_no_conversion_route(
         )
 
 
-def test_index_uses_server_rendered_template(migrated_app_config: AppConfig) -> None:
+def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig) -> None:
     with TestClient(create_app(migrated_app_config)) as client:
         response = client.get("/")
 
     assert response.status_code == 200
     assert "INPX-backed catalog" in response.text
+    assert 'href="#main-content">Skip to main content</a>' in response.text
+    assert '<a href="/" aria-current="page">Catalog</a>' in response.text
+    assert 'href="/manage"' not in response.text
     assert 'hx-get="/health-fragment"' in response.text
-    assert ".status-error { color: #a21b1b; }" in response.text
+    assert 'hx-trigger="load, every 30s"' in response.text
+    assert "function localizeCatalogTimes(root)" in response.text
+    assert 'addEventListener("htmx:afterSwap"' in response.text
+    assert "/static/css/app.css" in response.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
+    assert "<style>" not in response.text
     assert "unpkg.com" not in response.text
+
+
+def test_shared_stylesheet_and_fonts_are_served_locally(
+    migrated_app_config: AppConfig,
+) -> None:
+    font_paths = (
+        "/static/fonts/Literata-SemiBold.woff2",
+        "/static/fonts/IBMPlexSans-Regular.woff2",
+        "/static/fonts/IBMPlexSans-SemiBold.woff2",
+    )
+    with TestClient(create_app(migrated_app_config)) as client:
+        stylesheet = client.get("/static/css/app.css")
+        fonts = [client.get(path) for path in font_paths]
+
+    assert stylesheet.status_code == 200
+    assert stylesheet.headers["content-type"].startswith("text/css")
+    assert stylesheet.text.count("font-display: swap") == 3
+    assert all(path.rsplit("/", 1)[-1] in stylesheet.text for path in font_paths)
+    assert "http://" not in stylesheet.text
+    assert "https://" not in stylesheet.text
+    assert all(response.status_code == 200 for response in fonts)
+    assert all(response.headers["content-type"] == "font/woff2" for response in fonts)
+    assert all(response.content.startswith(b"wOF2") for response in fonts)
 
 
 def test_vendored_htmx_is_served_locally(migrated_app_config: AppConfig) -> None:

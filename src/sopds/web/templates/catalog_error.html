@@ -1,1 +1,11 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Invalid catalog request</title></head><body><main><h1>Invalid catalog request</h1><p>{{ message }}</p><p><a href="/">Return to catalog</a></p></main></body></html>
+{% extends "base.html" %}
+
+{% block title %}Invalid catalog request · SOPDS{% endblock %}
+
+{% block content %}
+  <section class="message-panel message-panel--error" role="alert" aria-labelledby="catalog-error-heading">
+    <h1 id="catalog-error-heading">Invalid catalog request</h1>
+    <p>{{ message }}</p>
+    <p><a href="/">Return to catalog</a></p>
+  </section>
+{% endblock %}

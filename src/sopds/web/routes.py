@@ -87,6 +87,22 @@ def _acquisition(request: Request) -> Acquisition:
     return cast(Acquisition, request.app.state.acquisition)
 
 
+def _shell_context(
+    request: Request,
+    *,
+    active_navigation: Literal["catalog", "manage"],
+) -> dict[str, object]:
+    config = getattr(request.app.state, "config", None)
+    opds_url = (
+        str(config.server.base_url).rstrip("/") + "/opds/" if config is not None else "/opds/"
+    )
+    return {
+        "request": request,
+        "opds_url": opds_url,
+        "active_navigation": active_navigation,
+    }
+
+
 def _catalog_request(
     q: str,
     search_field: SearchField,
@@ -247,17 +263,13 @@ async def index(
     )
     try:
         context = await _results_context(request, catalog_request, searched=searched)
-        config = getattr(request.app.state, "config", None)
-        opds_url = (
-            str(config.server.base_url).rstrip("/") + "/opds/" if config is not None else "/opds/"
-        )
+        context.update(_shell_context(request, active_navigation="catalog"))
         import_coordinator = _imports(request)
         current_import_status = await import_coordinator.get_status()
         import_pending = current_import_status is None and import_coordinator.is_import_active()
         context.update(
             filters=await _catalog(request).filters(),
             statistics_context=await _statistics_context(request),
-            opds_url=opds_url,
             import_status=current_import_status,
             csrf_token=cast(str, request.app.state.csrf_token),
             ImportState=ImportState,
@@ -271,7 +283,10 @@ async def index(
         return templates.TemplateResponse(
             request=request,
             name="catalog_error.html",
-            context={"message": str(error)},
+            context={
+                **_shell_context(request, active_navigation="catalog"),
+                "message": str(error),
+            },
             status_code=400,
         )
 
@@ -347,6 +362,7 @@ async def book_detail(
         request=request,
         name="book_detail.html",
         context={
+            **_shell_context(request, active_navigation="catalog"),
             "book": book,
             "detail_query": _availability_query(include_missed, include_hidden),
         },

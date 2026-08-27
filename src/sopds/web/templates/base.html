@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Browse and manage the SOPDS private library catalog.">
+    <title>{% block title %}SOPDS catalog{% endblock %}</title>
+    <link rel="alternate" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="{{ opds_url }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
+    <script src="{{ url_for('static', path='/vendor/htmx/htmx-2.0.10.min.js') }}"></script>
+    {% block head %}{% endblock %}
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="site-brand" href="/" aria-label="SOPDS catalog home">
+          <span class="site-brand__name">SOPDS</span>
+          <span class="site-brand__tagline">INPX-backed catalog</span>
+        </a>
+        <nav class="site-navigation" aria-label="Primary navigation">
+          <a href="/"{% if active_navigation == "catalog" %} aria-current="page"{% endif %}>Catalog</a>
+          <a href="{{ opds_url }}">OPDS</a>
+        </nav>
+        <p
+          id="health"
+          class="health-status"
+          hx-get="/health-fragment"
+          hx-trigger="load, every 30s"
+          hx-swap="innerHTML"
+          aria-live="polite"
+        >Checking application health…</p>
+      </div>
+    </header>
+    <main id="main-content" class="shell page-content" tabindex="-1">
+      {% block content %}{% endblock %}
+    </main>
+    <script>
+      function localizeCatalogTimes(root) {
+        root.querySelectorAll("time.local-datetime").forEach((element) => {
+          const value = new Date(element.dateTime);
+          if (!Number.isNaN(value.getTime())) {
+            element.textContent = new Intl.DateTimeFormat(undefined, {
+              dateStyle: "medium",
+              timeStyle: "medium"
+            }).format(value);
+            element.title = element.dateTime;
+          }
+        });
+      }
+      localizeCatalogTimes(document);
+      document.body.addEventListener("htmx:afterSwap", (event) => {
+        localizeCatalogTimes(event.detail.target);
+      });
+    </script>
+  </body>
+</html>

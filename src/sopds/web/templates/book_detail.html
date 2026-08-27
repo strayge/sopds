@@ -1,21 +1,19 @@
-<!doctype html>
-<html lang="en">
-  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ book.title }} · SOPDS</title></head>
-  <body>
-    <main>
-      <p><a href="/">← Catalog</a></p>
-      <h1>{{ book.title }}</h1>
-      {% if book.availability.value != "active" %}<p><strong>Status:</strong> {{ book.availability.value|capitalize }}</p>{% endif %}
-      {% if book.authors %}<p><strong>Authors:</strong> {% for author in book.authors %}<a href="/?author={{ author|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
-      {% if book.series %}<p><strong>Series:</strong> <a href="/?series={{ book.series|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ book.series }}</a>{% if book.series_number %} #{{ book.series_number }}{% endif %}</p>{% endif %}
-      {% if book.genres %}<p><strong>Genres:</strong> {% for code, label in book.genres %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
-      <p><strong>Original format:</strong> {{ book.original_format }}</p>
-      {% if book.language %}<p><strong>Language:</strong> {{ book.language }}</p>{% endif %}
-      {% if book.published_date %}<p><strong>Published:</strong> {{ book.published_date }}</p>{% endif %}
-      <p><strong>Size:</strong> {{ book.size|kilobytes }}</p>
-      <p><a href="/books/{{ book.public_id|urlencode }}/download">Download original</a></p>
-      {% if book.rating is not none %}<p><strong>Rating:</strong> {{ book.rating }}</p>{% endif %}
-      {% if book.keywords %}<p><strong>Keywords:</strong> {{ book.keywords }}</p>{% endif %}
-    </main>
-  </body>
-</html>
+{% extends "base.html" %}
+
+{% block title %}{{ book.title }} · SOPDS{% endblock %}
+
+{% block content %}
+  <p><a href="/">← Catalog</a></p>
+  <h1>{{ book.title }}</h1>
+  {% if book.availability.value != "active" %}<p><strong>Status:</strong> {{ book.availability.value|capitalize }}</p>{% endif %}
+  {% if book.authors %}<p><strong>Authors:</strong> {% for author in book.authors %}<a href="/?author={{ author|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+  {% if book.series %}<p><strong>Series:</strong> <a href="/?series={{ book.series|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ book.series }}</a>{% if book.series_number %} #{{ book.series_number }}{% endif %}</p>{% endif %}
+  {% if book.genres %}<p><strong>Genres:</strong> {% for code, label in book.genres %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+  <p><strong>Original format:</strong> {{ book.original_format }}</p>
+  {% if book.language %}<p><strong>Language:</strong> {{ book.language }}</p>{% endif %}
+  {% if book.published_date %}<p><strong>Published:</strong> {{ book.published_date }}</p>{% endif %}
+  <p><strong>Size:</strong> {{ book.size|kilobytes }}</p>
+  <p><a href="/books/{{ book.public_id|urlencode }}/download">Download original</a></p>
+  {% if book.rating is not none %}<p><strong>Rating:</strong> {{ book.rating }}</p>{% endif %}
+  {% if book.keywords %}<p><strong>Keywords:</strong> {{ book.keywords }}</p>{% endif %}
+{% endblock %}

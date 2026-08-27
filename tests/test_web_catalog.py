@@ -26,6 +26,7 @@ from sopds.catalog.contracts import (
     BookDetail,
     BookSummary,
     CatalogFilters,
+    CatalogInputError,
     CatalogPage,
     CatalogRequest,
     CatalogStatistics,
@@ -44,6 +45,8 @@ class _Catalog:
 
     async def browse(self, request: CatalogRequest) -> CatalogPage:
         self.requests.append(request)
+        if request.query == "invalid":
+            raise CatalogInputError("Invalid catalog search")
         if request.query == "none":
             return CatalogPage((), None)
         return CatalogPage(
@@ -238,8 +241,12 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     )
     assert 'href="/?series=Series"' in page.text
     assert "Science fiction" in page.text
+    assert 'href="#main-content">Skip to main content</a>' in page.text
+    assert '<a href="/" aria-current="page">Catalog</a>' in page.text
+    assert 'href="/manage"' not in page.text
+    assert "/static/css/app.css" in page.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in page.text
-    assert page.text.index('id="health"') < page.text.index("<main>")
+    assert page.text.index('id="health"') < page.text.index('id="main-content"')
     assert (
         '<link rel="alternate" '
         'type="application/atom+xml;profile=opds-catalog;kind=navigation" '
@@ -286,6 +293,10 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         in catalog.requests
     )
     assert detail.status_code == 200
+    assert '<a href="/" aria-current="page">Catalog</a>' in detail.text
+    assert "/static/css/app.css" in detail.text
+    assert "/static/vendor/htmx/htmx-2.0.10.min.js" in detail.text
+    assert 'hx-get="/health-fragment"' in detail.text
     assert "Original format" in detail.text
     assert "Тестов Тест" in detail.text
     assert "Примеров Пример Примерович" in detail.text
@@ -309,6 +320,21 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         genre="sf",
         original_format="fb2",
     )
+
+
+def test_full_page_catalog_error_uses_shared_shell() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        response = client.get("/?q=invalid")
+
+    assert response.status_code == 400
+    assert "Invalid catalog search" in response.text
+    assert 'role="alert"' in response.text
+    assert '<a href="/" aria-current="page">Catalog</a>' in response.text
+    assert "/static/css/app.css" in response.text
+    assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
+    assert 'hx-get="/health-fragment"' in response.text
+    assert 'href="https://catalog.example/root/opds/"' in response.text
 
 
 def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
