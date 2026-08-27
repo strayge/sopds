@@ -19,7 +19,8 @@ async def test_manual_start_is_nonblocking_singleton_and_shutdown_awaits_finaliz
     entered = asyncio.Event()
     finalized = asyncio.Event()
 
-    async def blocked_import() -> ImportResult:
+    async def blocked_import(*, force: bool) -> ImportResult:
+        assert not force
         entered.set()
         try:
             await asyncio.Event().wait()

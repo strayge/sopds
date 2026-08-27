@@ -17,6 +17,7 @@ from sopds.catalog.contracts import (
     BookSummary,
     CatalogFilters,
     CatalogSnapshot,
+    CatalogStatistics,
     FilterOption,
 )
 from sopds.db.configuration import CONNECTION_NAME
@@ -624,6 +625,50 @@ class CatalogRepository:
         if updated.tzinfo is None:
             updated = updated.replace(tzinfo=UTC)
         return CatalogSnapshot(int(rows[0]["active_generation_id"]), updated.astimezone(UTC))
+
+    async def catalog_statistics(self, generation_id: int | None) -> CatalogStatistics:
+        _, size_rows = await self._connection.execute_query(
+            "SELECT "
+            "(SELECT page_count FROM pragma_page_count) * "
+            "(SELECT page_size FROM pragma_page_size) AS database_size_bytes"
+        )
+        database_size_bytes = int(size_rows[0]["database_size_bytes"])
+        if generation_id is None:
+            return CatalogStatistics(0, 0, None, database_size_bytes)
+
+        generation_rows = await (
+            CatalogGeneration.filter(id=generation_id)
+            .using_db(self._connection)
+            .values("activated_at")
+        )
+        activated_at = generation_rows[0]["activated_at"] if generation_rows else None
+        if activated_at is not None:
+            if activated_at.tzinfo is None:
+                activated_at = activated_at.replace(tzinfo=UTC)
+            activated_at = activated_at.astimezone(UTC)
+        active_books = await (
+            Book.filter(generation_id=generation_id).using_db(self._connection).count()
+        )
+        run_rows = await (
+            ImportRun.filter(
+                staging_generation_id=generation_id,
+                state=ImportState.SUCCEEDED,
+            )
+            .using_db(self._connection)
+            .order_by("-id")
+            .limit(1)
+            .values("records_deleted")
+        )
+        deleted_books = int(run_rows[0]["records_deleted"]) if run_rows else 0
+        return CatalogStatistics(
+            active_books,
+            deleted_books,
+            activated_at,
+            database_size_bytes,
+        )
+
+    async def vacuum(self) -> None:
+        await self._connection.execute_script("VACUUM")
 
     async def acquisition_target(self, public_id: str) -> AcquisitionTarget | None:
         """Materialize all file coordinates from one active-generation query."""

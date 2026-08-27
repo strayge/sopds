@@ -17,6 +17,7 @@ from sopds.catalog.contracts import (
     CatalogRequest,
     CatalogSnapshot,
     CatalogStaleCursorError,
+    CatalogStatistics,
     NavigationItem,
     NavigationPage,
     NavigationRequest,
@@ -119,6 +120,16 @@ class CatalogService:
 
     async def snapshot(self) -> CatalogSnapshot:
         return await self._repository.active_snapshot()
+
+    async def statistics(self) -> CatalogStatistics:
+        for attempt in range(2):
+            snapshot = await self._repository.active_snapshot()
+            statistics = await self._repository.catalog_statistics(snapshot.generation_id)
+            if await self._repository.active_snapshot() == snapshot:
+                return statistics
+            if attempt == 1:
+                raise CatalogInputError("Catalog changed while loading; retry the request")
+        raise AssertionError("Catalog statistics retry bound was bypassed")
 
     async def navigation(self, request: NavigationRequest) -> NavigationPage:
         if request.kind not in {"authors", "genres", "series", "languages"}:

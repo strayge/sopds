@@ -4,6 +4,7 @@ import asyncio
 import base64
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -30,9 +31,11 @@ from sopds.db.models import (
     CatalogState,
     GenerationState,
     Genre,
+    ImportRun,
     Series,
 )
 from sopds.db.repository import CatalogRepository
+from sopds.imports.status import ImportState, ImportTrigger
 
 
 @asynccontextmanager
@@ -169,6 +172,42 @@ async def _seed(repository: CatalogRepository) -> None:
             "VALUES (?,?,?,?,?,?,?)",
             [book.id, generation_id, normalize_text(book.title), "", "", "", book.language],
         )
+
+
+async def test_catalog_statistics_describe_active_generation_and_database(tmp_path: Path) -> None:
+    async with _catalog(tmp_path / "statistics.sqlite3") as (catalog, repository):
+        empty = await catalog.statistics()
+        assert empty.active_books == 0
+        assert empty.deleted_books == 0
+        assert empty.generation_activated_at is None
+        assert empty.database_size_bytes > 0
+
+        await _seed(repository)
+        activated_at = datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC)
+        await (
+            CatalogGeneration.filter(id=1)
+            .using_db(repository._connection)
+            .update(activated_at=activated_at)
+        )
+        await ImportRun.create(
+            using_db=repository._connection,
+            trigger=ImportTrigger.MANUAL,
+            state=ImportState.SUCCEEDED,
+            finished_at=activated_at,
+            records_read=65,
+            records_imported=56,
+            records_deleted=9,
+            staging_generation_id=1,
+        )
+
+        statistics = await catalog.statistics()
+        assert statistics.active_books == 56
+        assert statistics.deleted_books == 9
+        assert statistics.generation_activated_at == activated_at
+        assert statistics.database_size_bytes >= empty.database_size_bytes
+
+        await repository.vacuum()
+        assert (await catalog.statistics()).database_size_bytes > 0
 
 
 async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Path) -> None:

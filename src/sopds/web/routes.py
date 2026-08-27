@@ -119,6 +119,28 @@ async def _results_context(request: Request, catalog_request: CatalogRequest) ->
     }
 
 
+def _format_bytes(size: int) -> str:
+    value = float(size)
+    units = ("bytes", "KiB", "MiB", "GiB", "TiB")
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "bytes":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    raise AssertionError("Database size unit bound was bypassed")
+
+
+async def _statistics_context(request: Request) -> dict[str, object]:
+    statistics = await _catalog(request).statistics()
+    return {
+        "request": request,
+        "statistics": statistics,
+        "database_size": _format_bytes(statistics.database_size_bytes),
+        "message": None,
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 async def index(
     request: Request,
@@ -140,6 +162,7 @@ async def index(
         import_pending = current_import_status is None and import_coordinator.is_import_active()
         context.update(
             filters=await _catalog(request).filters(),
+            statistics_context=await _statistics_context(request),
             opds_url=opds_url,
             import_status=current_import_status,
             csrf_token=cast(str, request.app.state.csrf_token),
@@ -157,6 +180,15 @@ async def index(
             context={"message": str(error)},
             status_code=400,
         )
+
+
+@router.get("/catalog-statistics", response_class=HTMLResponse)
+async def catalog_statistics(request: Request) -> Response:
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/catalog_statistics.html",
+        context=await _statistics_context(request),
+    )
 
 
 @router.get("/catalog-fragment", response_class=HTMLResponse)
@@ -330,6 +362,12 @@ async def import_status(request: Request, after_run_id: int | None = None) -> Re
     coordinator = _imports(request)
     status = await coordinator.get_status()
     if after_run_id is not None and (status is None or status.run_id <= after_run_id):
+        if not coordinator.is_import_active():
+            return await _status_response(
+                request,
+                status,
+                message="No catalog changes found",
+            )
         return await _status_response(
             request,
             None,
@@ -346,24 +384,40 @@ async def import_status(request: Request, after_run_id: int | None = None) -> Re
             poll=True,
             pending=True,
         )
-    return await _status_response(request, status)
+    response = await _status_response(
+        request,
+        status,
+        poll_after_run_id=after_run_id,
+    )
+    if (
+        after_run_id is not None
+        and status is not None
+        and status.run_id > after_run_id
+        and status.state is not ImportState.RUNNING
+    ):
+        response.headers["HX-Trigger"] = "catalogChanged"
+    return response
 
 
-@router.post("/imports", response_class=HTMLResponse)
-async def start_import(request: Request) -> Response:
+def _validate_csrf(request: Request) -> None:
     supplied = request.headers.get("X-CSRF-Token", "")
     expected = cast(str, request.app.state.csrf_token)
     if not supplied or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+
+async def _start_import(request: Request, *, force: bool) -> Response:
+    _validate_csrf(request)
     coordinator = _imports(request)
     previous_status = await coordinator.get_status()
-    accepted = coordinator.start_manual_import()
+    accepted = coordinator.start_manual_import(force=force)
     if accepted:
+        mode = "Force import" if force else "Import check"
         return await _status_response(
             request,
             None,
             status_code=202,
-            message="Manual import is starting",
+            message=f"{mode} is starting",
             poll=True,
             pending=True,
             poll_after_run_id=previous_status.run_id if previous_status is not None else 0,
@@ -371,8 +425,35 @@ async def start_import(request: Request) -> Response:
     return await _status_response(
         request,
         await coordinator.get_status(),
-        message="An import is already running",
-        poll=True,
+        message="An import or database maintenance operation is already running",
+        poll=coordinator.is_import_active(),
+    )
+
+
+@router.post("/imports", response_class=HTMLResponse)
+async def start_import(request: Request) -> Response:
+    return await _start_import(request, force=False)
+
+
+@router.post("/imports/force", response_class=HTMLResponse)
+async def start_force_import(request: Request) -> Response:
+    return await _start_import(request, force=True)
+
+
+@router.post("/database/vacuum", response_class=HTMLResponse)
+async def vacuum_database(request: Request) -> Response:
+    _validate_csrf(request)
+    vacuumed = await _imports(request).vacuum_database()
+    context = await _statistics_context(request)
+    context["message"] = (
+        "Database VACUUM completed"
+        if vacuumed
+        else "VACUUM skipped because catalog work is running"
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/catalog_statistics.html",
+        context=context,
     )
 
 

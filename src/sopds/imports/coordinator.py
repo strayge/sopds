@@ -47,6 +47,7 @@ class ImportCoordinator:
         self._import_lock = asyncio.Lock()
         self._manual_task: asyncio.Task[ImportResult] | None = None
         self._manual_reserved = False
+        self._vacuum_active = False
 
     async def recover(self) -> None:
         await self._repository.ensure_source(self._namespace, self._source_path)
@@ -67,7 +68,7 @@ class ImportCoordinator:
         task = self._manual_task
         return (
             self._manual_reserved
-            or self._import_lock.locked()
+            or (self._import_lock.locked() and not self._vacuum_active)
             or (task is not None and not task.done())
         )
 
@@ -77,14 +78,14 @@ class ImportCoordinator:
     async def force_import(self) -> ImportResult:
         return await self._request(ImportTrigger.MANUAL, force=True)
 
-    async def _run_reserved_manual_import(self) -> ImportResult:
+    async def _run_reserved_manual_import(self, *, force: bool) -> ImportResult:
         try:
-            return await self._request(ImportTrigger.MANUAL, force=True)
+            return await self._request(ImportTrigger.MANUAL, force=force)
         finally:
             if asyncio.current_task() is self._manual_task:
                 self._manual_reserved = False
 
-    def start_manual_import(self) -> bool:
+    def start_manual_import(self, *, force: bool = False) -> bool:
         """Reserve admission synchronously so later scheduled checks cannot overtake it."""
         if (
             self._import_lock.locked()
@@ -97,7 +98,7 @@ class ImportCoordinator:
         self._manual_reserved = True
         try:
             task = asyncio.create_task(
-                self._run_reserved_manual_import(), name="manual-catalog-import"
+                self._run_reserved_manual_import(force=force), name="manual-catalog-import"
             )
         except Exception:
             self._manual_reserved = False
@@ -105,6 +106,21 @@ class ImportCoordinator:
         self._manual_task = task
         task.add_done_callback(self._manual_done)
         return True
+
+    async def vacuum_database(self) -> bool:
+        """Run exclusive SQLite maintenance without overlapping catalog replacement."""
+        if self._manual_reserved or self._import_lock.locked():
+            _LOGGER.info("Database vacuum rejected because catalog work is running")
+            return False
+        self._vacuum_active = True
+        try:
+            async with self._import_lock:
+                _LOGGER.info("Database vacuum started phase=vacuum")
+                await self._repository.vacuum()
+                _LOGGER.info("Database vacuum completed phase=vacuum")
+                return True
+        finally:
+            self._vacuum_active = False
 
     def _manual_done(self, task: asyncio.Task[ImportResult]) -> None:
         if self._manual_task is task:

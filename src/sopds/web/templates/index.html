@@ -16,6 +16,10 @@
       .error { color: #a21b1b; }
       .status-ok { color: #18753c; }
       .status-error { color: #a21b1b; }
+      .actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
+      dt { font-weight: 600; }
+      dd { margin: 0; }
     </style>
   </head>
   <body>
@@ -24,6 +28,37 @@
       <p class="muted">INPX-backed catalog</p>
     </header>
     <main>
+      <section aria-labelledby="catalog-heading">
+        <h2 id="catalog-heading">Catalog</h2>
+        {% with statistics=statistics_context.statistics, database_size=statistics_context.database_size, message=statistics_context.message %}
+          {% include "partials/catalog_statistics.html" %}
+        {% endwith %}
+        <div class="actions">
+          <button
+            type="button"
+            hx-post="/imports"
+            hx-target="#import-status"
+            hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
+          >Import changes</button>
+          <button
+            type="button"
+            hx-post="/imports/force"
+            hx-target="#import-status"
+            hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
+          >Force import</button>
+          <button
+            type="button"
+            hx-post="/database/vacuum"
+            hx-target="#catalog-statistics"
+            hx-swap="outerHTML"
+            hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
+          >VACUUM database</button>
+        </div>
+        <div id="import-status">
+          {% include "partials/import_status.html" %}
+        </div>
+      </section>
+
       <form action="/" method="get" hx-get="/catalog-fragment" hx-target="#catalog-results">
         <label>Search
           <input name="q" value="{{ catalog_request.query }}" maxlength="200" placeholder="Title, author, or series">
@@ -53,22 +88,27 @@
         {% include "partials/catalog_results.html" %}
       </section>
 
-      <section aria-labelledby="import-heading">
-        <h2 id="import-heading">Catalog import</h2>
-        <button
-          type="button"
-          hx-post="/imports"
-          hx-target="#import-status"
-          hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-        >Import now</button>
-        <div id="import-status">
-          {% include "partials/import_status.html" %}
-        </div>
-      </section>
-
       <p id="health" hx-get="/health-fragment" hx-trigger="load, every 30s" hx-swap="innerHTML">
         Checking application health…
       </p>
     </main>
+    <script>
+      function localizeCatalogTimes(root) {
+        root.querySelectorAll("time.local-datetime").forEach((element) => {
+          const value = new Date(element.dateTime);
+          if (!Number.isNaN(value.getTime())) {
+            element.textContent = new Intl.DateTimeFormat(undefined, {
+              dateStyle: "medium",
+              timeStyle: "medium"
+            }).format(value);
+            element.title = element.dateTime;
+          }
+        });
+      }
+      localizeCatalogTimes(document);
+      document.body.addEventListener("htmx:afterSwap", (event) => {
+        localizeCatalogTimes(event.detail.target);
+      });
+    </script>
   </body>
 </html>

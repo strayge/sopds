@@ -27,6 +27,7 @@ from sopds.catalog.contracts import (
     CatalogFilters,
     CatalogPage,
     CatalogRequest,
+    CatalogStatistics,
     FilterOption,
 )
 from sopds.imports.status import ImportState, ImportStatus, ImportTrigger
@@ -84,6 +85,14 @@ class _Catalog:
             original_formats=(FilterOption("fb2", "fb2"),),
         )
 
+    async def statistics(self) -> CatalogStatistics:
+        return CatalogStatistics(
+            active_books=12,
+            deleted_books=3,
+            generation_activated_at=datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
+            database_size_bytes=2 * 1024 * 1024,
+        )
+
 
 class _Stream:
     def __init__(self, body: bytes = b"original") -> None:
@@ -125,7 +134,9 @@ class _Imports:
         self.status = status
         self.active = active
         self.accept = True
-        self.started = 0
+        self.started: list[bool] = []
+        self.vacuumed = True
+        self.vacuum_calls = 0
 
     async def get_status(self) -> ImportStatus | None:
         return self.status
@@ -133,9 +144,13 @@ class _Imports:
     def is_import_active(self) -> bool:
         return self.active
 
-    def start_manual_import(self) -> bool:
-        self.started += 1
+    def start_manual_import(self, *, force: bool = False) -> bool:
+        self.started.append(force)
         return self.accept
+
+    async def vacuum_database(self) -> bool:
+        self.vacuum_calls += 1
+        return self.vacuumed
 
 
 def _status(state: ImportState, run_id: int = 1) -> ImportStatus:
@@ -193,6 +208,13 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         'href="https://catalog.example/root/opds/">'
     ) in page.text
     assert "next-token" in page.text
+    assert "Current books</dt><dd>12" in page.text
+    assert "Current deleted books</dt><dd>3" in page.text
+    assert "2.0 MiB" in page.text
+    assert 'datetime="2025-01-02T03:04:05+00:00"' in page.text
+    assert 'hx-post="/imports"' in page.text
+    assert 'hx-post="/imports/force"' in page.text
+    assert 'hx-post="/database/vacuum"' in page.text
     assert (
         'href="/?q=book&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
         in page.text
@@ -384,20 +406,51 @@ def test_manual_import_requires_csrf_and_reports_current_run() -> None:
         missing = client.post("/imports")
         invalid = client.post("/imports", headers={"X-CSRF-Token": "wrong"})
         accepted = client.post("/imports", headers={"X-CSRF-Token": csrf_token})
+        forced = client.post("/imports/force", headers={"X-CSRF-Token": csrf_token})
+        imports.active = True
         pending = client.get("/imports/status?after_run_id=1")
         imports.status = _status(ImportState.RUNNING, run_id=2)
         started = client.get("/imports/status?after_run_id=1")
+        imports.status = _status(ImportState.SUCCEEDED, run_id=2)
+        terminal = client.get("/imports/status?after_run_id=1")
         imports.accept = False
         already_running = client.post("/imports", headers={"X-CSRF-Token": csrf_token})
 
     assert missing.status_code == 403
     assert invalid.status_code == 403
     assert accepted.status_code == 202
-    assert "Manual import is starting" in accepted.text
+    assert forced.status_code == 202
+    assert "Import check is starting" in accepted.text
+    assert "Force import is starting" in forced.text
     assert "2 imported" not in accepted.text
     assert "after_run_id=1" in accepted.text
     assert "Waiting for the import run" in pending.text
     assert "2 imported" in started.text
+    assert "after_run_id=1" in started.text
+    assert terminal.headers["HX-Trigger"] == "catalogChanged"
     assert already_running.status_code == 200
     assert "already running" in already_running.text
-    assert imports.started == 2
+    assert imports.started == [False, True, False]
+
+
+def test_unchanged_import_stops_polling_and_vacuum_refreshes_statistics() -> None:
+    imports = _Imports(_status(ImportState.SUCCEEDED))
+    app, _, _ = _app(imports)
+    csrf_token = app.state.csrf_token
+    with TestClient(app) as client:
+        unchanged = client.get("/imports/status?after_run_id=1")
+        missing_csrf = client.post("/database/vacuum")
+        vacuumed = client.post("/database/vacuum", headers={"X-CSRF-Token": csrf_token})
+        imports.vacuumed = False
+        busy = client.post("/database/vacuum", headers={"X-CSRF-Token": csrf_token})
+
+    assert unchanged.status_code == 200
+    assert "No catalog changes found" in unchanged.text
+    assert 'hx-get="/imports/status' not in unchanged.text
+    assert missing_csrf.status_code == 403
+    assert vacuumed.status_code == 200
+    assert "Database VACUUM completed" in vacuumed.text
+    assert "2.0 MiB" in vacuumed.text
+    assert busy.status_code == 200
+    assert "VACUUM skipped" in busy.text
+    assert imports.vacuum_calls == 2

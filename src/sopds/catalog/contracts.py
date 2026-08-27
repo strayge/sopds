@@ -80,6 +80,14 @@ class CatalogSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogStatistics:
+    active_books: int
+    deleted_books: int
+    generation_activated_at: datetime | None
+    database_size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class NavigationRequest:
     kind: str
     cursor: str | None = None
@@ -115,5 +123,7 @@ class Catalog(Protocol):
     async def filters(self) -> CatalogFilters: ...
 
     async def snapshot(self) -> CatalogSnapshot: ...
+
+    async def statistics(self) -> CatalogStatistics: ...
 
     async def navigation(self, request: NavigationRequest) -> NavigationPage: ...

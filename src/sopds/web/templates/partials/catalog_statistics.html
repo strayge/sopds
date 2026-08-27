@@ -1,0 +1,16 @@
+<div id="catalog-statistics" hx-get="/catalog-statistics" hx-trigger="catalogChanged from:body" hx-swap="outerHTML">
+  {% if message %}<p{% if "skipped" in message %} class="error"{% else %} class="status-ok"{% endif %}>{{ message }}</p>{% endif %}
+  <dl>
+    <dt>Current books</dt><dd>{{ statistics.active_books }}</dd>
+    <dt>Current deleted books</dt><dd>{{ statistics.deleted_books }}</dd>
+    <dt>Current generation added</dt>
+    <dd>
+      {% if statistics.generation_activated_at %}
+        <time class="local-datetime" datetime="{{ statistics.generation_activated_at.isoformat() }}">{{ statistics.generation_activated_at }} UTC</time>
+      {% else %}
+        No generation has been imported
+      {% endif %}
+    </dd>
+    <dt>Database size</dt><dd>{{ database_size }}</dd>
+  </dl>
+</div>
