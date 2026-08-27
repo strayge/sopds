@@ -1,12 +1,15 @@
 """Web adapter tests for catalog rendering, status polling, and manual import CSRF."""
 
 import asyncio
+import html
+import re
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import override
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import FastAPI
@@ -44,6 +47,12 @@ class _Catalog:
         self.requests: list[CatalogRequest] = []
         self.filter_calls = 0
         self.filter_failures_remaining = 0
+        self.detail_requests: list[tuple[bool, bool]] = []
+        self.detail_title = "A Book"
+        self.detail_published_date: date | None = None
+        self.detail_rating: int | None = None
+        self.detail_keywords: str | None = None
+        self.detail_libid: str | None = None
         self.available_filters = CatalogFilters(
             languages=(FilterOption("en", "en"),),
             genres=(FilterOption("sf", "Science fiction"),),
@@ -106,11 +115,19 @@ class _Catalog:
         include_missed: bool = False,
         include_hidden: bool = False,
     ) -> BookDetail | None:
+        self.detail_requests.append((include_missed, include_hidden))
         if public_id != "public-1":
             return None
+        availability = (
+            BookAvailability.HIDDEN
+            if include_hidden
+            else BookAvailability.MISSED
+            if include_missed
+            else BookAvailability.ACTIVE
+        )
         return BookDetail(
             public_id=public_id,
-            title="A Book",
+            title=self.detail_title,
             authors=(
                 "Тестов,Тест,",
                 " Примеров,Пример,Примерович",
@@ -119,12 +136,13 @@ class _Catalog:
             series="Series",
             series_number="1",
             size=126_000,
-            libid=None,
-            published_date=None,
+            libid=self.detail_libid,
+            published_date=self.detail_published_date,
             language="en",
             original_format="fb2",
-            rating=None,
-            keywords=None,
+            rating=self.detail_rating,
+            keywords=self.detail_keywords,
+            availability=availability,
         )
 
     async def filters(self) -> CatalogFilters:
@@ -202,6 +220,18 @@ class _Imports:
     async def vacuum_database(self) -> bool:
         self.vacuum_calls += 1
         return self.vacuumed
+
+
+def _link_href(markup: str, test_id: str) -> str:
+    match = re.search(rf'<a data-testid="{re.escape(test_id)}" href="([^"]+)"', markup)
+    assert match is not None
+    return html.unescape(match.group(1))
+
+
+def _detail_href(markup: str) -> str:
+    match = re.search(r'href="(/books/public-1\?[^"]+)"', markup)
+    assert match is not None
+    return html.unescape(match.group(1))
 
 
 def _status(state: ImportState, run_id: int = 1) -> ImportStatus:
@@ -349,8 +379,16 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         in detail.text
     )
     assert 'href="/?series=Series"' in detail.text
-    assert "<strong>Size:</strong> 123 KB" in detail.text
+    assert "<dt>File size</dt>" in detail.text
+    assert "<dd>123 KB</dd>" in detail.text
+    assert "Back to catalog" in detail.text
+    assert 'class="availability-badge availability-badge--active">Active</span>' in detail.text
+    assert "Download original · FB2 · 123 KB" in detail.text
     assert 'href="/books/public-1/download"' in detail.text
+    assert "Published" not in detail.text
+    assert "Rating" not in detail.text
+    assert "Keywords" not in detail.text
+    assert "Library ID" not in detail.text
     assert missing.status_code == 404
     assert author_page.status_code == 200
     assert series_page.status_code == 200
@@ -582,7 +620,14 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     assert '<details class="catalog-more-filters" open>' in page.text
     assert "2 active" in page.text
     assert 'class="availability-badge availability-badge--hidden">Hidden</span>' in page.text
-    assert 'href="/books/public-1?include_missed=true&amp;include_hidden=true"' in page.text
+    detail_href = _detail_href(page.text)
+    detail_query = parse_qs(urlsplit(detail_href).query)
+    assert detail_query["include_missed"] == ["true"]
+    assert detail_query["include_hidden"] == ["true"]
+    assert detail_query["return_to"] == [
+        "/?q=hidden&search_field=all&language=&genre=&original_format=&cursor="
+        "&include_missed=true&include_hidden=true"
+    ]
     assert fragment.status_code == 200
     assert 'class="availability-badge availability-badge--missed">Missed</span>' in fragment.text
     assert fragment.headers["HX-Push-Url"].endswith("&include_missed=true&include_hidden=true")
@@ -592,6 +637,120 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     assert (
         CatalogRequest(query="missed", include_missed=True, include_hidden=True) in catalog.requests
     )
+
+
+def test_result_detail_link_preserves_exact_catalog_context() -> None:
+    app, catalog, _ = _app()
+    params = {
+        "q": "книга",
+        "search_field": "title",
+        "language": "ru",
+        "genre": "sf",
+        "original_format": "fb2",
+        "cursor": "opaque/token",
+        "author": "Тестов,Тест,",
+        "series": "Series & More",
+        "include_missed": "true",
+        "include_hidden": "true",
+    }
+    with TestClient(app) as client:
+        results = client.get("/", params=params)
+        detail_href = _detail_href(results.text)
+        detail = client.get(detail_href)
+
+    expected_return = (
+        "/?q=%D0%BA%D0%BD%D0%B8%D0%B3%D0%B0&search_field=title&language=ru&genre=sf"
+        "&original_format=fb2&cursor=opaque%2Ftoken"
+        "&author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"
+        "&series=Series+%26+More&include_missed=true&include_hidden=true"
+    )
+    query = parse_qs(urlsplit(detail_href).query)
+    assert query == {
+        "return_to": [expected_return],
+        "include_missed": ["true"],
+        "include_hidden": ["true"],
+    }
+    assert detail.status_code == 200
+    assert _link_href(detail.text, "detail-back-link") == expected_return
+    assert "Back to results" in detail.text
+    assert catalog.detail_requests[-1] == (True, True)
+    assert (
+        'href="/?author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C'
+        '&amp;include_missed=true&amp;include_hidden=true"' in detail.text
+    )
+    assert 'href="/?series=Series&amp;include_missed=true&amp;include_hidden=true"' in detail.text
+
+
+@pytest.mark.parametrize(
+    "return_to",
+    [
+        "https://example.invalid/?q=book",
+        "//example.invalid/?q=book",
+        "///?q=book",
+        "",
+        "?q=book",
+        "%2F%3Fq%3Dbook",
+        "/?q=book#section",
+        "/?q=book\\catalog",
+        "/?q=book\nnext",
+        "/manage?q=book",
+        "relative",
+        "/?q=%ZZ",
+        "//[invalid",
+    ],
+)
+def test_book_detail_rejects_unsafe_return_urls(return_to: str) -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        response = client.get("/books/public-1", params={"return_to": return_to})
+
+    assert response.status_code == 200
+    assert _link_href(response.text, "detail-back-link") == "/"
+    assert "Back to catalog" in response.text
+
+
+def test_book_detail_accepts_catalog_root_without_a_query() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        response = client.get("/books/public-1", params={"return_to": "/"})
+
+    assert response.status_code == 200
+    assert _link_href(response.text, "detail-back-link") == "/"
+    assert "Back to results" in response.text
+
+
+def test_book_detail_renders_present_metadata_and_availability_actions() -> None:
+    app, catalog, _ = _app()
+    catalog.detail_title = "Очень длинное многоязычное название книги"
+    catalog.detail_published_date = date(2024, 2, 3)
+    catalog.detail_rating = 5
+    catalog.detail_keywords = "one, два"
+    catalog.detail_libid = "library-7"
+    with TestClient(app) as client:
+        active = client.get("/books/public-1")
+        hidden = client.get("/books/public-1?include_hidden=true")
+        missed = client.get("/books/public-1?include_missed=true")
+
+    assert active.status_code == 200
+    assert "Очень длинное многоязычное название книги" in active.text
+    assert (
+        'class="book-tile book-detail__tile book-tile--1" aria-hidden="true">\u041e</div>'
+        in active.text
+    )
+    assert "<dt>Published</dt><dd>2024-02-03</dd>" in active.text
+    assert "<dt>Rating</dt><dd>5</dd>" in active.text
+    assert "<dt>Library ID</dt><dd>library-7</dd>" in active.text
+    assert 'class="tag" href="/?genre=sf">Science fiction</a>' in active.text
+    assert 'class="tag tag--text">one</span>' in active.text
+    assert 'class="tag tag--text">два</span>' in active.text
+    assert "Download original · FB2 · 123 KB" in active.text
+    assert 'availability-badge--hidden">Hidden</span>' in hidden.text
+    assert "Download original · FB2 · 123 KB" in hidden.text
+    assert 'href="/?series=Series&amp;include_hidden=true"' in hidden.text
+    assert 'availability-badge--missed">Missed</span>' in missed.text
+    assert "Original file unavailable" in missed.text
+    assert "Download original" not in missed.text
+    assert 'href="/books/public-1/download"' not in missed.text
 
 
 def test_active_scopes_are_visible_preserved_and_removable_without_cursor() -> None:

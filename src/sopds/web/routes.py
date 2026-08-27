@@ -6,7 +6,7 @@ import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal, cast, override
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -261,6 +261,41 @@ def _availability_query(include_missed: bool, include_hidden: bool) -> str:
     )
 
 
+def _detail_query(catalog_request: CatalogRequest) -> str:
+    values = {
+        "return_to": _catalog_url("/", catalog_request, catalog_request.cursor),
+    }
+    if catalog_request.include_missed:
+        values["include_missed"] = "true"
+    if catalog_request.include_hidden:
+        values["include_hidden"] = "true"
+    return urlencode(values)
+
+
+def _validated_return_url(value: str | None) -> str | None:
+    if (
+        not value
+        or value.startswith("//")
+        or "\\" in value
+        or "#" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        return None
+    for index, character in enumerate(value):
+        if character == "%" and (
+            index + 2 >= len(value)
+            or any(digit not in "0123456789abcdefABCDEF" for digit in value[index + 1 : index + 3])
+        ):
+            return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme or parsed.netloc or parsed.path != "/" or parsed.fragment:
+        return None
+    return value
+
+
 async def _results_context(
     request: Request,
     catalog_request: CatalogRequest,
@@ -279,10 +314,11 @@ async def _results_context(
         "catalog_request": catalog_request,
         "next_href": next_href,
         "next_hx_url": next_hx_url,
-        "detail_query": _availability_query(
+        "availability_query": _availability_query(
             catalog_request.include_missed,
             catalog_request.include_hidden,
         ),
+        "detail_query": _detail_query(catalog_request),
         "searched": searched,
     }
 
@@ -464,6 +500,7 @@ async def book_detail(
     public_id: str,
     include_missed: bool = False,
     include_hidden: bool = False,
+    return_to: str | None = None,
 ) -> Response:
     book = await _catalog(request).details(
         public_id,
@@ -472,13 +509,18 @@ async def book_detail(
     )
     if book is None:
         raise HTTPException(status_code=404, detail="Book not found")
+    validated_return_url = _validated_return_url(return_to)
     return templates.TemplateResponse(
         request=request,
         name="book_detail.html",
         context={
             **_shell_context(request, active_navigation="catalog"),
             "book": book,
-            "detail_query": _availability_query(include_missed, include_hidden),
+            "back_href": validated_return_url or "/",
+            "back_label": (
+                "Back to results" if validated_return_url is not None else "Back to catalog"
+            ),
+            "availability_query": _availability_query(include_missed, include_hidden),
         },
     )
 

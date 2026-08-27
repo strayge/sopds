@@ -651,6 +651,11 @@ dd {
   text-transform: uppercase;
 }
 
+.availability-badge--active {
+  background: var(--color-success-surface);
+  color: var(--color-success);
+}
+
 .availability-badge--hidden {
   background: var(--color-warning-surface);
   color: var(--color-warning);
@@ -743,6 +748,154 @@ dd {
   color: #ffffff;
 }
 
+.book-detail {
+  overflow-wrap: anywhere;
+}
+
+.book-detail__breadcrumb {
+  margin-bottom: var(--space-6);
+  font-weight: 600;
+}
+
+.book-detail__header {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: center;
+  margin-bottom: var(--space-7);
+}
+
+.book-detail__tile {
+  width: 7rem;
+  height: 9rem;
+  font-size: 3rem;
+}
+
+.book-detail__introduction {
+  min-width: 0;
+}
+
+.book-detail__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+
+.book-detail__title-row h1 {
+  max-width: 24ch;
+  margin-bottom: var(--space-3);
+  text-wrap: initial;
+}
+
+.book-detail__authors,
+.book-detail__series {
+  margin-bottom: var(--space-2);
+  font-size: 1.05rem;
+}
+
+.book-detail__label {
+  margin-right: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.book-detail__content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(17rem, 22rem);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.book-detail__metadata h2 {
+  margin: 0 0 var(--space-5);
+  font-size: 1.5rem;
+}
+
+.book-detail__metadata dl {
+  margin-bottom: 0;
+}
+
+.book-detail__tags {
+  margin-top: var(--space-6);
+}
+
+.book-detail__tags h3 {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-utility);
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tag {
+  display: inline-flex;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-paper);
+  overflow-wrap: anywhere;
+}
+
+.tag--text {
+  color: var(--color-text-muted);
+}
+
+.book-detail__download {
+  margin: 0;
+}
+
+.book-detail__download-label {
+  margin-bottom: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.book-detail__download-action {
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-small);
+  background: var(--color-forest);
+  color: #ffffff;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
+
+.book-detail__download-action:hover {
+  background: var(--color-forest-dark);
+  color: #ffffff;
+}
+
+.book-detail__unavailable {
+  margin-bottom: var(--space-2);
+  color: var(--color-error);
+  font-weight: 600;
+}
+
+.book-detail__download > :last-child {
+  margin-bottom: 0;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -793,6 +946,10 @@ dd {
 
   .result-row__action {
     display: none;
+  }
+
+  .book-detail__content {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -850,6 +1007,11 @@ dd {
 
   .book-tile {
     display: none;
+  }
+
+  .book-detail__header {
+    grid-template-columns: 1fr;
+    gap: 0;
   }
 
   dl {

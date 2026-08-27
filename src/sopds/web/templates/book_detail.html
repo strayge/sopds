@@ -3,17 +3,75 @@
 {% block title %}{{ book.title }} · SOPDS{% endblock %}
 
 {% block content %}
-  <p><a href="/">← Catalog</a></p>
-  <h1>{{ book.title }}</h1>
-  {% if book.availability.value != "active" %}<p><strong>Status:</strong> {{ book.availability.value|capitalize }}</p>{% endif %}
-  {% if book.authors %}<p><strong>Authors:</strong> {% for author in book.authors %}<a href="/?author={{ author|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
-  {% if book.series %}<p><strong>Series:</strong> <a href="/?series={{ book.series|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ book.series }}</a>{% if book.series_number %} #{{ book.series_number }}{% endif %}</p>{% endif %}
-  {% if book.genres %}<p><strong>Genres:</strong> {% for code, label in book.genres %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
-  <p><strong>Original format:</strong> {{ book.original_format }}</p>
-  {% if book.language %}<p><strong>Language:</strong> {{ book.language }}</p>{% endif %}
-  {% if book.published_date %}<p><strong>Published:</strong> {{ book.published_date }}</p>{% endif %}
-  <p><strong>Size:</strong> {{ book.size|kilobytes }}</p>
-  <p><a href="/books/{{ book.public_id|urlencode }}/download">Download original</a></p>
-  {% if book.rating is not none %}<p><strong>Rating:</strong> {{ book.rating }}</p>{% endif %}
-  {% if book.keywords %}<p><strong>Keywords:</strong> {{ book.keywords }}</p>{% endif %}
+  <article class="book-detail">
+    <nav class="book-detail__breadcrumb" aria-label="Breadcrumb">
+      <a data-testid="detail-back-link" href="{{ back_href }}"><span aria-hidden="true">←</span> {{ back_label }}</a>
+    </nav>
+
+    <header class="book-detail__header">
+      <div class="book-tile book-detail__tile book-tile--1" aria-hidden="true">{{ (book.title|trim|first)|upper }}</div>
+      <div class="book-detail__introduction">
+        <div class="book-detail__title-row">
+          <h1>{{ book.title }}</h1>
+          <span class="availability-badge availability-badge--{{ book.availability.value }}">{{ book.availability.value|capitalize }}</span>
+        </div>
+        {% if book.authors %}
+          <p class="book-detail__authors">
+            <span class="visually-hidden">Authors:</span>
+            {% for author in book.authors %}<a href="/?author={{ author|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span> {% endif %}{% endfor %}
+          </p>
+        {% endif %}
+        {% if book.series %}
+          <p class="book-detail__series">
+            <span class="book-detail__label">Series</span>
+            <a href="/?series={{ book.series|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ book.series }}</a>{% if book.series_number %} <span>#{{ book.series_number }}</span>{% endif %}
+          </p>
+        {% endif %}
+      </div>
+    </header>
+
+    <div class="book-detail__content">
+      <section class="book-detail__metadata surface" aria-labelledby="book-metadata-heading">
+        <h2 id="book-metadata-heading">Book details</h2>
+        <dl>
+          <dt>Original format</dt>
+          <dd>{{ book.original_format|upper }}</dd>
+          {% if book.language %}<dt>Language</dt><dd>{{ book.language }}</dd>{% endif %}
+          {% if book.published_date %}<dt>Published</dt><dd>{{ book.published_date }}</dd>{% endif %}
+          <dt>File size</dt>
+          <dd>{{ book.size|kilobytes }}</dd>
+          {% if book.rating is not none %}<dt>Rating</dt><dd>{{ book.rating }}</dd>{% endif %}
+          {% if book.libid %}<dt>Library ID</dt><dd>{{ book.libid }}</dd>{% endif %}
+        </dl>
+
+        {% if book.genres %}
+          <div class="book-detail__tags">
+            <h3>Genres</h3>
+            <ul class="tag-list">
+              {% for code, label in book.genres %}<li><a class="tag" href="/?genre={{ code|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ label }}</a></li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+
+        {% if book.keywords %}
+          <div class="book-detail__tags">
+            <h3>Keywords</h3>
+            <ul class="tag-list">
+              {% for keyword in book.keywords.split(",") %}{% if keyword|trim %}<li><span class="tag tag--text">{{ keyword|trim }}</span></li>{% endif %}{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+      </section>
+
+      <aside class="book-detail__download surface surface--raised" aria-label="Original file">
+        {% if book.availability.value == "missed" %}
+          <p class="book-detail__unavailable" role="status">Original file unavailable</p>
+          <p class="muted">The catalog record remains available, but its original file is missing.</p>
+        {% else %}
+          <p class="book-detail__download-label">Original file</p>
+          <a class="book-detail__download-action" href="/books/{{ book.public_id|urlencode }}/download">Download original · {{ book.original_format|upper }} · {{ book.size|kilobytes }}</a>
+        {% endif %}
+      </aside>
+    </div>
+  </article>
 {% endblock %}
