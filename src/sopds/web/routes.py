@@ -31,7 +31,13 @@ from sopds.acquisition.contracts import (
     AcquisitionUnsafePathError,
 )
 from sopds.acquisition.service import content_disposition
-from sopds.catalog.contracts import Catalog, CatalogInputError, CatalogRequest
+from sopds.catalog.contracts import (
+    Catalog,
+    CatalogInputError,
+    CatalogPage,
+    CatalogRequest,
+    SearchField,
+)
 from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
 
 router = APIRouter()
@@ -71,6 +77,7 @@ def _acquisition(request: Request) -> Acquisition:
 
 def _catalog_request(
     q: str,
+    search_field: SearchField,
     language: str | None,
     genre: str | None,
     original_format: str | None,
@@ -78,6 +85,7 @@ def _catalog_request(
 ) -> CatalogRequest:
     return CatalogRequest(
         query=q,
+        search_field=search_field,
         language=language or None,
         genre=genre or None,
         original_format=original_format or None,
@@ -88,6 +96,7 @@ def _catalog_request(
 def _catalog_url(path: str, catalog_request: CatalogRequest, cursor: str | None) -> str:
     values = {
         "q": catalog_request.query,
+        "search_field": catalog_request.search_field.value,
         "language": catalog_request.language or "",
         "genre": catalog_request.genre or "",
         "original_format": catalog_request.original_format or "",
@@ -107,8 +116,17 @@ def _next_urls(
     )
 
 
-async def _results_context(request: Request, catalog_request: CatalogRequest) -> dict[str, object]:
-    page = await _catalog(request).browse(catalog_request)
+async def _results_context(
+    request: Request,
+    catalog_request: CatalogRequest,
+    *,
+    searched: bool = True,
+) -> dict[str, object]:
+    page = (
+        await _catalog(request).browse(catalog_request)
+        if searched
+        else CatalogPage(books=(), next_cursor=None)
+    )
     next_href, next_hx_url = _next_urls(catalog_request, page.next_cursor)
     return {
         "request": request,
@@ -116,6 +134,7 @@ async def _results_context(request: Request, catalog_request: CatalogRequest) ->
         "catalog_request": catalog_request,
         "next_href": next_href,
         "next_hx_url": next_hx_url,
+        "searched": searched,
     }
 
 
@@ -144,14 +163,26 @@ async def _statistics_context(request: Request) -> dict[str, object]:
 async def index(
     request: Request,
     q: str = "",
+    search_field: SearchField = SearchField.ALL,
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
     cursor: str | None = None,
 ) -> Response:
-    catalog_request = _catalog_request(q, language, genre, original_format, cursor)
+    catalog_request = _catalog_request(q, search_field, language, genre, original_format, cursor)
+    searched = any(
+        name in request.query_params
+        for name in (
+            "q",
+            "search_field",
+            "language",
+            "genre",
+            "original_format",
+            "cursor",
+        )
+    )
     try:
-        context = await _results_context(request, catalog_request)
+        context = await _results_context(request, catalog_request, searched=searched)
         config = getattr(request.app.state, "config", None)
         opds_url = (
             str(config.server.base_url).rstrip("/") + "/opds/" if config is not None else "/opds/"
@@ -194,12 +225,13 @@ async def catalog_statistics(request: Request) -> Response:
 async def catalog_fragment(
     request: Request,
     q: str = "",
+    search_field: SearchField = SearchField.ALL,
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
     cursor: str | None = None,
 ) -> Response:
-    catalog_request = _catalog_request(q, language, genre, original_format, cursor)
+    catalog_request = _catalog_request(q, search_field, language, genre, original_format, cursor)
     try:
         context = await _results_context(request, catalog_request)
     except CatalogInputError as error:

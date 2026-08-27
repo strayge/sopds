@@ -21,6 +21,7 @@ from sopds.catalog.contracts import (
     NavigationItem,
     NavigationPage,
     NavigationRequest,
+    SearchField,
 )
 from sopds.catalog.search import fts_match_expression, query_tokens
 from sopds.db.repository import CatalogRepository
@@ -59,7 +60,7 @@ class CatalogService:
         tokens = query_tokens(request.query)
         normalized = " ".join(tokens)
         fingerprint = _request_fingerprint(request, normalized)
-        match = fts_match_expression(tokens)
+        match = fts_match_expression(tokens, request.search_field)
 
         for attempt in range(2):
             snapshot = await self._repository.active_snapshot()
@@ -219,6 +220,8 @@ class CatalogService:
 
 
 def _validate_filters(request: CatalogRequest) -> None:
+    if not isinstance(request.search_field, SearchField):
+        raise CatalogInputError("Invalid search field")
     if (
         type(request.page_size) is not int
         or not MIN_PAGE_SIZE <= request.page_size <= MAX_PAGE_SIZE
@@ -243,6 +246,7 @@ def _request_fingerprint(request: CatalogRequest, normalized: str) -> str:
             request.original_format,
             request.author,
             request.series,
+            request.search_field.value,
             request.page_size,
         ],
         ensure_ascii=False,

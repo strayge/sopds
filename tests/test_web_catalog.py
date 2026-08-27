@@ -29,6 +29,7 @@ from sopds.catalog.contracts import (
     CatalogRequest,
     CatalogStatistics,
     FilterOption,
+    SearchField,
 )
 from sopds.imports.status import ImportState, ImportStatus, ImportTrigger
 from sopds.web import routes
@@ -192,10 +193,10 @@ def _app(imports: _Imports | None = None) -> tuple[FastAPI, _Catalog, _Imports]:
 def test_full_page_fragment_filters_pagination_and_details() -> None:
     app, catalog, _ = _app()
     with TestClient(app) as client:
-        page = client.get("/?q=book&language=en&genre=sf&original_format=fb2")
-        fragment = client.get("/catalog-fragment?q=book&language=en&genre=sf")
+        page = client.get("/?q=book&search_field=title&language=en&genre=sf&original_format=fb2")
+        fragment = client.get("/catalog-fragment?q=book&search_field=author&language=en&genre=sf")
         full_next = client.get(
-            "/?q=book&language=en&genre=sf&original_format=fb2&cursor=next-token"
+            "/?q=book&search_field=title&language=en&genre=sf&original_format=fb2&cursor=next-token"
         )
         detail = client.get("/books/public-1")
         missing = client.get("/books/missing")
@@ -220,20 +221,21 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert 'hx-post="/imports"' in page.text
     assert 'hx-post="/imports/force"' in page.text
     assert 'hx-post="/database/vacuum"' in page.text
+    assert '<option value="title" selected>Title</option>' in page.text
     assert page.text.count('hx-target="#operation-status"') == 3
     assert page.text.index('id="operation-status"') > page.text.index('hx-post="/database/vacuum"')
     assert (
-        'href="/?q=book&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
+        'href="/?q=book&amp;search_field=title&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
         in page.text
     )
     assert (
-        'hx-get="/catalog-fragment?q=book&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
+        'hx-get="/catalog-fragment?q=book&amp;search_field=title&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
         in page.text
     )
     assert 'hx-push-url="true"' not in page.text
     assert fragment.status_code == 200
     assert fragment.headers["HX-Push-Url"] == (
-        "/?q=book&language=en&genre=sf&original_format=&cursor="
+        "/?q=book&search_field=author&language=en&genre=sf&original_format=&cursor="
     )
     assert "/catalog-fragment" not in fragment.headers["HX-Push-Url"]
     assert "<html" not in fragment.text
@@ -241,6 +243,7 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert (
         CatalogRequest(
             query="book",
+            search_field=SearchField.TITLE,
             language="en",
             genre="sf",
             original_format="fb2",
@@ -253,7 +256,11 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert 'href="/books/public-1/download"' in detail.text
     assert missing.status_code == 404
     assert catalog.requests[0] == CatalogRequest(
-        query="book", language="en", genre="sf", original_format="fb2"
+        query="book",
+        search_field=SearchField.TITLE,
+        language="en",
+        genre="sf",
+        original_format="fb2",
     )
 
 
@@ -374,7 +381,7 @@ async def test_owned_download_cleanup_finishes_despite_repeated_cancellation() -
 
 def test_main_page_polls_while_active_import_has_no_persisted_status() -> None:
     imports = _Imports(active=True)
-    app, _, _ = _app(imports)
+    app, catalog, _ = _app(imports)
     with TestClient(app) as client:
         page = client.get("/")
         pending = client.get("/imports/status")
@@ -382,6 +389,9 @@ def test_main_page_polls_while_active_import_has_no_persisted_status() -> None:
         started = client.get("/imports/status")
 
     assert "No import has run yet" not in page.text
+    assert "A Book" not in page.text
+    assert "Use the search form to find books" in page.text
+    assert catalog.requests == []
     assert "Catalog import is starting" in page.text
     assert "Waiting for the import run" in page.text
     assert 'hx-get="/imports/status"' in page.text

@@ -1,4 +1,6 @@
-{% if page.books %}
+{% if not searched %}
+  <p class="muted">Use the search form to find books.</p>
+{% elif page.books %}
   <p class="muted">Showing {{ page.books|length }} books</p>
   {% for book in page.books %}
     <article class="book">

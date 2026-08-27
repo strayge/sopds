@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from typing import Protocol
 
 
@@ -13,6 +14,13 @@ class CatalogStaleCursorError(CatalogInputError):
     """Reject pagination state whose catalog generation is no longer active."""
 
 
+class SearchField(StrEnum):
+    ALL = "all"
+    TITLE = "title"
+    AUTHOR = "author"
+    SERIES = "series"
+
+
 @dataclass(frozen=True, slots=True)
 class CatalogRequest:
     query: str = ""
@@ -22,6 +30,7 @@ class CatalogRequest:
     cursor: str | None = None
     author: str | None = None
     series: str | None = None
+    search_field: SearchField = SearchField.ALL
     page_size: int = 50
 
 

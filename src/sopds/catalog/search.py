@@ -3,7 +3,7 @@
 import re
 import unicodedata
 
-from sopds.catalog.contracts import CatalogInputError
+from sopds.catalog.contracts import CatalogInputError, SearchField
 
 MAX_QUERY_CHARS = 200
 MAX_QUERY_TOKENS = 16
@@ -27,8 +27,16 @@ def normalized_query(value: str) -> str:
     return " ".join(query_tokens(value))
 
 
-def fts_match_expression(tokens: tuple[str, ...]) -> str | None:
+def fts_match_expression(
+    tokens: tuple[str, ...], search_field: SearchField = SearchField.ALL
+) -> str | None:
     """Build FTS syntax exclusively from extracted alphanumeric tokens."""
     if not tokens:
         return None
-    return " AND ".join(f'{{title authors series}} : "{token}"' for token in tokens)
+    column = {
+        SearchField.ALL: "{title authors series}",
+        SearchField.TITLE: "title",
+        SearchField.AUTHOR: "authors",
+        SearchField.SERIES: "series",
+    }[search_field]
+    return " AND ".join(f'{column} : "{token}"' for token in tokens)

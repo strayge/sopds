@@ -16,6 +16,7 @@ from sopds.catalog.contracts import (
     CatalogInputError,
     CatalogRequest,
     CatalogStaleCursorError,
+    SearchField,
 )
 from sopds.catalog.search import fts_match_expression, normalize_text, query_tokens
 from sopds.catalog.service import CatalogService
@@ -267,6 +268,9 @@ def test_normalization_and_safe_fts_terms() -> None:
     assert fts_match_expression(("ежик", "book")) == (
         '{title authors series} : "ежик" AND {title authors series} : "book"'
     )
+    assert fts_match_expression(("first",), SearchField.TITLE) == 'title : "first"'
+    assert fts_match_expression(("first",), SearchField.AUTHOR) == 'authors : "first"'
+    assert fts_match_expression(("елки",), SearchField.SERIES) == 'series : "елки"'
     assert query_tokens('title:"x" OR *; --') == ("title", "x", "or")
     assert query_tokens("..._") == ()
     with pytest.raises(CatalogInputError):
@@ -300,6 +304,27 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
 
         assert [
             book.public_id for book in (await catalog.browse(CatalogRequest(query="ежик"))).books
+        ] == ["book-001"]
+        assert [
+            book.public_id
+            for book in (
+                await catalog.browse(CatalogRequest(query="ежик", search_field=SearchField.TITLE))
+            ).books
+        ] == ["book-001"]
+        assert not (
+            await catalog.browse(CatalogRequest(query="first", search_field=SearchField.TITLE))
+        ).books
+        assert [
+            book.public_id
+            for book in (
+                await catalog.browse(CatalogRequest(query="first", search_field=SearchField.AUTHOR))
+            ).books
+        ] == ["book-001"]
+        assert [
+            book.public_id
+            for book in (
+                await catalog.browse(CatalogRequest(query="елки", search_field=SearchField.SERIES))
+            ).books
         ] == ["book-001"]
         assert not (await catalog.browse(CatalogRequest(query="еж"))).books
         assert [
