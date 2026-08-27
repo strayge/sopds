@@ -76,6 +76,10 @@ availability without rebuilding catalog metadata.
 Book pages, OPDS clients, and Telegram download original files directly from
 the ZIP archives. No converted formats are currently offered.
 
+OPDS author, series, and title browsing groups lists larger than 100 entries by
+normalized name prefixes. Prefixes with only one possible continuation are
+collapsed until the next useful branch.
+
 ## Telegram
 
 Authorized chats can:

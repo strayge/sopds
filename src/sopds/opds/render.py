@@ -130,9 +130,10 @@ def item_entries(
     kind: str,
     items: tuple[NavigationItem, ...],
     destination_urls: tuple[str, ...],
+    media_type: str = ACQUISITION_TYPE,
 ) -> tuple[tuple[str, str, str, str], ...]:
     return tuple(
-        (stable_id("navigation", [kind, item.value]), item.label, href, ACQUISITION_TYPE)
+        (stable_id("navigation", [kind, item.value]), item.label, href, media_type)
         for item, href in zip(items, destination_urls, strict=True)
     )
 

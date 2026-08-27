@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from pypika_tortoise.functions import Substring as PypikaSubstring
 from tortoise.backends.base.client import BaseDBAsyncClient
-from tortoise.expressions import Q, Subquery
-from tortoise.functions import Max
+from tortoise.expressions import Function, Q, Subquery
+from tortoise.functions import Count, Max
 from tortoise.query_utils import Prefetch
 from tortoise.queryset import QuerySet
 from tortoise.transactions import in_transaction
@@ -47,6 +48,10 @@ from sopds.imports.status import (
 )
 
 DEFAULT_BATCH_SIZE = 2_000
+
+
+class _Substring(Function):
+    database_func = PypikaSubstring
 
 
 @dataclass(frozen=True, slots=True)
@@ -958,6 +963,155 @@ class CatalogRepository:
             updated_at=updated_at,
         )
 
+    def _available_authors(self, generation_id: int) -> QuerySet[Author]:
+        return Author.filter(
+            Q(book_links__book__series_id=None)
+            | Q(book_links__book__series__generation_id=generation_id),
+            generation_id=generation_id,
+            book_links__book__generation_id=generation_id,
+            book_links__book__archive__generation_id=generation_id,
+            book_links__book__archive__available=True,
+        ).using_db(self._connection)
+
+    def _available_series(self, generation_id: int) -> QuerySet[Series]:
+        available_series_ids = (
+            Book.filter(
+                generation_id=generation_id,
+                archive__generation_id=generation_id,
+                archive__available=True,
+                series__generation_id=generation_id,
+            )
+            .exclude(series_id=None)
+            .values("series_id")
+        )
+        return Series.filter(
+            generation_id=generation_id,
+            id__in=Subquery(available_series_ids),
+        ).using_db(self._connection)
+
+    async def navigation_prefix_buckets(
+        self, generation_id: int, kind: str, prefix: str
+    ) -> list[tuple[str, int]]:
+        prefix_end = prefix + "\U0010ffff"
+        next_character = _Substring(
+            {
+                "authors": "name_sort",
+                "series": "name_sort",
+                "titles": "title_sort",
+            }[kind],
+            len(prefix) + 1,
+            1,
+        )
+        query: QuerySet[Author] | QuerySet[Series] | QuerySet[Book]
+        if kind == "authors":
+            query = self._available_authors(generation_id)
+            if prefix:
+                query = query.filter(name_sort__gte=prefix, name_sort__lt=prefix_end)
+        elif kind == "series":
+            query = self._available_series(generation_id)
+            if prefix:
+                query = query.filter(name_sort__gte=prefix, name_sort__lt=prefix_end)
+        elif kind == "titles":
+            query = self._available_books(
+                generation_id,
+                language=None,
+                genre=None,
+                original_format=None,
+                author=None,
+                series=None,
+            )
+            if prefix:
+                query = query.filter(title_sort__gte=prefix, title_sort__lt=prefix_end)
+        else:
+            raise ValueError("Invalid adaptive navigation kind")
+        rows = await (
+            query.annotate(
+                next_character=next_character,
+                item_count=Count("id", distinct=True),
+            )
+            .group_by("next_character")
+            .order_by("next_character")
+            .values_list("next_character", "item_count")
+        )
+        return [(str(character), int(count)) for character, count in rows]
+
+    async def navigation_prefix_items(
+        self,
+        generation_id: int,
+        kind: str,
+        prefix: str,
+        *,
+        exact: bool,
+        after: tuple[str, str] | None,
+        limit: int,
+    ) -> list[tuple[int, str, str, str, str]]:
+        prefix_end = prefix + "\U0010ffff"
+        if kind == "authors":
+            author_query = self._available_authors(generation_id)
+            if exact:
+                author_query = author_query.filter(name_sort=prefix)
+            elif prefix:
+                author_query = author_query.filter(name_sort__gte=prefix, name_sort__lt=prefix_end)
+            if after is not None:
+                author_query = author_query.filter(
+                    Q(name_sort__gt=after[0]) | Q(name_sort=after[0], id__gt=int(after[1]))
+                )
+            rows = await (
+                author_query.distinct()
+                .order_by("name_sort", "id")
+                .limit(limit)
+                .values_list("id", "name_sort", "name")
+            )
+            return [
+                (int(row[0]), str(row[1]), str(row[0]), str(row[2]), str(row[2])) for row in rows
+            ]
+        if kind == "series":
+            series_query = self._available_series(generation_id)
+            if exact:
+                series_query = series_query.filter(name_sort=prefix)
+            elif prefix:
+                series_query = series_query.filter(name_sort__gte=prefix, name_sort__lt=prefix_end)
+            if after is not None:
+                series_query = series_query.filter(
+                    Q(name_sort__gt=after[0]) | Q(name_sort=after[0], id__gt=int(after[1]))
+                )
+            rows = await (
+                series_query.distinct()
+                .order_by("name_sort", "id")
+                .limit(limit)
+                .values_list("id", "name_sort", "name")
+            )
+            return [
+                (int(row[0]), str(row[1]), str(row[0]), str(row[2]), str(row[2])) for row in rows
+            ]
+        if kind == "titles":
+            title_query = self._available_books(
+                generation_id,
+                language=None,
+                genre=None,
+                original_format=None,
+                author=None,
+                series=None,
+            )
+            if exact:
+                title_query = title_query.filter(title_sort=prefix)
+            elif prefix:
+                title_query = title_query.filter(title_sort__gte=prefix, title_sort__lt=prefix_end)
+            if after is not None:
+                title_query = title_query.filter(
+                    Q(title_sort__gt=after[0]) | Q(title_sort=after[0], public_id__gt=after[1])
+                )
+            rows = await (
+                title_query.distinct()
+                .order_by("title_sort", "public_id")
+                .limit(limit)
+                .values_list("id", "title_sort", "public_id", "title")
+            )
+            return [
+                (int(row[0]), str(row[1]), str(row[2]), str(row[2]), str(row[3])) for row in rows
+            ]
+        raise ValueError("Invalid adaptive navigation kind")
+
     async def navigation_items(
         self,
         generation_id: int,
@@ -967,14 +1121,7 @@ class CatalogRepository:
         limit: int,
     ) -> list[tuple[str, str, str, str]]:
         if kind == "authors":
-            author_query = Author.filter(
-                Q(book_links__book__series_id=None)
-                | Q(book_links__book__series__generation_id=generation_id),
-                generation_id=generation_id,
-                book_links__book__generation_id=generation_id,
-                book_links__book__archive__generation_id=generation_id,
-                book_links__book__archive__available=True,
-            ).using_db(self._connection)
+            author_query = self._available_authors(generation_id)
             if after is not None:
                 author_query = author_query.filter(
                     Q(name_sort__gt=after[0]) | Q(name_sort=after[0], id__gt=int(after[1]))
@@ -1010,20 +1157,7 @@ class CatalogRepository:
             )
             return [(str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
         if kind == "series":
-            available_series_ids = (
-                Book.filter(
-                    generation_id=generation_id,
-                    archive__generation_id=generation_id,
-                    archive__available=True,
-                    series__generation_id=generation_id,
-                )
-                .exclude(series_id=None)
-                .values("series_id")
-            )
-            series_query = Series.filter(
-                generation_id=generation_id,
-                id__in=Subquery(available_series_ids),
-            ).using_db(self._connection)
+            series_query = self._available_series(generation_id)
             if after is not None:
                 series_query = series_query.filter(
                     Q(name_sort__gt=after[0]) | Q(name_sort=after[0], id__gt=int(after[1]))

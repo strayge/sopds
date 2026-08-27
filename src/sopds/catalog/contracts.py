@@ -102,12 +102,16 @@ class CatalogStatistics:
 class NavigationRequest:
     kind: str
     cursor: str | None = None
+    prefix: str = ""
+    exact: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class NavigationItem:
     value: str
     label: str
+    count: int | None = None
+    exact: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +119,9 @@ class NavigationPage:
     items: tuple[NavigationItem, ...]
     next_cursor: str | None
     updated_at: datetime
+    prefix: str = ""
+    grouped: bool = False
+    books: tuple[BookSummary, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

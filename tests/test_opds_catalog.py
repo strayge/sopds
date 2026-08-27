@@ -10,7 +10,16 @@ from sopds.catalog.contracts import (
     CatalogStaleCursorError,
     NavigationRequest,
 )
-from sopds.db.models import Archive, Author, Book, BookAuthor, CatalogState
+from sopds.db.models import (
+    Archive,
+    Author,
+    Book,
+    BookAuthor,
+    CatalogGeneration,
+    CatalogState,
+    GenerationState,
+    Series,
+)
 from tests.test_catalog import _catalog, _seed
 
 
@@ -113,3 +122,104 @@ async def test_navigation_uses_signed_generation_and_kind_bound_keysets(tmp_path
         await CatalogState.filter(id=1).using_db(connection).update(active_generation_id=2)
         with pytest.raises(CatalogStaleCursorError):
             await catalog.navigation(NavigationRequest("authors", first.next_cursor))
+
+
+async def test_adaptive_navigation_compresses_prefixes_for_authors_series_and_titles(
+    tmp_path: Path,
+) -> None:
+    async with _catalog(tmp_path / "opds-prefixes.sqlite3") as (catalog, repository):
+        connection = repository._connection
+        generation = await CatalogGeneration.create(
+            using_db=connection, id=1, state=GenerationState.ACTIVE
+        )
+        await (
+            CatalogState.filter(id=1)
+            .using_db(connection)
+            .update(active_generation_id=generation.id)
+        )
+        archive = await Archive.create(
+            using_db=connection,
+            id=1,
+            generation=generation,
+            relative_path="available.zip",
+            available=True,
+        )
+        for index in range(101):
+            author = await Author.create(
+                using_db=connection,
+                id=index + 1,
+                generation=generation,
+                name=f"Знаток {index:03}",
+                name_sort=f"знаток {index:03}",
+            )
+            series = await Series.create(
+                using_db=connection,
+                id=index + 1,
+                generation=generation,
+                name=f"Знак {index:03}",
+                name_sort=f"знак {index:03}",
+            )
+            book = await Book.create(
+                using_db=connection,
+                id=index + 1,
+                generation=generation,
+                public_id=f"book-{index:03}",
+                archive=archive,
+                member_filename=f"book-{index:03}.fb2",
+                title=f"Заголовок {index:03}",
+                title_sort=f"заголовок {index:03}",
+                series=series,
+                size=100,
+                original_format="fb2",
+            )
+            await BookAuthor.create(
+                using_db=connection,
+                id=index + 1,
+                book=book,
+                author=author,
+                position=0,
+            )
+
+        authors = await catalog.navigation(NavigationRequest("authors"))
+        series_page = await catalog.navigation(NavigationRequest("series"))
+        titles = await catalog.navigation(NavigationRequest("titles"))
+
+        assert authors.grouped is True
+        assert authors.prefix == "знаток "
+        assert [(item.value, item.count) for item in authors.items] == [
+            ("знаток 0", 100),
+            ("знаток 1", 1),
+        ]
+        assert series_page.grouped is True
+        assert series_page.prefix == "знак "
+        assert [(item.value, item.count) for item in series_page.items] == [
+            ("знак 0", 100),
+            ("знак 1", 1),
+        ]
+        assert titles.grouped is True
+        assert titles.prefix == "заголовок "
+        assert [(item.value, item.count) for item in titles.items] == [
+            ("заголовок 0", 100),
+            ("заголовок 1", 1),
+        ]
+
+        author_leaf = await catalog.navigation(NavigationRequest("authors", prefix="знаток 0"))
+        title_leaf = await catalog.navigation(NavigationRequest("titles", prefix="заголовок 0"))
+        assert author_leaf.grouped is False
+        assert len(author_leaf.items) == 50
+        assert author_leaf.next_cursor is not None
+        assert title_leaf.grouped is False
+        assert len(title_leaf.books) == 50
+        assert title_leaf.next_cursor is not None
+
+        next_titles = await catalog.navigation(
+            NavigationRequest(
+                "titles",
+                cursor=title_leaf.next_cursor,
+                prefix="заголовок 0",
+            )
+        )
+        assert len(next_titles.books) == 50
+        assert {book.public_id for book in title_leaf.books}.isdisjoint(
+            book.public_id for book in next_titles.books
+        )

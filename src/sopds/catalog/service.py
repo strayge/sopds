@@ -23,7 +23,7 @@ from sopds.catalog.contracts import (
     NavigationRequest,
     SearchField,
 )
-from sopds.catalog.search import fts_match_expression, query_tokens
+from sopds.catalog.search import fts_match_expression, normalize_text, query_tokens
 from sopds.db.repository import CatalogRepository
 
 PAGE_SIZE = 50
@@ -32,6 +32,8 @@ MAX_PAGE_SIZE = 50
 MAX_CURSOR_CHARS = 2_048
 MAX_FILTER_CHARS = 128
 MAX_NAME_FILTER_CHARS = 512
+MAX_PREFIX_CHARS = 1_024
+NAVIGATION_GROUP_THRESHOLD = 100
 _CURSOR_SIGNATURE_BYTES = 32
 
 
@@ -133,8 +135,13 @@ class CatalogService:
         raise AssertionError("Catalog statistics retry bound was bypassed")
 
     async def navigation(self, request: NavigationRequest) -> NavigationPage:
-        if request.kind not in {"authors", "genres", "series", "languages"}:
+        if request.kind not in {"authors", "genres", "series", "languages", "titles"}:
             raise CatalogInputError("Invalid navigation kind")
+        if request.kind in {"authors", "series", "titles"}:
+            return await self._adaptive_navigation(request)
+        if request.prefix or request.exact:
+            raise CatalogInputError("Prefixes are not supported for this navigation kind")
+
         fingerprint = f"navigation:{request.kind}"
         for attempt in range(2):
             snapshot = await self._repository.active_snapshot()
@@ -167,6 +174,129 @@ class CatalogService:
                 snapshot.updated_at,
             )
         raise AssertionError("Catalog navigation retry bound was bypassed")
+
+    async def _adaptive_navigation(self, request: NavigationRequest) -> NavigationPage:
+        if (
+            not isinstance(request.prefix, str)
+            or len(request.prefix) > MAX_PREFIX_CHARS
+            or "\x00" in request.prefix
+            or type(request.exact) is not bool
+        ):
+            raise CatalogInputError("Invalid navigation prefix")
+        requested_prefix = normalize_text(request.prefix)
+        if len(requested_prefix) > MAX_PREFIX_CHARS:
+            raise CatalogInputError("Invalid navigation prefix")
+        fingerprint = f"navigation:{request.kind}:{requested_prefix}:{int(request.exact)}"
+
+        for attempt in range(2):
+            snapshot = await self._repository.active_snapshot()
+            generation_id = snapshot.generation_id
+            if generation_id is None:
+                if request.cursor is not None:
+                    raise CatalogStaleCursorError("Catalog cursor is stale")
+                return NavigationPage((), None, snapshot.updated_at, prefix=requested_prefix)
+
+            cursor = _decode_cursor(request.cursor, snapshot, fingerprint, self._cursor_key)
+            prefix = requested_prefix
+            grouped_items: tuple[NavigationItem, ...] | None = None
+            if not request.exact:
+                while True:
+                    buckets = await self._repository.navigation_prefix_buckets(
+                        generation_id, request.kind, prefix
+                    )
+                    total = sum(count for _, count in buckets)
+                    if total <= NAVIGATION_GROUP_THRESHOLD:
+                        break
+                    terminal_count = next(
+                        (count for character, count in buckets if not character), 0
+                    )
+                    children = [(character, count) for character, count in buckets if character]
+                    if terminal_count and not children:
+                        break
+                    if terminal_count == 0 and len(children) == 1:
+                        prefix += children[0][0]
+                        continue
+                    group_items: list[NavigationItem] = []
+                    if terminal_count:
+                        group_items.append(
+                            NavigationItem(
+                                prefix,
+                                f"{prefix.capitalize()} (exact) ({terminal_count})",
+                                terminal_count,
+                                exact=True,
+                            )
+                        )
+                    group_items.extend(
+                        NavigationItem(
+                            prefix + character,
+                            f"{(prefix + character).capitalize()}… ({count})",
+                            count,
+                        )
+                        for character, count in children
+                    )
+                    grouped_items = tuple(group_items)
+                    break
+
+            if grouped_items is not None:
+                if cursor is not None:
+                    raise CatalogInputError("Grouped navigation does not use a cursor")
+                if await self._repository.active_snapshot() != snapshot:
+                    if attempt == 0:
+                        continue
+                    raise CatalogInputError("Catalog changed while loading; retry the request")
+                return NavigationPage(
+                    grouped_items,
+                    None,
+                    snapshot.updated_at,
+                    prefix=prefix,
+                    grouped=True,
+                )
+
+            after = None if cursor is None else (cursor.title_sort, cursor.public_id)
+            rows = await self._repository.navigation_prefix_items(
+                generation_id,
+                request.kind,
+                prefix,
+                exact=request.exact,
+                after=after,
+                limit=PAGE_SIZE + 1,
+            )
+            visible = rows[:PAGE_SIZE]
+            books = (
+                tuple(await self._repository.summaries(generation_id, [row[0] for row in visible]))
+                if request.kind == "titles"
+                else ()
+            )
+            if await self._repository.active_snapshot() != snapshot:
+                if request.cursor is not None:
+                    raise CatalogStaleCursorError("Catalog cursor is stale")
+                if attempt == 0:
+                    continue
+                raise CatalogInputError("Catalog changed while loading; retry the request")
+            next_cursor = None
+            if (
+                len(rows) > PAGE_SIZE
+                and visible
+                and (request.kind != "titles" or len(books) == len(visible))
+            ):
+                last = visible[-1]
+                next_cursor = _encode_cursor(
+                    snapshot, last[1], last[2], fingerprint, self._cursor_key
+                )
+            leaf_items = (
+                ()
+                if request.kind == "titles"
+                else tuple(NavigationItem(value=row[3], label=row[4]) for row in visible)
+            )
+            return NavigationPage(
+                leaf_items,
+                next_cursor,
+                snapshot.updated_at,
+                prefix=prefix,
+                books=books,
+            )
+
+        raise AssertionError("Adaptive navigation retry bound was bypassed")
 
     async def details(self, public_id: str) -> BookDetail | None:
         if not public_id or len(public_id) > 64:

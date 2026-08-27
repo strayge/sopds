@@ -69,7 +69,7 @@ async def root(request: Request) -> Response:
     start_url, search_url = _common(base_path)
     snapshot = await _catalog(request).snapshot()
     entries = (
-        (stable_id("navigation:books"), "Books", f"{base_path}/opds/books/", ACQUISITION_TYPE),
+        (stable_id("navigation:books"), "Books", f"{base_path}/opds/titles/", NAVIGATION_TYPE),
         (stable_id("navigation:authors"), "Authors", f"{base_path}/opds/authors/", NAVIGATION_TYPE),
         (stable_id("navigation:genres"), "Genres", f"{base_path}/opds/genres/", NAVIGATION_TYPE),
         (stable_id("navigation:series"), "Series", f"{base_path}/opds/series/", NAVIGATION_TYPE),
@@ -169,18 +169,95 @@ async def books(
     return _xml(body, ACQUISITION_TYPE)
 
 
-async def _navigation(request: Request, kind: str, cursor: str | None) -> Response:
+async def _navigation(
+    request: Request,
+    kind: str,
+    cursor: str | None,
+    *,
+    prefix: str = "",
+    exact: bool = False,
+    parent: str | None = None,
+    parent_root: bool = False,
+) -> Response:
+    if parent is not None and (len(parent) > 1_024 or "\x00" in parent):
+        return _bad_request()
     base_path = _base_path(request)
     start_url, search_url = _common(base_path)
     try:
-        page = await _catalog(request).navigation(NavigationRequest(kind, cursor or None))
+        page = await _catalog(request).navigation(
+            NavigationRequest(kind, cursor or None, prefix, exact)
+        )
     except CatalogInputError:
         return _bad_request()
     path = f"/opds/{kind}/"
-    self_url = query_url(base_path, path, {"cursor": cursor})
+    state = {
+        "prefix": prefix or None,
+        "exact": "1" if exact else None,
+        "parent": parent,
+        "parent_root": "1" if parent_root else None,
+    }
+    self_url = query_url(base_path, path, {**state, "cursor": cursor})
     next_url = (
-        query_url(base_path, path, {"cursor": page.next_cursor}) if page.next_cursor else None
+        query_url(base_path, path, {**state, "cursor": page.next_cursor})
+        if page.next_cursor
+        else None
     )
+    if parent_root:
+        up_url = query_url(base_path, path, {})
+    elif parent is not None:
+        up_url = query_url(base_path, path, {"prefix": parent})
+    else:
+        up_url = start_url
+
+    if page.grouped:
+        destination_urls = tuple(
+            query_url(
+                base_path,
+                path,
+                {
+                    "prefix": item.value,
+                    "exact": "1" if item.exact else None,
+                    "parent": prefix or None,
+                    "parent_root": "1" if not prefix else None,
+                },
+            )
+            for item in page.items
+        )
+        entries = item_entries(kind, page.items, destination_urls, NAVIGATION_TYPE)
+        body = navigation_feed(
+            feed_id=stable_id(f"feed:{kind}:prefix", [page.prefix, exact]),
+            title=kind.title(),
+            updated_at=page.updated_at,
+            self_url=self_url,
+            start_url=start_url,
+            up_url=up_url,
+            search_url=search_url,
+            entries=entries,
+            next_url=None,
+        )
+        return _xml(body, NAVIGATION_TYPE)
+
+    if kind == "titles":
+        body = acquisition_feed(
+            feed_id=stable_id("feed:titles", [page.prefix, exact]),
+            title="Books",
+            updated_at=page.updated_at,
+            self_url=self_url,
+            start_url=start_url,
+            up_url=up_url,
+            search_url=search_url,
+            next_url=next_url,
+            books=page.books,
+            book_urls=tuple(
+                f"{base_path}/books/{quote(book.public_id, safe='')}" for book in page.books
+            ),
+            download_urls=tuple(
+                f"{base_path}/books/{quote(book.public_id, safe='')}/download"
+                for book in page.books
+            ),
+        )
+        return _xml(body, ACQUISITION_TYPE)
+
     filter_name = {
         "authors": "author",
         "genres": "genre",
@@ -192,12 +269,16 @@ async def _navigation(request: Request, kind: str, cursor: str | None) -> Respon
     )
     entries = item_entries(kind, page.items, destination_urls)
     body = navigation_feed(
-        feed_id=stable_id(f"feed:{kind}"),
+        feed_id=(
+            stable_id(f"feed:{kind}", [page.prefix, exact])
+            if kind in {"authors", "series"} and (page.prefix or exact)
+            else stable_id(f"feed:{kind}")
+        ),
         title=kind.title(),
         updated_at=page.updated_at,
         self_url=self_url,
         start_url=start_url,
-        up_url=start_url,
+        up_url=up_url,
         search_url=search_url,
         entries=entries,
         next_url=next_url,
@@ -211,8 +292,23 @@ async def canonical_authors(request: Request) -> RedirectResponse:
 
 
 @router.get("/authors/")
-async def authors(request: Request, cursor: str | None = None) -> Response:
-    return await _navigation(request, "authors", cursor)
+async def authors(
+    request: Request,
+    cursor: str | None = None,
+    prefix: str = "",
+    exact: bool = False,
+    parent: str | None = None,
+    parent_root: bool = False,
+) -> Response:
+    return await _navigation(
+        request,
+        "authors",
+        cursor,
+        prefix=prefix,
+        exact=exact,
+        parent=parent,
+        parent_root=parent_root,
+    )
 
 
 @router.get("/genres")
@@ -231,8 +327,48 @@ async def canonical_series(request: Request) -> RedirectResponse:
 
 
 @router.get("/series/")
-async def series(request: Request, cursor: str | None = None) -> Response:
-    return await _navigation(request, "series", cursor)
+async def series(
+    request: Request,
+    cursor: str | None = None,
+    prefix: str = "",
+    exact: bool = False,
+    parent: str | None = None,
+    parent_root: bool = False,
+) -> Response:
+    return await _navigation(
+        request,
+        "series",
+        cursor,
+        prefix=prefix,
+        exact=exact,
+        parent=parent,
+        parent_root=parent_root,
+    )
+
+
+@router.get("/titles")
+async def canonical_titles(request: Request) -> RedirectResponse:
+    return _canonical_redirect(request, "/opds/titles/")
+
+
+@router.get("/titles/")
+async def titles(
+    request: Request,
+    cursor: str | None = None,
+    prefix: str = "",
+    exact: bool = False,
+    parent: str | None = None,
+    parent_root: bool = False,
+) -> Response:
+    return await _navigation(
+        request,
+        "titles",
+        cursor,
+        prefix=prefix,
+        exact=exact,
+        parent=parent,
+        parent_root=parent_root,
+    )
 
 
 @router.get("/languages")
