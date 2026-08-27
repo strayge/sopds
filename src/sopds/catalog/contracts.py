@@ -45,6 +45,7 @@ class BookSummary:
     language: str | None
     original_format: str
     size: int = 0
+    member_filename: str | None = None
     genres: tuple[tuple[str, str], ...] = ()
     published_date: date | None = None
     libid: str | None = None

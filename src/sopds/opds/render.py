@@ -3,6 +3,7 @@
 import hashlib
 import json
 from datetime import UTC, datetime
+from html import escape
 from typing import cast
 from urllib.parse import urlencode
 from xml.etree import ElementTree as ET
@@ -18,6 +19,7 @@ SUBSECTION_REL = "subsection"
 NAVIGATION_TYPE = "application/atom+xml;profile=opds-catalog;kind=navigation"
 ACQUISITION_TYPE = "application/atom+xml;profile=opds-catalog;kind=acquisition"
 OPENSEARCH_TYPE = "application/opensearchdescription+xml"
+SEARCH_TYPE = "application/atom+xml"
 
 ET.register_namespace("", ATOM)
 ET.register_namespace("dc", DC)
@@ -41,7 +43,15 @@ def clean(value: object) -> str:
 def rfc3339(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat()
+
+
+def _html(value: object) -> str:
+    return escape(clean(value), quote=True)
+
+
+def _html_field(label: str, value: object) -> str:
+    return f"<b>{_html(label)}:</b> {_html(value)}<br/>"
 
 
 def stable_id(name: str, state: object | None = None) -> str:
@@ -87,7 +97,7 @@ def _feed(
     _link(root, "start", start_url, NAVIGATION_TYPE)
     if up_url is not None:
         _link(root, "up", up_url, NAVIGATION_TYPE)
-    _link(root, "search", search_url, OPENSEARCH_TYPE)
+    _link(root, "search", search_url, SEARCH_TYPE)
     if next_url is not None:
         _link(root, "next", next_url, kind)
     return root
@@ -201,8 +211,8 @@ def acquisition_feed(
         for name in authors:
             author = _element(entry, "author")
             _element(author, "name", display_author_name(name))
-        for code, label in book.genres:
-            _element(entry, "category", term=code, label=label)
+        for _code, label in book.genres:
+            _element(entry, "category", term=label, label=label)
         if book.language:
             node = ET.SubElement(entry, f"{{{DC}}}language")
             node.text = clean(book.language)
@@ -214,18 +224,24 @@ def acquisition_feed(
             node.text = clean(book.libid)
         node = ET.SubElement(entry, f"{{{DC}}}format")
         node.text = clean(media_type_for(book.original_format))
-        details: list[str] = []
+        summary: list[str] = []
         if book.series:
-            series = book.series
+            summary.append(_html_field("Series", book.series))
             if book.series_number:
-                series += f" #{book.series_number}"
-            details.append(f"Series: {series}")
-        details.append(f"Size: {book.size} bytes")
+                summary.append(_html_field("No in Series", book.series_number))
+        if book.member_filename:
+            summary.append(_html_field("File", book.member_filename))
+        size_kb = max(1, book.size // 1_000)
+        summary.append(_html_field("File size", f"{size_kb} KB"))
+        if book.published_date:
+            summary.append(_html_field("File date", book.published_date.isoformat()))
+        description: list[str] = []
         if book.rating is not None:
-            details.append(f"Rating: {book.rating}")
+            description.append(f"Rating: {_html(book.rating)}")
         if book.keywords:
-            details.append(f"Keywords: {book.keywords}")
-        _element(entry, "content", "\n".join(details), type="text")
+            description.append(f"Keywords: {_html(book.keywords)}")
+        summary.append(f'<p class="book">{"<br/>".join(description)}</p>')
+        _element(entry, "content", "".join(summary), type="html")
         _link(entry, "alternate", alternate_url, "text/html")
         _element(
             entry,

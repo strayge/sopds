@@ -959,6 +959,7 @@ class CatalogRepository:
             language=book.language,
             original_format=book.original_format,
             size=book.size,
+            member_filename=book.member_filename,
             genres=tuple(
                 sorted(
                     ((link.genre.code, link.genre.label) for link in book.genre_links),

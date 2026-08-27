@@ -50,7 +50,7 @@ def _bad_request() -> PlainTextResponse:
 
 
 def _common(base_path: str) -> tuple[str, str]:
-    return f"{base_path}/opds/", f"{base_path}/opds/search.xml"
+    return f"{base_path}/opds/", f"{base_path}/opds/books/?q={{searchTerms}}"
 
 
 def _canonical_redirect(request: Request, path: str) -> RedirectResponse:

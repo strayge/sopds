@@ -26,6 +26,7 @@ from sopds.opds.render import (
     DC,
     NAVIGATION_TYPE,
     OPENSEARCH,
+    SEARCH_TYPE,
 )
 from sopds.opds.routes import router
 
@@ -54,6 +55,7 @@ class _Catalog:
                     language="ru",
                     original_format="fb2",
                     size=123,
+                    member_filename="book-one.fb2",
                     genres=(("sf", "Science & fiction"),),
                     published_date=date(2020, 1, 2),
                     libid="lib&1",
@@ -104,6 +106,7 @@ class _Catalog:
                         language="ru",
                         original_format="fb2",
                         size=123,
+                        member_filename="book-one.fb2",
                         genres=(("sf", "Science & fiction"),),
                         published_date=date(2020, 1, 2),
                         libid="lib&1",
@@ -193,8 +196,12 @@ def test_root_redirect_navigation_kinds_and_configured_relative_urls() -> None:
     assert "attacker.invalid" not in response.text
     assert root.findtext("atom:author/atom:name", namespaces={"atom": ATOM}) == "SOPDS"
     assert root.find("atom:link[@rel='up']", {"atom": ATOM}) is None
+    search_link = root.find("atom:link[@rel='search']", {"atom": ATOM})
+    assert search_link is not None
+    assert search_link.get("type") == SEARCH_TYPE
+    assert search_link.get("href") == "/base/opds/books/?q={searchTerms}"
     assert root.findtext("atom:updated", namespaces={"atom": ATOM}) == (
-        "2025-02-03T04:05:06.123456Z"
+        "2025-02-03T04:05:06.123456+00:00"
     )
     entries = root.findall("atom:entry", {"atom": ATOM})
     assert all(entry.find("atom:content", {"atom": ATOM}) is None for entry in entries)
@@ -240,11 +247,19 @@ def test_acquisition_feed_has_complete_inline_original_metadata_and_safe_xml() -
     assert entry.findtext("dc:issued", namespaces={"dc": DC}) == "2020-01-02"
     assert entry.findtext("dc:identifier", namespaces={"dc": DC}) == "lib&1"
     assert entry.findtext("dc:format", namespaces={"dc": DC}) == ("application/x-fictionbook+xml")
-    content = entry.findtext("atom:content", namespaces={"atom": ATOM}) or ""
-    assert "Series: Series #2" in content
-    assert "Size: 123 bytes" in content
-    assert "Rating: 5" in content
-    assert "Keywords: one, two" in content
+    content_element = entry.find("atom:content", {"atom": ATOM})
+    assert content_element is not None
+    assert content_element.get("type") == "html"
+    content = content_element.text or ""
+    assert "<b>Series:</b> Series<br/>" in content
+    assert "<b>No in Series:</b> 2<br/>" in content
+    assert "<b>File:</b> book-one.fb2<br/>" in content
+    assert "<b>File size:</b> 1 KB<br/>" in content
+    assert "<b>File date:</b> 2020-01-02<br/>" in content
+    assert '<p class="book">Rating: 5<br/>Keywords: one, two</p>' in content
+    category = entry.find("atom:category", {"atom": ATOM})
+    assert category is not None
+    assert category.get("term") == "Science & fiction"
     acquisitions = entry.findall(f"atom:link[@rel='{ACQUISITION_REL}']", {"atom": ATOM})
     assert len(acquisitions) == 1
     assert acquisitions[0].get("type") == "application/x-fictionbook+xml"
