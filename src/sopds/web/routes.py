@@ -406,21 +406,35 @@ async def index(
 async def manage(request: Request) -> Response:
     import_coordinator = _imports(request)
     current_import_status = await import_coordinator.get_status()
-    import_pending = current_import_status is None and import_coordinator.is_import_active()
+    import_pending = (
+        current_import_status is None or current_import_status.state is not ImportState.RUNNING
+    ) and import_coordinator.is_import_active()
+    statistics_context: dict[str, object] | None
+    status_code = 200
+    try:
+        statistics_context = await _statistics_context(request)
+    except CatalogInputError:
+        statistics_context = None
+        status_code = 503
     return templates.TemplateResponse(
         request=request,
         name="manage.html",
         context={
             **_shell_context(request, active_navigation="manage"),
-            "statistics_context": await _statistics_context(request),
-            "status": current_import_status,
+            "statistics_context": statistics_context,
+            "status": None if import_pending else current_import_status,
             "csrf_token": cast(str, request.app.state.csrf_token),
             "ImportState": ImportState,
             "message": "Catalog import is starting" if import_pending else None,
             "poll": import_pending,
             "pending": import_pending,
-            "poll_after_run_id": None,
+            "poll_after_run_id": (
+                current_import_status.run_id
+                if import_pending and current_import_status is not None
+                else None
+            ),
         },
+        status_code=status_code,
     )
 
 

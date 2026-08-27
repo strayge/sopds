@@ -47,6 +47,7 @@ class _Catalog:
         self.requests: list[CatalogRequest] = []
         self.filter_calls = 0
         self.statistics_calls = 0
+        self.statistics_failures_remaining = 0
         self.filter_failures_remaining = 0
         self.detail_requests: list[tuple[bool, bool]] = []
         self.detail_title = "A Book"
@@ -155,6 +156,9 @@ class _Catalog:
 
     async def statistics(self) -> CatalogStatistics:
         self.statistics_calls += 1
+        if self.statistics_failures_remaining:
+            self.statistics_failures_remaining -= 1
+            raise CatalogInputError("Catalog changed while loading; retry the request")
         return CatalogStatistics(
             total_books=20,
             hidden_books=3,
@@ -373,6 +377,12 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         in page.text
     )
     assert 'hx-push-url="true"' not in page.text
+    assert '<a id="catalog-pagination-position" class="catalog-pagination__next"' in page.text
+    assert (
+        '<p id="catalog-pagination-position" class="catalog-pagination__end" '
+        'tabindex="-1">End of results</p>' in full_next.text
+    )
+    assert "Next page" not in full_next.text
     assert 'role="status" aria-live="polite">Showing 1 book' in page.text
     assert 'class="book-tile book-tile--1" aria-hidden="true">A</div>' in page.text
     assert ">FB2</li>" in page.text
@@ -835,6 +845,20 @@ def test_long_author_lists_use_native_overflow_disclosure() -> None:
     assert "Fifth Author" in page.text
 
 
+def test_inline_catalog_actions_have_touch_sized_hit_areas() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        stylesheet = client.get("/static/css/app.css")
+
+    assert stylesheet.status_code == 200
+    assert re.search(r"\.scope-chip a \{[^}]*min-height: 2\.75rem;", stylesheet.text, re.S)
+    assert re.search(
+        r"\.author-overflow summary \{[^}]*min-height: 2\.75rem;",
+        stylesheet.text,
+        re.S,
+    )
+
+
 def test_original_download_headers_body_and_status_mappings(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -989,6 +1013,41 @@ def test_manage_page_polls_while_active_import_has_no_persisted_status() -> None
     assert "Catalog import is starting" in pending.text
     assert 'hx-get="/imports/status"' in pending.text
     assert "2 imported" in started.text
+
+
+def test_manage_page_polls_past_terminal_status_during_new_import_startup() -> None:
+    imports = _Imports(_status(ImportState.SUCCEEDED, run_id=7), active=True)
+    app, _, _ = _app(imports)
+    with TestClient(app) as client:
+        management = client.get("/manage")
+
+    assert management.status_code == 200
+    assert 'class="import-status import-status--pending"' in management.text
+    assert "Catalog import is starting" in management.text
+    assert "Waiting for the import run" in management.text
+    assert 'hx-get="/imports/status?after_run_id=7"' in management.text
+    assert "2 imported" not in management.text
+    assert "Completed" not in management.text
+
+
+def test_manage_statistics_race_keeps_retryable_management_shell() -> None:
+    app, catalog, _ = _app()
+    catalog.statistics_failures_remaining = 1
+    with TestClient(app) as client:
+        management = client.get("/manage")
+
+    assert management.status_code == 503
+    assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
+    assert 'role="alert"' in management.text
+    assert "Catalog overview is temporarily unavailable" in management.text
+    assert '<a href="/manage">Refresh this management page</a>' in management.text
+    assert 'hx-post="/imports"' in management.text
+    assert 'hx-post="/imports/force"' in management.text
+    assert 'hx-post="/database/vacuum"' in management.text
+    assert 'id="operation-status"' in management.text
+    assert "No import has run yet" in management.text
+    assert 'id="catalog-statistics"' not in management.text
+    assert catalog.statistics_calls == 1
 
 
 def test_failed_import_status_is_an_assertive_alert() -> None:

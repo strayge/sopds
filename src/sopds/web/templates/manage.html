@@ -18,9 +18,16 @@
       <h2 id="statistics-heading">Catalog overview</h2>
       <p>Counts and storage details for the active catalog generation.</p>
     </div>
-    {% with statistics=statistics_context.statistics, database_size=statistics_context.database_size %}
-      {% include "partials/catalog_statistics.html" %}
-    {% endwith %}
+    {% if statistics_context %}
+      {% with statistics=statistics_context.statistics, database_size=statistics_context.database_size %}
+        {% include "partials/catalog_statistics.html" %}
+      {% endwith %}
+    {% else %}
+      <div class="management-statistics-error" role="alert">
+        <h3>Catalog overview is temporarily unavailable</h3>
+        <p>The catalog changed while its statistics were loading. <a href="/manage">Refresh this management page</a> to try again.</p>
+      </div>
+    {% endif %}
   </section>
 
   <section class="management-section" aria-labelledby="imports-heading">

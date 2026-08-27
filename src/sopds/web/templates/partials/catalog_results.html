@@ -52,11 +52,13 @@
       </article>
     {% endfor %}
   </div>
-  {% if next_href %}
-    <nav class="catalog-pagination" aria-label="Catalog pagination">
-      <a class="catalog-pagination__next" href="{{ next_href }}" hx-get="{{ next_hx_url }}" hx-target="#catalog-results" hx-swap="innerHTML">Next page</a>
-    </nav>
-  {% endif %}
+  <nav class="catalog-pagination" aria-label="Catalog pagination">
+    {% if next_href %}
+      <a id="catalog-pagination-position" class="catalog-pagination__next" href="{{ next_href }}" hx-get="{{ next_hx_url }}" hx-target="#catalog-results" hx-swap="innerHTML">Next page</a>
+    {% else %}
+      <p id="catalog-pagination-position" class="catalog-pagination__end" tabindex="-1">End of results</p>
+    {% endif %}
+  </nav>
 {% else %}
   <div class="catalog-results__message" role="status" aria-live="polite">
     <h2>No books found</h2>

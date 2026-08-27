@@ -506,7 +506,7 @@ dd {
   gap: var(--space-2);
   align-items: center;
   max-width: 100%;
-  padding: var(--space-1) var(--space-2);
+  padding-inline: var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: 999px;
   background: var(--color-paper);
@@ -514,6 +514,10 @@ dd {
 }
 
 .scope-chip a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding-inline: var(--space-1);
   font-size: 0.8rem;
   font-weight: 600;
 }
@@ -681,6 +685,10 @@ dd {
 }
 
 .author-overflow summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding-inline: var(--space-1);
   color: var(--color-forest);
   font-size: 0.85rem;
   font-weight: 600;
@@ -746,6 +754,15 @@ dd {
 .catalog-pagination__next:hover {
   background: var(--color-forest-dark);
   color: #ffffff;
+}
+
+.catalog-pagination__end {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-weight: 600;
 }
 
 .book-detail {
@@ -946,6 +963,23 @@ dd {
 }
 
 .management-section__heading p {
+  margin: 0;
+}
+
+.management-statistics-error {
+  padding: var(--space-4);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-medium);
+  background: var(--color-warning-surface);
+}
+
+.management-statistics-error h3 {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-utility);
+  font-size: 1rem;
+}
+
+.management-statistics-error p {
   margin: 0;
 }
 
