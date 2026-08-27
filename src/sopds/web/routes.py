@@ -137,7 +137,6 @@ async def _statistics_context(request: Request) -> dict[str, object]:
         "request": request,
         "statistics": statistics,
         "database_size": _format_bytes(statistics.database_size_bytes),
-        "message": None,
     }
 
 
@@ -444,17 +443,21 @@ async def start_force_import(request: Request) -> Response:
 async def vacuum_database(request: Request) -> Response:
     _validate_csrf(request)
     vacuumed = await _imports(request).vacuum_database()
-    context = await _statistics_context(request)
-    context["message"] = (
-        "Database VACUUM completed"
-        if vacuumed
-        else "VACUUM skipped because catalog work is running"
-    )
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request,
-        name="partials/catalog_statistics.html",
-        context=context,
+        name="partials/operation_result.html",
+        context={
+            "message": (
+                "Database VACUUM completed"
+                if vacuumed
+                else "VACUUM skipped because catalog work is running"
+            ),
+            "error": not vacuumed,
+        },
     )
+    if vacuumed:
+        response.headers["HX-Trigger"] = "catalogChanged"
+    return response
 
 
 async def _database_ready(request: Request, endpoint: str) -> bool:

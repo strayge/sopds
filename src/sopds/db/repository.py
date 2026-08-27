@@ -634,7 +634,14 @@ class CatalogRepository:
         )
         database_size_bytes = int(size_rows[0]["database_size_bytes"])
         if generation_id is None:
-            return CatalogStatistics(0, 0, None, database_size_bytes)
+            return CatalogStatistics(
+                total_books=0,
+                hidden_books=0,
+                missed_books=0,
+                active_books=0,
+                generation_activated_at=None,
+                database_size_bytes=database_size_bytes,
+            )
 
         generation_rows = await (
             CatalogGeneration.filter(id=generation_id)
@@ -646,8 +653,13 @@ class CatalogRepository:
             if activated_at.tzinfo is None:
                 activated_at = activated_at.replace(tzinfo=UTC)
             activated_at = activated_at.astimezone(UTC)
-        active_books = await (
+        persisted_books = await (
             Book.filter(generation_id=generation_id).using_db(self._connection).count()
+        )
+        missed_books = await (
+            Book.filter(generation_id=generation_id, archive__available=False)
+            .using_db(self._connection)
+            .count()
         )
         run_rows = await (
             ImportRun.filter(
@@ -659,12 +671,15 @@ class CatalogRepository:
             .limit(1)
             .values("records_deleted")
         )
-        deleted_books = int(run_rows[0]["records_deleted"]) if run_rows else 0
+        hidden_books = int(run_rows[0]["records_deleted"]) if run_rows else 0
+        total_books = persisted_books + hidden_books
         return CatalogStatistics(
-            active_books,
-            deleted_books,
-            activated_at,
-            database_size_bytes,
+            total_books=total_books,
+            hidden_books=hidden_books,
+            missed_books=missed_books,
+            active_books=total_books - hidden_books - missed_books,
+            generation_activated_at=activated_at,
+            database_size_bytes=database_size_bytes,
         )
 
     async def vacuum(self) -> None:

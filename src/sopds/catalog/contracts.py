@@ -81,8 +81,10 @@ class CatalogSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class CatalogStatistics:
+    total_books: int
+    hidden_books: int
+    missed_books: int
     active_books: int
-    deleted_books: int
     generation_activated_at: datetime | None
     database_size_bytes: int
 

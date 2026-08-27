@@ -26,35 +26,37 @@
     <header>
       <h1>SOPDS</h1>
       <p class="muted">INPX-backed catalog</p>
+      <p id="health" hx-get="/health-fragment" hx-trigger="load, every 30s" hx-swap="innerHTML">
+        Checking application health…
+      </p>
     </header>
     <main>
       <section aria-labelledby="catalog-heading">
         <h2 id="catalog-heading">Catalog</h2>
-        {% with statistics=statistics_context.statistics, database_size=statistics_context.database_size, message=statistics_context.message %}
+        {% with statistics=statistics_context.statistics, database_size=statistics_context.database_size %}
           {% include "partials/catalog_statistics.html" %}
         {% endwith %}
         <div class="actions">
           <button
             type="button"
             hx-post="/imports"
-            hx-target="#import-status"
+            hx-target="#operation-status"
             hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
           >Import changes</button>
           <button
             type="button"
             hx-post="/imports/force"
-            hx-target="#import-status"
+            hx-target="#operation-status"
             hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
           >Force import</button>
           <button
             type="button"
             hx-post="/database/vacuum"
-            hx-target="#catalog-statistics"
-            hx-swap="outerHTML"
+            hx-target="#operation-status"
             hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
           >VACUUM database</button>
         </div>
-        <div id="import-status">
+        <div id="operation-status">
           {% include "partials/import_status.html" %}
         </div>
       </section>
@@ -88,9 +90,6 @@
         {% include "partials/catalog_results.html" %}
       </section>
 
-      <p id="health" hx-get="/health-fragment" hx-trigger="load, every 30s" hx-swap="innerHTML">
-        Checking application health…
-      </p>
     </main>
     <script>
       function localizeCatalogTimes(root) {

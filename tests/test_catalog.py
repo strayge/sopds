@@ -177,8 +177,10 @@ async def _seed(repository: CatalogRepository) -> None:
 async def test_catalog_statistics_describe_active_generation_and_database(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "statistics.sqlite3") as (catalog, repository):
         empty = await catalog.statistics()
+        assert empty.total_books == 0
+        assert empty.hidden_books == 0
+        assert empty.missed_books == 0
         assert empty.active_books == 0
-        assert empty.deleted_books == 0
         assert empty.generation_activated_at is None
         assert empty.database_size_bytes > 0
 
@@ -201,8 +203,10 @@ async def test_catalog_statistics_describe_active_generation_and_database(tmp_pa
         )
 
         statistics = await catalog.statistics()
-        assert statistics.active_books == 56
-        assert statistics.deleted_books == 9
+        assert statistics.total_books == 65
+        assert statistics.hidden_books == 9
+        assert statistics.missed_books == 1
+        assert statistics.active_books == 55
         assert statistics.generation_activated_at == activated_at
         assert statistics.database_size_bytes >= empty.database_size_bytes
 

@@ -87,8 +87,10 @@ class _Catalog:
 
     async def statistics(self) -> CatalogStatistics:
         return CatalogStatistics(
+            total_books=20,
+            hidden_books=3,
+            missed_books=5,
             active_books=12,
-            deleted_books=3,
             generation_activated_at=datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
             database_size_bytes=2 * 1024 * 1024,
         )
@@ -202,19 +204,24 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert "A Book" in page.text
     assert "Science fiction" in page.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in page.text
+    assert page.text.index('id="health"') < page.text.index("<main>")
     assert (
         '<link rel="alternate" '
         'type="application/atom+xml;profile=opds-catalog;kind=navigation" '
         'href="https://catalog.example/root/opds/">'
     ) in page.text
     assert "next-token" in page.text
-    assert "Current books</dt><dd>12" in page.text
-    assert "Current deleted books</dt><dd>3" in page.text
+    assert "Total books</dt><dd>20" in page.text
+    assert "Hidden books</dt><dd>3" in page.text
+    assert "Missed books</dt><dd>5" in page.text
+    assert "Active books</dt><dd>12" in page.text
     assert "2.0 MiB" in page.text
     assert 'datetime="2025-01-02T03:04:05+00:00"' in page.text
     assert 'hx-post="/imports"' in page.text
     assert 'hx-post="/imports/force"' in page.text
     assert 'hx-post="/database/vacuum"' in page.text
+    assert page.text.count('hx-target="#operation-status"') == 3
+    assert page.text.index('id="operation-status"') > page.text.index('hx-post="/database/vacuum"')
     assert (
         'href="/?q=book&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
         in page.text
@@ -450,7 +457,9 @@ def test_unchanged_import_stops_polling_and_vacuum_refreshes_statistics() -> Non
     assert missing_csrf.status_code == 403
     assert vacuumed.status_code == 200
     assert "Database VACUUM completed" in vacuumed.text
-    assert "2.0 MiB" in vacuumed.text
+    assert vacuumed.headers["HX-Trigger"] == "catalogChanged"
+    assert "Database size" not in vacuumed.text
     assert busy.status_code == 200
     assert "VACUUM skipped" in busy.text
+    assert "HX-Trigger" not in busy.headers
     assert imports.vacuum_calls == 2
