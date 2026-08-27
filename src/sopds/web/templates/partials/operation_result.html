@@ -1,1 +1,1 @@
-<p class="{% if error %}error{% else %}status-ok{% endif %}">{{ message }}</p>
+<p class="operation-result {% if error %}operation-result--error error{% else %}operation-result--success status-ok{% endif %}" role="{% if error %}alert{% else %}status{% endif %}" aria-live="{% if error %}assertive{% else %}polite{% endif %}">{{ message }}</p>

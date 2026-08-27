@@ -1,9 +1,15 @@
-<div{% if poll or (status and status.state == ImportState.RUNNING) %} hx-get="/imports/status{% if poll_after_run_id is not none %}?after_run_id={{ poll_after_run_id }}{% endif %}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
-  {% if message %}<p>{{ message }}</p>{% endif %}
+{% set import_failed = status and status.state in (ImportState.FAILED, ImportState.INTERRUPTED) %}
+<div
+  class="import-status{% if pending %} import-status--pending{% elif status %} import-status--{{ status.state.value }}{% else %} import-status--idle{% endif %}"
+  role="{% if import_failed %}alert{% else %}status{% endif %}"
+  aria-live="{% if import_failed %}assertive{% else %}polite{% endif %}"
+  {% if poll or (status and status.state == ImportState.RUNNING) %}hx-get="/imports/status{% if poll_after_run_id is not none %}?after_run_id={{ poll_after_run_id }}{% endif %}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}
+>
+  {% if message %}<p class="import-status__message">{{ message }}</p>{% endif %}
   {% if pending %}
     <p class="muted">Waiting for the import run to begin…</p>
   {% elif status %}
-    <dl>
+    <dl class="import-status__details">
       <dt>Trigger</dt><dd>{{ status.trigger.value }}</dd>
       <dt>State</dt><dd>{{ status.state.value }}</dd>
       <dt>Records</dt><dd>{{ status.records_imported }} imported, {{ status.records_deleted }} deleted, {{ status.records_rejected }} rejected ({{ status.records_read }} read)</dd>

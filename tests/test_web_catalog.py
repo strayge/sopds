@@ -46,6 +46,7 @@ class _Catalog:
     def __init__(self) -> None:
         self.requests: list[CatalogRequest] = []
         self.filter_calls = 0
+        self.statistics_calls = 0
         self.filter_failures_remaining = 0
         self.detail_requests: list[tuple[bool, bool]] = []
         self.detail_title = "A Book"
@@ -153,6 +154,7 @@ class _Catalog:
         return self.available_filters
 
     async def statistics(self) -> CatalogStatistics:
+        self.statistics_calls += 1
         return CatalogStatistics(
             total_books=20,
             hidden_books=3,
@@ -202,15 +204,19 @@ class _Imports:
     def __init__(self, status: ImportStatus | None = None, *, active: bool = False) -> None:
         self.status = status
         self.active = active
+        self.status_calls = 0
+        self.active_calls = 0
         self.accept = True
         self.started: list[bool] = []
         self.vacuumed = True
         self.vacuum_calls = 0
 
     async def get_status(self) -> ImportStatus | None:
+        self.status_calls += 1
         return self.status
 
     def is_import_active(self) -> bool:
+        self.active_calls += 1
         return self.active
 
     def start_manual_import(self, *, force: bool = False) -> bool:
@@ -272,6 +278,7 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     app, catalog, _ = _app()
     with TestClient(app) as client:
         page = client.get("/?q=book&search_field=title&language=en&genre=sf&original_format=fb2")
+        management = client.get("/manage")
         fragment = client.get("/catalog-fragment?q=book&search_field=author&language=en&genre=sf")
         full_next = client.get(
             "/?q=book&search_field=title&language=en&genre=sf&original_format=fb2&cursor=next-token"
@@ -296,7 +303,7 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert "Science fiction" in page.text
     assert 'href="#main-content">Skip to main content</a>' in page.text
     assert '<a href="/" aria-current="page">Catalog</a>' in page.text
-    assert 'href="/manage"' not in page.text
+    assert '<a href="/manage">Manage</a>' in page.text
     assert "/static/css/app.css" in page.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in page.text
     assert page.text.index('id="health"') < page.text.index('id="main-content"')
@@ -313,24 +320,42 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert 'hx-indicator="#catalog-loading"' in page.text
     assert 'hx-disabled-elt="#catalog-submit"' in page.text
     assert 'id="catalog-submit" type="submit">Search library</button>' in page.text
-    assert page.text.index("Find your next book") < page.text.index("Catalog management")
-    assert page.text.index('id="catalog-query"') < page.text.index('id="operation-status"')
+    assert "Catalog management" not in page.text
+    assert 'id="catalog-statistics"' not in page.text
+    assert 'id="operation-status"' not in page.text
+    assert 'hx-post="/imports"' not in page.text
+    assert 'hx-post="/imports/force"' not in page.text
+    assert 'hx-post="/database/vacuum"' not in page.text
     assert '<details class="catalog-more-filters" open>' in page.text
     assert "1 active" in page.text
     assert '<option value="sf" selected>Science fiction</option>' in page.text
     assert 'name="cursor"' not in page.text
-    assert "Total books</dt><dd>20" in page.text
-    assert "Hidden books</dt><dd>3" in page.text
-    assert "Missed books</dt><dd>5" in page.text
-    assert "Active books</dt><dd>12" in page.text
-    assert "2.0 MiB" in page.text
-    assert 'datetime="2025-01-02T03:04:05+00:00"' in page.text
-    assert 'hx-post="/imports"' in page.text
-    assert 'hx-post="/imports/force"' in page.text
-    assert 'hx-post="/database/vacuum"' in page.text
     assert '<option value="title" selected>Title</option>' in page.text
-    assert page.text.count('hx-target="#operation-status"') == 3
-    assert page.text.index('id="operation-status"') > page.text.index('hx-post="/database/vacuum"')
+    assert management.status_code == 200
+    assert '<a href="/">Catalog</a>' in management.text
+    assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
+    assert "Manage catalog" in management.text
+    assert "Total books</dt><dd>20" in management.text
+    assert "Hidden books</dt><dd>3" in management.text
+    assert "Missed books</dt><dd>5" in management.text
+    assert "Active books</dt><dd>12" in management.text
+    assert "2.0 MiB" in management.text
+    assert 'datetime="2025-01-02T03:04:05+00:00"' in management.text
+    assert (
+        'id="catalog-statistics" class="catalog-statistics" hx-get="/catalog-statistics" '
+        'hx-trigger="catalogChanged from:body" hx-swap="outerHTML"' in management.text
+    )
+    assert 'hx-post="/imports"' in management.text
+    assert 'hx-post="/imports/force"' in management.text
+    assert 'hx-post="/database/vacuum"' in management.text
+    assert 'hx-confirm="Force a full catalog import?"' in management.text
+    assert 'hx-confirm="VACUUM the catalog database now?"' in management.text
+    assert "trusted network or an authenticating reverse proxy" in management.text
+    assert management.text.count('hx-target="#operation-status"') == 3
+    assert management.text.count('hx-headers=\'{"X-CSRF-Token":"') == 3
+    assert management.text.index('id="operation-status"') > management.text.index(
+        'hx-post="/database/vacuum"'
+    )
     assert (
         'href="/?q=book&amp;search_field=title&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
         in page.text
@@ -917,22 +942,42 @@ async def test_owned_download_cleanup_finishes_despite_repeated_cancellation() -
     assert not stream.iterated
 
 
-def test_main_page_polls_while_active_import_has_no_persisted_status() -> None:
+def test_catalog_page_does_not_load_or_render_management_context() -> None:
     imports = _Imports(active=True)
     app, catalog, _ = _app(imports)
     with TestClient(app) as client:
         page = client.get("/")
+
+    assert page.status_code == 200
+    assert "Start with a book you have in mind" in page.text
+    assert 'href="/manage"' in page.text
+    assert 'id="catalog-statistics"' not in page.text
+    assert 'id="operation-status"' not in page.text
+    assert 'hx-post="/imports"' not in page.text
+    assert catalog.requests == []
+    assert catalog.statistics_calls == 0
+    assert imports.status_calls == 0
+    assert imports.active_calls == 0
+
+
+def test_manage_page_polls_while_active_import_has_no_persisted_status() -> None:
+    imports = _Imports(active=True)
+    app, catalog, _ = _app(imports)
+    with TestClient(app) as client:
+        page = client.get("/manage")
         pending = client.get("/imports/status")
         imports.status = _status(ImportState.RUNNING)
         started = client.get("/imports/status")
 
+    assert page.status_code == 200
     assert "No import has run yet" not in page.text
-    assert "A Book" not in page.text
-    assert "Start with a book you have in mind" in page.text
+    assert '<a href="/manage" aria-current="page">Manage</a>' in page.text
     assert catalog.requests == []
     assert "Catalog import is starting" in page.text
     assert "Waiting for the import run" in page.text
     assert 'hx-get="/imports/status"' in page.text
+    assert 'class="import-status import-status--pending"' in page.text
+    assert 'role="status"' in page.text
     assert "Catalog import is starting" in pending.text
     assert 'hx-get="/imports/status"' in pending.text
     assert "2 imported" in started.text
@@ -942,14 +987,20 @@ def test_import_status_polls_only_while_running() -> None:
     imports = _Imports(_status(ImportState.RUNNING))
     app, _, _ = _app(imports)
     with TestClient(app) as client:
+        management = client.get("/manage")
         running = client.get("/imports/status")
         imports.status = _status(ImportState.SUCCEEDED)
         terminal = client.get("/imports/status")
 
+    assert 'hx-get="/imports/status"' in management.text
+    assert 'class="import-status import-status--running"' in management.text
     assert 'hx-get="/imports/status"' in running.text
     assert 'hx-trigger="every 2s"' in running.text
+    assert 'class="import-status import-status--running"' in running.text
+    assert 'role="status"' in running.text
     assert "2 imported" in running.text
     assert 'hx-get="/imports/status"' not in terminal.text
+    assert 'class="import-status import-status--succeeded"' in terminal.text
     assert "Completed" in terminal.text
 
 
@@ -1005,9 +1056,11 @@ def test_unchanged_import_stops_polling_and_vacuum_refreshes_statistics() -> Non
     assert missing_csrf.status_code == 403
     assert vacuumed.status_code == 200
     assert "Database VACUUM completed" in vacuumed.text
+    assert 'role="status" aria-live="polite"' in vacuumed.text
     assert vacuumed.headers["HX-Trigger"] == "catalogChanged"
     assert "Database size" not in vacuumed.text
     assert busy.status_code == 200
     assert "VACUUM skipped" in busy.text
+    assert 'role="alert" aria-live="assertive"' in busy.text
     assert "HX-Trigger" not in busy.headers
     assert imports.vacuum_calls == 2

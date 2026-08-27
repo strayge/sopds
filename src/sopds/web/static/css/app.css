@@ -896,6 +896,190 @@ dd {
   margin-bottom: 0;
 }
 
+.management-introduction {
+  max-width: var(--measure);
+  margin-bottom: var(--space-5);
+}
+
+.management-introduction__eyebrow {
+  margin-bottom: var(--space-2);
+  color: var(--color-terracotta-dark);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.management-introduction h1 {
+  margin-bottom: var(--space-3);
+}
+
+.management-introduction__copy,
+.management-section__heading p,
+.management-operation p {
+  color: var(--color-text-muted);
+}
+
+.management-introduction__copy {
+  max-width: 58ch;
+  font-size: 1.08rem;
+}
+
+.management-trust-notice {
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-left: 0.3rem solid var(--color-terracotta);
+  border-radius: var(--radius-small);
+  background: var(--color-warning-surface);
+}
+
+.management-section {
+  margin-top: var(--space-7);
+}
+
+.management-section__heading {
+  margin-bottom: var(--space-4);
+}
+
+.management-section__heading h2 {
+  margin: 0 0 var(--space-2);
+}
+
+.management-section__heading p {
+  margin: 0;
+}
+
+.catalog-statistics__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.statistic-card {
+  display: block;
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  background: var(--color-surface);
+}
+
+.statistic-card dt {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.statistic-card dd {
+  margin-top: var(--space-2);
+  font-family: var(--font-editorial);
+  font-size: 1.55rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.statistic-card--detail {
+  grid-column: span 2;
+}
+
+.statistic-card--detail dd {
+  font-family: var(--font-utility);
+  font-size: 1rem;
+}
+
+.management-operation {
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  background: var(--color-surface);
+}
+
+.management-operation--primary {
+  border-color: rgb(39 91 73 / 40%);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-raised);
+}
+
+.management-operation h3 {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-utility);
+  font-size: 1rem;
+}
+
+.management-operation p {
+  max-width: 58ch;
+  margin: 0;
+}
+
+.management-operation button {
+  flex: 0 0 auto;
+}
+
+.management-maintenance-heading {
+  margin: var(--space-6) 0 var(--space-3);
+  font-family: var(--font-utility);
+  font-size: 1rem;
+}
+
+.management-operations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.management-operations .management-operation {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.button-secondary {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
+  color: var(--color-forest-dark);
+}
+
+.button-secondary:hover {
+  border-color: var(--color-forest);
+  background: var(--color-paper-deep);
+}
+
+.operation-status {
+  min-height: 5rem;
+}
+
+.import-status > :last-child,
+.operation-result {
+  margin-bottom: 0;
+}
+
+.import-status__message {
+  font-weight: 600;
+}
+
+.import-status--pending,
+.import-status--running {
+  border-left: 0.25rem solid var(--color-warning);
+  padding-left: var(--space-4);
+}
+
+.import-status--failed,
+.import-status--interrupted {
+  border-left: 0.25rem solid var(--color-error);
+  padding-left: var(--space-4);
+}
+
+.import-status--succeeded {
+  border-left: 0.25rem solid var(--color-success);
+  padding-left: var(--space-4);
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -949,6 +1133,14 @@ dd {
   }
 
   .book-detail__content {
+    grid-template-columns: 1fr;
+  }
+
+  .catalog-statistics__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .management-operations {
     grid-template-columns: 1fr;
   }
 }
@@ -1012,6 +1204,23 @@ dd {
   .book-detail__header {
     grid-template-columns: 1fr;
     gap: 0;
+  }
+
+  .catalog-statistics__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .statistic-card--detail {
+    grid-column: auto;
+  }
+
+  .management-operation {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .management-operation button {
+    width: 100%;
   }
 
   dl {

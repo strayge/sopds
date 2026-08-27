@@ -109,12 +109,19 @@ def test_empty_converter_registry_has_no_conversion_route(
 def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig) -> None:
     with TestClient(create_app(migrated_app_config)) as client:
         response = client.get("/")
+        management = client.get("/manage")
 
     assert response.status_code == 200
     assert "INPX-backed catalog" in response.text
     assert 'href="#main-content">Skip to main content</a>' in response.text
     assert '<a href="/" aria-current="page">Catalog</a>' in response.text
-    assert 'href="/manage"' not in response.text
+    assert '<a href="/manage">Manage</a>' in response.text
+    assert 'id="catalog-statistics"' not in response.text
+    assert 'id="operation-status"' not in response.text
+    assert management.status_code == 200
+    assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
+    assert 'id="catalog-statistics"' in management.text
+    assert 'id="operation-status"' in management.text
     assert 'hx-get="/health-fragment"' in response.text
     assert 'hx-trigger="load, every 30s"' in response.text
     assert "function localizeCatalogTimes(root)" in response.text

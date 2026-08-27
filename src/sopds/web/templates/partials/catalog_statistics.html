@@ -1,17 +1,29 @@
-<div id="catalog-statistics" hx-get="/catalog-statistics" hx-trigger="catalogChanged from:body" hx-swap="outerHTML">
-  <dl>
-    <dt>Total books</dt><dd>{{ statistics.total_books }}</dd>
-    <dt>Hidden books</dt><dd>{{ statistics.hidden_books }}</dd>
-    <dt>Missed books</dt><dd>{{ statistics.missed_books }}</dd>
-    <dt>Active books</dt><dd>{{ statistics.active_books }}</dd>
-    <dt>Current generation added</dt>
-    <dd>
-      {% if statistics.generation_activated_at %}
-        <time class="local-datetime" datetime="{{ statistics.generation_activated_at.isoformat() }}">{{ statistics.generation_activated_at }} UTC</time>
-      {% else %}
-        No generation has been imported
-      {% endif %}
-    </dd>
-    <dt>Database size</dt><dd>{{ database_size }}</dd>
+<div id="catalog-statistics" class="catalog-statistics" hx-get="/catalog-statistics" hx-trigger="catalogChanged from:body" hx-swap="outerHTML">
+  <dl class="catalog-statistics__grid">
+    <div class="statistic-card">
+      <dt>Total books</dt><dd>{{ statistics.total_books }}</dd>
+    </div>
+    <div class="statistic-card">
+      <dt>Active books</dt><dd>{{ statistics.active_books }}</dd>
+    </div>
+    <div class="statistic-card">
+      <dt>Hidden books</dt><dd>{{ statistics.hidden_books }}</dd>
+    </div>
+    <div class="statistic-card">
+      <dt>Missed books</dt><dd>{{ statistics.missed_books }}</dd>
+    </div>
+    <div class="statistic-card statistic-card--detail">
+      <dt>Current generation added</dt>
+      <dd>
+        {% if statistics.generation_activated_at %}
+          <time class="local-datetime" datetime="{{ statistics.generation_activated_at.isoformat() }}">{{ statistics.generation_activated_at }} UTC</time>
+        {% else %}
+          No generation has been imported
+        {% endif %}
+      </dd>
+    </div>
+    <div class="statistic-card statistic-card--detail">
+      <dt>Database size</dt><dd>{{ database_size }}</dd>
+    </div>
   </dl>
 </div>

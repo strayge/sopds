@@ -14,34 +14,4 @@
   <section id="catalog-results" class="catalog-results" aria-label="Catalog results">
     {% include "partials/catalog_results.html" %}
   </section>
-
-  <section class="management-context" aria-labelledby="management-heading">
-    <h2 id="management-heading">Catalog management</h2>
-    {% with statistics=statistics_context.statistics, database_size=statistics_context.database_size %}
-      {% include "partials/catalog_statistics.html" %}
-    {% endwith %}
-    <div class="actions">
-      <button
-        type="button"
-        hx-post="/imports"
-        hx-target="#operation-status"
-        hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-      >Import changes</button>
-      <button
-        type="button"
-        hx-post="/imports/force"
-        hx-target="#operation-status"
-        hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-      >Force import</button>
-      <button
-        type="button"
-        hx-post="/database/vacuum"
-        hx-target="#operation-status"
-        hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-      >VACUUM database</button>
-    </div>
-    <div id="operation-status">
-      {% include "partials/import_status.html" %}
-    </div>
-  </section>
 {% endblock %}

@@ -388,20 +388,7 @@ async def index(
     try:
         context = await _results_context(request, catalog_request, searched=searched)
         context.update(_shell_context(request, active_navigation="catalog"))
-        import_coordinator = _imports(request)
-        current_import_status = await import_coordinator.get_status()
-        import_pending = current_import_status is None and import_coordinator.is_import_active()
         context.update(await _catalog_form_context(request, catalog_request))
-        context.update(
-            statistics_context=await _statistics_context(request),
-            import_status=current_import_status,
-            csrf_token=cast(str, request.app.state.csrf_token),
-            ImportState=ImportState,
-            message="Catalog import is starting" if import_pending else None,
-            poll=import_pending,
-            pending=import_pending,
-            poll_after_run_id=None,
-        )
         return templates.TemplateResponse(request=request, name="index.html", context=context)
     except CatalogInputError as error:
         return templates.TemplateResponse(
@@ -413,6 +400,28 @@ async def index(
             },
             status_code=400,
         )
+
+
+@router.get("/manage", response_class=HTMLResponse)
+async def manage(request: Request) -> Response:
+    import_coordinator = _imports(request)
+    current_import_status = await import_coordinator.get_status()
+    import_pending = current_import_status is None and import_coordinator.is_import_active()
+    return templates.TemplateResponse(
+        request=request,
+        name="manage.html",
+        context={
+            **_shell_context(request, active_navigation="manage"),
+            "statistics_context": await _statistics_context(request),
+            "status": current_import_status,
+            "csrf_token": cast(str, request.app.state.csrf_token),
+            "ImportState": ImportState,
+            "message": "Catalog import is starting" if import_pending else None,
+            "poll": import_pending,
+            "pending": import_pending,
+            "poll_after_run_id": None,
+        },
+    )
 
 
 @router.get("/catalog-statistics", response_class=HTMLResponse)
