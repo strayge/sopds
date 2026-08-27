@@ -49,9 +49,11 @@ service because imports and Telegram polling are process-local.
 Copy and edit `config.example.toml`. SOPDS reads only this TOML file, does not
 support environment-variable overrides, and rejects unknown options.
 
-Set `server.base_url` to the externally reachable URL. SOPDS uses it for OPDS
-and download links, so it must match the reverse-proxy URL when one is used.
-Paths in the example configuration are container paths.
+SOPDS emits origin-relative OPDS and download links, so clients keep using the
+host through which they reached the catalog. If a reverse proxy exposes SOPDS
+under a path prefix, include that prefix in `server.base_url`; its scheme and
+host are not included in generated links. Paths in the example configuration
+are container paths.
 
 To enable Telegram, set `telegram.enabled = true`, provide the bot token, and
 add at least one numeric chat ID to `allowed_chat_ids`. Unauthorized chats are

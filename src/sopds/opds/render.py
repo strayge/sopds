@@ -208,7 +208,7 @@ def acquisition_feed(
     return cast(bytes, ET.tostring(root, encoding="utf-8", xml_declaration=True))
 
 
-def open_search(base_url: str) -> bytes:
+def open_search(base_path: str) -> bytes:
     root = ET.Element(f"{{{OPENSEARCH}}}OpenSearchDescription")
     for name, value in (
         ("ShortName", "SOPDS"),
@@ -223,13 +223,13 @@ def open_search(base_url: str) -> bytes:
         f"{{{OPENSEARCH}}}Url",
         {
             "type": clean(ACQUISITION_TYPE),
-            "template": clean(f"{base_url}/opds/books/?q={{searchTerms}}"),
+            "template": clean(f"{base_path}/opds/books/?q={{searchTerms}}"),
         },
     )
     return cast(bytes, ET.tostring(root, encoding="utf-8", xml_declaration=True))
 
 
-def query_url(base_url: str, path: str, values: dict[str, str | None]) -> str:
+def query_url(base_path: str, path: str, values: dict[str, str | None]) -> str:
     present = {key: value for key, value in values.items() if value not in (None, "")}
     query = urlencode(present)
-    return f"{base_url}{path}" + (f"?{query}" if query else "")
+    return f"{base_path}{path}" + (f"?{query}" if query else "")

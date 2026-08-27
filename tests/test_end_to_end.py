@@ -74,18 +74,18 @@ def test_real_application_acceptance_path(app_config: AppConfig) -> None:
         root_feed = client.get("/opds/")
         assert root_feed.status_code == 200
         assert "profile=opds-catalog;kind=navigation" in root_feed.headers["content-type"]
-        assert "http://testserver/opds/search.xml" in root_feed.text
+        assert 'href="/opds/search.xml"' in root_feed.text
 
         acquisition_feed = client.get("/opds/books/", params={"q": "Beacon"})
         assert acquisition_feed.status_code == 200
         assert "profile=opds-catalog;kind=acquisition" in acquisition_feed.headers["content-type"]
         assert "Acceptance Beacon" in acquisition_feed.text
-        assert f"http://testserver/books/{public_id}/download" in acquisition_feed.text
+        assert f'href="/books/{public_id}/download"' in acquisition_feed.text
 
         open_search = client.get("/opds/search.xml")
         assert open_search.status_code == 200
         assert "application/opensearchdescription+xml" in open_search.headers["content-type"]
-        assert "http://testserver/opds/books/?q={searchTerms}" in open_search.text
+        assert 'template="/opds/books/?q={searchTerms}"' in open_search.text
 
         download = client.get(f"/books/{public_id}/download")
         assert download.status_code == 200

@@ -104,14 +104,14 @@ def _app() -> tuple[FastAPI, _Catalog]:
     return app, catalog
 
 
-def test_root_redirect_navigation_kinds_and_configured_absolute_urls() -> None:
+def test_root_redirect_navigation_kinds_and_configured_relative_urls() -> None:
     app, _ = _app()
     with TestClient(app) as client:
         redirect = client.get("/opds", follow_redirects=False)
         response = client.get("/opds/", headers={"Host": "attacker.invalid"})
 
     assert redirect.status_code == 307
-    assert redirect.headers["location"].endswith("/opds/")
+    assert redirect.headers["location"] == "/base/opds/"
     assert response.headers["content-type"] == f"{NAVIGATION_TYPE}; charset=UTF-8"
     root = ET.fromstring(response.content)  # noqa: S314
     links = root.findall("atom:entry/atom:link", {"atom": ATOM})
@@ -133,9 +133,10 @@ def test_root_redirect_navigation_kinds_and_configured_absolute_urls() -> None:
         "Languages",
     ]
     assert all(
-        (link.get("href") or "").startswith("https://catalog.example/base/")
+        (link.get("href") or "").startswith("/base/")
         for link in root.findall("atom:link", {"atom": ATOM})
     )
+    assert "catalog.example" not in response.text
     assert "attacker.invalid" not in response.text
     assert root.findtext("atom:author/atom:name", namespaces={"atom": ATOM}) == "SOPDS"
     assert root.find("atom:link[@rel='up']", {"atom": ATOM}) is None
@@ -160,9 +161,7 @@ def test_explicit_catalog_redirects_ignore_host_and_preserve_encoded_query() -> 
                 follow_redirects=False,
             )
             assert response.status_code == 307
-            assert response.headers["location"] == (
-                f"https://catalog.example/base/opds/{path}/?cursor=a%2Fb%2Bc"
-            )
+            assert response.headers["location"] == (f"/base/opds/{path}/?cursor=a%2Fb%2Bc")
             assert "attacker.invalid" not in response.headers["location"]
 
 
@@ -197,7 +196,7 @@ def test_acquisition_feed_has_complete_inline_original_metadata_and_safe_xml() -
     assert len(acquisitions) == 1
     assert acquisitions[0].get("type") == "application/x-fictionbook+xml"
     assert acquisitions[0].get("length") == "123"
-    assert acquisitions[0].get("href") == ("https://catalog.example/base/books/book%2Fone/download")
+    assert acquisitions[0].get("href") == ("/base/books/book%2Fone/download")
     assert "convert" not in response.text.casefold()
     request = catalog.requests[0]
     assert request.author == "A & B"
@@ -213,7 +212,7 @@ def test_navigation_destinations_drop_cursor_and_opensearch_keeps_template_liter
     root = ET.fromstring(navigation.content)  # noqa: S314
     entry_link = root.find("atom:entry/atom:link", {"atom": ATOM})
     assert entry_link is not None
-    assert entry_link.get("href") == ("https://catalog.example/base/opds/books/?author=A+%26+B")
+    assert entry_link.get("href") == ("/base/opds/books/?author=A+%26+B")
     self_link = root.find("atom:link[@rel='self']", {"atom": ATOM})
     assert self_link is not None and "cursor=opaque" in (self_link.get("href") or "")
     assert catalog.navigation_requests == [NavigationRequest("authors", "opaque")]
@@ -225,4 +224,4 @@ def test_navigation_destinations_drop_cursor_and_opensearch_keeps_template_liter
     url = description.find("opensearch:Url", {"opensearch": OPENSEARCH})
     assert url is not None
     assert url.get("type") == ACQUISITION_TYPE
-    assert url.get("template") == ("https://catalog.example/base/opds/books/?q={searchTerms}")
+    assert url.get("template") == ("/base/opds/books/?q={searchTerms}")
