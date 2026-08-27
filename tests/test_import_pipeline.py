@@ -366,13 +366,13 @@ async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config:
         app_config.database.path,
         "SELECT name,position FROM author JOIN book_author ON author.id=author_id ORDER BY position",
     ) == [("Иван Ёлкин", 0), ("Jane Doe", 1)]
-    assert _query(app_config.database.path, "SELECT code FROM genre ORDER BY code") == [
-        ("prose",),
-        ("sf",),
+    assert _query(app_config.database.path, "SELECT code,label FROM genre ORDER BY code") == [
+        ("prose", "Проза"),
+        ("sf", "Научная фантастика"),
     ]
     assert _query(
         app_config.database.path, "SELECT title,authors,series,genres,language FROM book_fts"
-    ) == [("ежик", "иван елкин jane doe", "серия", "sf prose", "ru")]
+    ) == [("ежик", "иван елкин jane doe", "серия", "научная фантастика проза", "ru")]
     assert normalize_sort_key("  ЁЖ ") == "  еж "
 
 

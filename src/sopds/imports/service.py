@@ -13,6 +13,7 @@ from time import perf_counter
 
 from tortoise.exceptions import BaseORMException
 
+from sopds.catalog.genre_names import genre_label
 from sopds.catalog.search import normalize_text
 from sopds.db.repository import DEFAULT_BATCH_SIZE, CatalogRepository, IdCounters
 from sopds.db.rows import (
@@ -451,7 +452,9 @@ class CatalogImportService:
                     seen_authors.add(author_id)
                     author_ids.append(author_id)
             genre_ids: list[int] = []
+            genre_labels: list[str] = []
             for code in dict.fromkeys(record.genres):
+                label = genre_label(code)
                 genre_id = genre_map.get(code)
                 if genre_id is None:
                     genre_id = ids.next("genre")
@@ -461,11 +464,12 @@ class CatalogImportService:
                             id=genre_id,
                             generation_id=generation_id,
                             code=code,
-                            label=code,
-                            label_sort=normalize_sort_key(code),
+                            label=label,
+                            label_sort=normalize_sort_key(label),
                         )
                     )
                 genre_ids.append(genre_id)
+                genre_labels.append(label)
             series_id = None
             if record.series is not None:
                 series_key = (normalize_sort_key(record.series), record.series)
@@ -526,7 +530,7 @@ class CatalogImportService:
                     title=normalize_text(record.title),
                     authors=normalize_text(" ".join(record.authors)),
                     series=normalize_text(record.series or ""),
-                    genres=normalize_text(" ".join(record.genres)),
+                    genres=normalize_text(" ".join(genre_labels)),
                     language=normalize_text(record.language or ""),
                 )
             )
