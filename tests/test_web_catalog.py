@@ -240,7 +240,12 @@ def _detail_href(markup: str) -> str:
     return html.unescape(match.group(1))
 
 
-def _status(state: ImportState, run_id: int = 1) -> ImportStatus:
+def _status(
+    state: ImportState,
+    run_id: int = 1,
+    *,
+    error_summary: str | None = None,
+) -> ImportStatus:
     return ImportStatus(
         run_id=run_id,
         trigger=ImportTrigger.MANUAL,
@@ -252,7 +257,7 @@ def _status(state: ImportState, run_id: int = 1) -> ImportStatus:
         records_imported=2,
         records_deleted=1,
         records_rejected=0,
-        error_summary=None,
+        error_summary=error_summary,
         generation_id=7,
     )
 
@@ -356,6 +361,9 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert management.text.index('id="operation-status"') > management.text.index(
         'hx-post="/database/vacuum"'
     )
+    assert 'class="import-status import-status--idle"' in management.text
+    assert 'role="status"' in management.text
+    assert "No import has run yet" in management.text
     assert (
         'href="/?q=book&amp;search_field=title&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
         in page.text
@@ -981,6 +989,24 @@ def test_manage_page_polls_while_active_import_has_no_persisted_status() -> None
     assert "Catalog import is starting" in pending.text
     assert 'hx-get="/imports/status"' in pending.text
     assert "2 imported" in started.text
+
+
+def test_failed_import_status_is_an_assertive_alert() -> None:
+    imports = _Imports(
+        _status(
+            ImportState.FAILED,
+            error_summary="Could not read the configured catalog source",
+        )
+    )
+    app, _, _ = _app(imports)
+    with TestClient(app) as client:
+        management = client.get("/manage")
+
+    assert management.status_code == 200
+    assert 'class="import-status import-status--failed"' in management.text
+    assert 'role="alert"' in management.text
+    assert 'aria-live="assertive"' in management.text
+    assert "Could not read the configured catalog source" in management.text
 
 
 def test_import_status_polls_only_while_running() -> None:

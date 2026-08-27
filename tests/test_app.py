@@ -126,6 +126,7 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
     assert 'hx-trigger="load, every 30s"' in response.text
     assert "function localizeCatalogTimes(root)" in response.text
     assert 'addEventListener("htmx:afterSwap"' in response.text
+    assert "localizeCatalogTimes(event.detail.elt || event.target)" in response.text
     assert "/static/css/app.css" in response.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
     assert "<style>" not in response.text

@@ -51,7 +51,7 @@
       }
       localizeCatalogTimes(document);
       document.body.addEventListener("htmx:afterSwap", (event) => {
-        localizeCatalogTimes(event.detail.target);
+        localizeCatalogTimes(event.detail.elt || event.target);
       });
     </script>
   </body>

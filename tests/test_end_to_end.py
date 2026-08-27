@@ -1,7 +1,10 @@
 """No-network acceptance coverage across import, catalog, OPDS, and acquisition."""
 
 import asyncio
+import html
+import re
 import time
+from urllib.parse import parse_qs, urlsplit
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi.testclient import TestClient
@@ -64,12 +67,30 @@ def test_real_application_acceptance_path(app_config: AppConfig) -> None:
         search = client.get("/", params={"q": "Beacon"})
         assert search.status_code == 200
         assert "Acceptance Beacon" in search.text
-        assert f"/books/{public_id}" in search.text
+        detail_link = re.search(rf'href="(/books/{public_id}\?[^"]+)"', search.text)
+        assert detail_link is not None
+        detail_href = html.unescape(detail_link.group(1))
+        return_to = parse_qs(urlsplit(detail_href).query)["return_to"][0]
+        assert return_to == (
+            "/?q=Beacon&search_field=all&language=&genre=&original_format=&cursor="
+        )
 
-        detail = client.get(f"/books/{public_id}")
+        detail = client.get(detail_href)
         assert detail.status_code == 200
         assert "Acceptance Author" in detail.text
         assert "Acceptance Series" in detail.text
+        assert "Back to results" in detail.text
+        assert f'data-testid="detail-back-link" href="{html.escape(return_to)}"' in detail.text
+        assert (
+            f'class="book-detail__download-action" '
+            f'href="/books/{public_id}/download"' in detail.text
+        )
+
+        management = client.get("/manage")
+        assert management.status_code == 200
+        assert "Current generation added" in management.text
+        assert 'class="local-datetime" datetime="' in management.text
+        assert "<dt>State</dt><dd>succeeded</dd>" in management.text
 
         root_feed = client.get("/opds/")
         assert root_feed.status_code == 200
