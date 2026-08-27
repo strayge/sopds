@@ -1,0 +1,91 @@
+<form
+  id="catalog-search-form"
+  class="catalog-search surface surface--raised"
+  action="/"
+  method="get"
+  hx-get="/catalog-fragment"
+  hx-target="#catalog-results"
+  hx-indicator="#catalog-loading"
+  hx-disabled-elt="#catalog-submit"
+  {% if include_catalog_form_oob %}hx-swap-oob="outerHTML"{% endif %}
+>
+  {% if catalog_request.author %}<input type="hidden" name="author" value="{{ catalog_request.author }}">{% endif %}
+  {% if catalog_request.series %}<input type="hidden" name="series" value="{{ catalog_request.series }}">{% endif %}
+
+  {% if catalog_request.author or catalog_request.series %}
+    <div class="catalog-scopes" aria-label="Active catalog scopes">
+      <span class="catalog-scopes__label">Searching within</span>
+      {% if catalog_request.author %}
+        <span class="scope-chip">
+          Author: {{ catalog_request.author|author_name }}
+          <a href="{{ author_removal_href }}" aria-label="Remove author scope {{ catalog_request.author|author_name }}">Remove</a>
+        </span>
+      {% endif %}
+      {% if catalog_request.series %}
+        <span class="scope-chip">
+          Series: {{ catalog_request.series }}
+          <a href="{{ series_removal_href }}" aria-label="Remove series scope {{ catalog_request.series }}">Remove</a>
+        </span>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <div class="catalog-search__primary">
+    <label for="catalog-query">Search the library</label>
+    <div class="catalog-search__row">
+      <input id="catalog-query" name="q" type="search" value="{{ catalog_request.query }}" maxlength="200" placeholder="Title, author, or series">
+      <button id="catalog-submit" type="submit">Search library</button>
+    </div>
+  </div>
+
+  <div class="catalog-quick-filters" aria-label="Search options">
+    <label for="catalog-search-field">Search in
+      <select id="catalog-search-field" name="search_field">
+        <option value="all"{% if catalog_request.search_field.value == "all" %} selected{% endif %}>All fields</option>
+        <option value="title"{% if catalog_request.search_field.value == "title" %} selected{% endif %}>Title</option>
+        <option value="author"{% if catalog_request.search_field.value == "author" %} selected{% endif %}>Author</option>
+        <option value="series"{% if catalog_request.search_field.value == "series" %} selected{% endif %}>Series</option>
+      </select>
+    </label>
+    <label for="catalog-language">Language
+      <select id="catalog-language" name="language">
+        <option value="">All languages</option>
+        {% for option in filters.languages %}<option value="{{ option.value }}"{% if catalog_request.language == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label for="catalog-format">Format
+      <select id="catalog-format" name="original_format">
+        <option value="">All formats</option>
+        {% for option in filters.original_formats %}<option value="{{ option.value }}"{% if catalog_request.original_format == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+
+  <details class="catalog-more-filters"{% if advanced_filter_count %} open{% endif %}>
+    <summary>
+      More filters
+      <span id="catalog-advanced-filter-count"{% if advanced_filter_count %} class="filter-count"{% endif %}>{% if advanced_filter_count %}{{ advanced_filter_count }} active{% endif %}</span>
+    </summary>
+    <div class="catalog-more-filters__content">
+      <label for="catalog-genre">Genre
+        <select id="catalog-genre" name="genre">
+          <option value="">All genres</option>
+          {% for option in filters.genres %}<option value="{{ option.value }}"{% if catalog_request.genre == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" name="include_missed" value="true"{% if catalog_request.include_missed %} checked{% endif %}>
+        Include books whose original file is unavailable
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" name="include_hidden" value="true"{% if catalog_request.include_hidden %} checked{% endif %}>
+        Include hidden books
+      </label>
+    </div>
+  </details>
+
+  <div class="catalog-search__footer">
+    <span id="catalog-loading" class="htmx-indicator" role="status">Searching…</span>
+    <a id="catalog-clear-action" class="catalog-clear" href="/"{% if not criteria_active %} hidden{% endif %}>Clear search and filters</a>
+  </div>
+</form>

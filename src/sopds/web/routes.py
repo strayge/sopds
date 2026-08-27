@@ -33,9 +33,11 @@ from sopds.acquisition.contracts import (
 from sopds.acquisition.service import content_disposition
 from sopds.catalog.contracts import (
     Catalog,
+    CatalogFilters,
     CatalogInputError,
     CatalogPage,
     CatalogRequest,
+    FilterOption,
     SearchField,
 )
 from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
@@ -147,6 +149,92 @@ def _catalog_url(path: str, catalog_request: CatalogRequest, cursor: str | None)
     if catalog_request.include_hidden:
         values["include_hidden"] = "true"
     return f"{path}?{urlencode(values)}"
+
+
+def _catalog_filter_state_context(catalog_request: CatalogRequest) -> dict[str, object]:
+    return {
+        "advanced_filter_count": sum(
+            (
+                catalog_request.genre is not None,
+                catalog_request.include_missed,
+                catalog_request.include_hidden,
+            )
+        ),
+        "criteria_active": any(
+            (
+                bool(catalog_request.query),
+                catalog_request.search_field is not SearchField.ALL,
+                catalog_request.language is not None,
+                catalog_request.genre is not None,
+                catalog_request.original_format is not None,
+                catalog_request.author is not None,
+                catalog_request.series is not None,
+                catalog_request.include_missed,
+                catalog_request.include_hidden,
+            )
+        ),
+    }
+
+
+async def _catalog_form_context(
+    request: Request, catalog_request: CatalogRequest
+) -> dict[str, object]:
+    filters = await _catalog(request).filters()
+    languages = filters.languages
+    genres = filters.genres
+    original_formats = filters.original_formats
+    if catalog_request.language is not None and all(
+        option.value != catalog_request.language for option in languages
+    ):
+        languages += (FilterOption(catalog_request.language, catalog_request.language),)
+    if catalog_request.genre is not None and all(
+        option.value != catalog_request.genre for option in genres
+    ):
+        genres += (FilterOption(catalog_request.genre, catalog_request.genre),)
+    if catalog_request.original_format is not None and all(
+        option.value != catalog_request.original_format for option in original_formats
+    ):
+        original_formats += (
+            FilterOption(catalog_request.original_format, catalog_request.original_format),
+        )
+    form_filters = CatalogFilters(
+        languages=languages,
+        genres=genres,
+        original_formats=original_formats,
+    )
+    return {
+        **_catalog_filter_state_context(catalog_request),
+        "filters": form_filters,
+        "author_removal_href": (
+            _scope_removal_url(catalog_request, "author")
+            if catalog_request.author is not None
+            else None
+        ),
+        "series_removal_href": (
+            _scope_removal_url(catalog_request, "series")
+            if catalog_request.series is not None
+            else None
+        ),
+    }
+
+
+def _scope_removal_url(catalog_request: CatalogRequest, scope: Literal["author", "series"]) -> str:
+    values = {
+        "q": catalog_request.query,
+        "search_field": catalog_request.search_field.value,
+        "language": catalog_request.language or "",
+        "genre": catalog_request.genre or "",
+        "original_format": catalog_request.original_format or "",
+    }
+    if scope != "author" and catalog_request.author is not None:
+        values["author"] = catalog_request.author
+    if scope != "series" and catalog_request.series is not None:
+        values["series"] = catalog_request.series
+    if catalog_request.include_missed:
+        values["include_missed"] = "true"
+    if catalog_request.include_hidden:
+        values["include_hidden"] = "true"
+    return f"/?{urlencode(values)}"
 
 
 def _next_urls(
@@ -267,8 +355,8 @@ async def index(
         import_coordinator = _imports(request)
         current_import_status = await import_coordinator.get_status()
         import_pending = current_import_status is None and import_coordinator.is_import_active()
+        context.update(await _catalog_form_context(request, catalog_request))
         context.update(
-            filters=await _catalog(request).filters(),
             statistics_context=await _statistics_context(request),
             import_status=current_import_status,
             csrf_token=cast(str, request.app.state.csrf_token),
@@ -326,21 +414,47 @@ async def catalog_fragment(
         include_hidden,
         cursor,
     )
+    is_htmx = request.headers.get("HX-Request") == "true"
+    push_url = _catalog_url("/", catalog_request, catalog_request.cursor)
     try:
         context = await _results_context(request, catalog_request)
     except CatalogInputError as error:
-        return templates.TemplateResponse(
+        error_context: dict[str, object] = {"message": str(error)}
+        if is_htmx:
+            try:
+                error_context.update(await _catalog_form_context(request, catalog_request))
+            except CatalogInputError:
+                pass
+            else:
+                error_context["catalog_request"] = catalog_request
+                error_context["include_catalog_form_oob"] = True
+        response = templates.TemplateResponse(
             request=request,
             name="partials/catalog_error.html",
-            context={"message": str(error)},
-            status_code=400,
+            context=error_context,
+            status_code=200 if is_htmx else 400,
         )
+        if is_htmx:
+            response.headers["HX-Push-Url"] = push_url
+        return response
+    if is_htmx:
+        try:
+            context.update(await _catalog_form_context(request, catalog_request))
+        except CatalogInputError as error:
+            response = templates.TemplateResponse(
+                request=request,
+                name="partials/catalog_error.html",
+                context={"message": str(error)},
+            )
+            response.headers["HX-Push-Url"] = push_url
+            return response
+        context["include_catalog_form_oob"] = True
     response = templates.TemplateResponse(
         request=request,
         name="partials/catalog_results.html",
         context=context,
     )
-    response.headers["HX-Push-Url"] = _catalog_url("/", catalog_request, catalog_request.cursor)
+    response.headers["HX-Push-Url"] = push_url
     return response
 
 

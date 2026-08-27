@@ -1,21 +1,66 @@
 {% if not searched %}
-  <p class="muted">Use the search form to find books.</p>
+  <div class="catalog-results__message" role="status">
+    <h2>Start with a book you have in mind</h2>
+    <p>Enter a title, author, or series above, or narrow the library with the available filters.</p>
+  </div>
 {% elif page.books %}
-  <p class="muted">Showing {{ page.books|length }} books</p>
-  {% for book in page.books %}
-    <article class="book">
-      <a href="/books/{{ book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}"><strong>{{ book.title }}</strong></a>
-      {% if book.availability.value != "active" %}<span class="muted">({{ book.availability.value|capitalize }})</span>{% endif %}
-      {% if book.authors %}<div>{% for author in book.authors %}<a href="/?author={{ author|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
-      <div class="muted">
-        {% if book.series %}<a href="/?series={{ book.series|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ book.series }}</a>{% if book.series_number %} #{{ book.series_number }}{% endif %} · {% endif %}
-        {{ book.original_format }}{% if book.language %} · {{ book.language }}{% endif %}{% if book.published_date %} · {{ book.published_date }}{% endif %} · {{ book.size|kilobytes }}
-      </div>
-    </article>
-  {% endfor %}
+  <p class="catalog-results__summary" role="status" aria-live="polite">Showing {{ page.books|length }} {% if page.books|length == 1 %}book{% else %}books{% endif %}</p>
+  <div class="result-list">
+    {% for book in page.books %}
+      <article class="result-row">
+        <div class="book-tile book-tile--{{ (loop.index0 % 4) + 1 }}" aria-hidden="true">{{ (book.title|trim|first)|upper }}</div>
+        <div class="result-row__body">
+          <div class="result-row__heading">
+            <h2 class="result-row__title">
+              <a href="/books/{{ book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">{{ book.title }}</a>
+            </h2>
+            {% if book.availability.value != "active" %}
+              <span class="availability-badge availability-badge--{{ book.availability.value }}">{{ book.availability.value|capitalize }}</span>
+            {% endif %}
+          </div>
+
+          {% if book.authors %}
+            <div class="result-row__authors">
+              <span class="visually-hidden">Authors:</span>
+              {% for author in book.authors[:3] %}<a href="/?author={{ author|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span>{% endif %}{% endfor %}
+              {% if book.authors|length > 3 %}
+                <details class="author-overflow">
+                  <summary>+{{ book.authors|length - 3 }} more</summary>
+                  <span class="author-overflow__links">
+                    {% for author in book.authors[3:] %}<a href="/?author={{ author|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span>{% endif %}{% endfor %}
+                  </span>
+                </details>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          {% if book.series %}
+            <p class="result-row__series">
+              <span class="visually-hidden">Series:</span>
+              <a href="/?series={{ book.series|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ book.series }}</a>{% if book.series_number %} <span>#{{ book.series_number }}</span>{% endif %}
+            </p>
+          {% endif %}
+
+          <ul class="result-metadata" aria-label="Book metadata">
+            <li><span class="visually-hidden">Format: </span>{{ book.original_format|upper }}</li>
+            {% if book.language %}<li><span class="visually-hidden">Language: </span>{{ book.language }}</li>{% endif %}
+            {% if book.published_date %}<li><span class="visually-hidden">Published: </span>{{ book.published_date }}</li>{% endif %}
+            <li><span class="visually-hidden">Size: </span>{{ book.size|kilobytes }}</li>
+          </ul>
+        </div>
+        <a class="result-row__action" href="/books/{{ book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">View book</a>
+      </article>
+    {% endfor %}
+  </div>
   {% if next_href %}
-    <p><a href="{{ next_href }}" hx-get="{{ next_hx_url }}" hx-target="#catalog-results" hx-swap="innerHTML">Next page</a></p>
+    <nav class="catalog-pagination" aria-label="Catalog pagination">
+      <a class="catalog-pagination__next" href="{{ next_href }}" hx-get="{{ next_hx_url }}" hx-target="#catalog-results" hx-swap="innerHTML">Next page</a>
+    </nav>
   {% endif %}
 {% else %}
-  <p>No books found.</p>
+  <div class="catalog-results__message" role="status" aria-live="polite">
+    <h2>No books found</h2>
+    <p>Try a broader search, remove a filter, or check the spelling.</p>
+  </div>
 {% endif %}
+{% if include_catalog_form_oob %}{% include "partials/catalog_search_form.html" %}{% endif %}

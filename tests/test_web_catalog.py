@@ -42,6 +42,13 @@ _REVISION = SourceRevision(1, 2, 3)
 class _Catalog:
     def __init__(self) -> None:
         self.requests: list[CatalogRequest] = []
+        self.filter_calls = 0
+        self.filter_failures_remaining = 0
+        self.available_filters = CatalogFilters(
+            languages=(FilterOption("en", "en"),),
+            genres=(FilterOption("sf", "Science fiction"),),
+            original_formats=(FilterOption("fb2", "fb2"),),
+        )
 
     async def browse(self, request: CatalogRequest) -> CatalogPage:
         self.requests.append(request)
@@ -49,15 +56,31 @@ class _Catalog:
             raise CatalogInputError("Invalid catalog search")
         if request.query == "none":
             return CatalogPage((), None)
+        authors = (
+            (
+                "Тестов,Тест,",
+                " Примеров,Пример,Примерович",
+                "Third,Author,",
+                "Fourth,Author,",
+                "Fifth,Author,",
+            )
+            if request.query == "many-authors"
+            else (
+                "Тестов,Тест,",
+                " Примеров,Пример,Примерович",
+            )
+        )
+        title = (
+            "Очень длинное название книги для проверки многоязычного каталога"
+            if request.query == "many-authors"
+            else "A Book"
+        )
         return CatalogPage(
             books=(
                 BookSummary(
                     public_id="public-1",
-                    title="A Book",
-                    authors=(
-                        "Тестов,Тест,",
-                        " Примеров,Пример,Примерович",
-                    ),
+                    title=title,
+                    authors=authors,
                     series="Series",
                     series_number="1",
                     language="en",
@@ -105,11 +128,11 @@ class _Catalog:
         )
 
     async def filters(self) -> CatalogFilters:
-        return CatalogFilters(
-            languages=(FilterOption("en", "en"),),
-            genres=(FilterOption("sf", "Science fiction"),),
-            original_formats=(FilterOption("fb2", "fb2"),),
-        )
+        self.filter_calls += 1
+        if self.filter_failures_remaining:
+            self.filter_failures_remaining -= 1
+            raise CatalogInputError("Catalog changed while loading; retry the request")
+        return self.available_filters
 
     async def statistics(self) -> CatalogStatistics:
         return CatalogStatistics(
@@ -253,6 +276,19 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         'href="https://catalog.example/root/opds/">'
     ) in page.text
     assert "next-token" in page.text
+    assert 'action="/"' in page.text
+    assert 'method="get"' in page.text
+    assert 'hx-get="/catalog-fragment"' in page.text
+    assert 'hx-target="#catalog-results"' in page.text
+    assert 'hx-indicator="#catalog-loading"' in page.text
+    assert 'hx-disabled-elt="#catalog-submit"' in page.text
+    assert 'id="catalog-submit" type="submit">Search library</button>' in page.text
+    assert page.text.index("Find your next book") < page.text.index("Catalog management")
+    assert page.text.index('id="catalog-query"') < page.text.index('id="operation-status"')
+    assert '<details class="catalog-more-filters" open>' in page.text
+    assert "1 active" in page.text
+    assert '<option value="sf" selected>Science fiction</option>' in page.text
+    assert 'name="cursor"' not in page.text
     assert "Total books</dt><dd>20" in page.text
     assert "Hidden books</dt><dd>3" in page.text
     assert "Missed books</dt><dd>5" in page.text
@@ -274,6 +310,13 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         in page.text
     )
     assert 'hx-push-url="true"' not in page.text
+    assert 'role="status" aria-live="polite">Showing 1 book' in page.text
+    assert 'class="book-tile book-tile--1" aria-hidden="true">A</div>' in page.text
+    assert ">FB2</li>" in page.text
+    assert page.text.index(">FB2</li>") < page.text.index(">en</li>")
+    assert page.text.index(">en</li>") < page.text.index(">2024-02-03</li>")
+    assert page.text.index(">2024-02-03</li>") < page.text.index(">123 KB</li>")
+    assert ">View book</a>" in page.text
     assert fragment.status_code == 200
     assert fragment.headers["HX-Push-Url"] == (
         "/?q=book&search_field=author&language=en&genre=sf&original_format=&cursor="
@@ -337,6 +380,196 @@ def test_full_page_catalog_error_uses_shared_shell() -> None:
     assert 'href="https://catalog.example/root/opds/"' in response.text
 
 
+def test_htmx_catalog_validation_error_swaps_complete_form_and_updates_history() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        htmx_response = client.get(
+            "/catalog-fragment",
+            params={
+                "q": "invalid",
+                "search_field": "title",
+                "language": "en",
+                "genre": "sf",
+                "original_format": "fb2",
+                "include_missed": "true",
+                "include_hidden": "true",
+            },
+            headers={"HX-Request": "true"},
+        )
+        direct_fragment = client.get("/catalog-fragment?q=invalid")
+
+    assert htmx_response.status_code == 200
+    assert 'class="error" role="alert">Invalid catalog search</p>' in htmx_response.text
+    assert htmx_response.headers["HX-Push-Url"] == (
+        "/?q=invalid&search_field=title&language=en&genre=sf&original_format=fb2&cursor="
+        "&include_missed=true&include_hidden=true"
+    )
+    form = htmx_response.text[htmx_response.text.index("<form") :]
+    assert 'id="catalog-search-form"' in form
+    assert 'hx-swap-oob="outerHTML"' in form
+    assert 'name="q" type="search" value="invalid"' in form
+    assert '<option value="title" selected>Title</option>' in form
+    assert '<option value="en" selected>en</option>' in form
+    assert '<option value="sf" selected>Science fiction</option>' in form
+    assert '<option value="fb2" selected>fb2</option>' in form
+    assert 'name="include_missed" value="true" checked' in form
+    assert 'name="include_hidden" value="true" checked' in form
+    assert '<details class="catalog-more-filters" open>' in form
+    assert "3 active" in form
+    assert direct_fragment.status_code == 400
+    assert "HX-Push-Url" not in direct_fragment.headers
+    assert 'id="catalog-search-form"' not in direct_fragment.text
+
+
+def test_direct_catalog_fragments_do_not_load_filters_during_generation_races() -> None:
+    app, catalog, _ = _app()
+    catalog.filter_failures_remaining = 1
+    with TestClient(app) as client:
+        success = client.get("/catalog-fragment?q=book")
+        invalid = client.get("/catalog-fragment?q=invalid")
+        filter_race = client.get("/")
+        recovered = client.get("/")
+
+    assert success.status_code == 200
+    assert "A Book" in success.text
+    assert invalid.status_code == 400
+    assert 'role="alert">Invalid catalog search' in invalid.text
+    assert 'id="catalog-search-form"' not in success.text
+    assert 'id="catalog-search-form"' not in invalid.text
+    assert filter_race.status_code == 400
+    assert "Catalog changed while loading; retry the request" in filter_race.text
+    assert recovered.status_code == 200
+    assert catalog.filter_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("query", "message"),
+    [
+        ("book", "Catalog changed while loading; retry the request"),
+        ("invalid", "Invalid catalog search"),
+    ],
+)
+def test_htmx_filter_generation_races_return_alert_without_incomplete_form(
+    query: str,
+    message: str,
+) -> None:
+    app, catalog, _ = _app()
+    catalog.filter_failures_remaining = 1
+    with TestClient(app) as client:
+        response = client.get(
+            "/catalog-fragment",
+            params={
+                "q": query,
+                "search_field": "title",
+                "language": "en",
+                "genre": "sf",
+                "original_format": "fb2",
+                "cursor": "current-page",
+            },
+            headers={"HX-Request": "true"},
+        )
+        recovered = client.get("/")
+
+    assert response.status_code == 200
+    assert f'role="alert">{message}' in response.text
+    assert 'id="catalog-search-form"' not in response.text
+    assert 'hx-swap-oob="outerHTML"' not in response.text
+    assert response.headers["HX-Push-Url"] == (
+        f"/?q={query}&search_field=title&language=en&genre=sf&original_format=fb2"
+        "&cursor=current-page"
+    )
+    assert recovered.status_code == 200
+    assert catalog.filter_calls == 2
+
+
+def test_htmx_catalog_response_replaces_complete_current_form_out_of_band() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        initial = client.get("/")
+        active = client.get(
+            "/catalog-fragment",
+            params={
+                "q": "book",
+                "search_field": "title",
+                "language": "en",
+                "genre": "sf",
+                "original_format": "fb2",
+                "author": "Тестов,Тест,",
+                "series": "Series",
+                "include_missed": "true",
+                "include_hidden": "true",
+                "cursor": "next-token",
+            },
+            headers={"HX-Request": "true"},
+        )
+
+    assert initial.status_code == 200
+    assert 'id="catalog-search-form"' in initial.text
+    assert 'hx-swap-oob="outerHTML"' not in initial.text
+    assert active.status_code == 200
+    assert active.headers["HX-Push-Url"].endswith(
+        "&cursor=next-token&author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"
+        "&series=Series&include_missed=true&include_hidden=true"
+    )
+    form = active.text[active.text.index("<form") : active.text.index("</form>")]
+    assert 'id="catalog-search-form"' in form
+    assert 'hx-swap-oob="outerHTML"' in form
+    assert 'name="q" type="search" value="book"' in form
+    assert '<option value="title" selected>Title</option>' in form
+    assert '<option value="en" selected>en</option>' in form
+    assert '<option value="sf" selected>Science fiction</option>' in form
+    assert '<option value="fb2" selected>fb2</option>' in form
+    assert 'type="hidden" name="author" value="Тестов,Тест,"' in form
+    assert 'type="hidden" name="series" value="Series"' in form
+    assert "Author: Тестов Тест" in form
+    assert "Series: Series" in form
+    assert 'name="include_missed" value="true" checked' in form
+    assert 'name="include_hidden" value="true" checked' in form
+    assert '<details class="catalog-more-filters" open>' in form
+    assert "3 active" in form
+    assert 'id="catalog-clear-action" class="catalog-clear" href="/">' in form
+    assert 'name="cursor"' not in form
+
+
+def test_missing_selected_filter_options_are_retained_in_full_and_oob_forms() -> None:
+    app, catalog, _ = _app()
+    catalog.available_filters = CatalogFilters(
+        languages=(FilterOption("en", "English"), FilterOption("fr", "French")),
+        genres=(FilterOption("sf", "Science fiction"), FilterOption("fantasy", "Fantasy")),
+        original_formats=(FilterOption("fb2", "FictionBook"), FilterOption("epub", "EPUB")),
+    )
+    params = {
+        "q": "book",
+        "language": "de",
+        "genre": "historical",
+        "original_format": "mobi",
+    }
+    with TestClient(app) as client:
+        full_page = client.get("/", params=params)
+        htmx_response = client.get(
+            "/catalog-fragment",
+            params=params,
+            headers={"HX-Request": "true"},
+        )
+
+    assert full_page.status_code == 200
+    assert full_page.text.index('<option value="fr">French</option>') < full_page.text.index(
+        '<option value="de" selected>de</option>'
+    )
+    assert full_page.text.index('<option value="fantasy">Fantasy</option>') < full_page.text.index(
+        '<option value="historical" selected>historical</option>'
+    )
+    assert full_page.text.index('<option value="epub">EPUB</option>') < full_page.text.index(
+        '<option value="mobi" selected>mobi</option>'
+    )
+    assert htmx_response.status_code == 200
+    form = htmx_response.text[htmx_response.text.index("<form") :]
+    assert 'hx-swap-oob="outerHTML"' in form
+    assert '<option value="de" selected>de</option>' in form
+    assert '<option value="historical" selected>historical</option>' in form
+    assert '<option value="mobi" selected>mobi</option>' in form
+
+
 def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     app, catalog, _ = _app()
     with TestClient(app) as client:
@@ -346,10 +579,12 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     assert page.status_code == 200
     assert 'name="include_missed" value="true" checked' in page.text
     assert 'name="include_hidden" value="true" checked' in page.text
-    assert "(Hidden)" in page.text
+    assert '<details class="catalog-more-filters" open>' in page.text
+    assert "2 active" in page.text
+    assert 'class="availability-badge availability-badge--hidden">Hidden</span>' in page.text
     assert 'href="/books/public-1?include_missed=true&amp;include_hidden=true"' in page.text
     assert fragment.status_code == 200
-    assert "(Missed)" in fragment.text
+    assert 'class="availability-badge availability-badge--missed">Missed</span>' in fragment.text
     assert fragment.headers["HX-Push-Url"].endswith("&include_missed=true&include_hidden=true")
     assert (
         CatalogRequest(query="hidden", include_missed=True, include_hidden=True) in catalog.requests
@@ -357,6 +592,55 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     assert (
         CatalogRequest(query="missed", include_missed=True, include_hidden=True) in catalog.requests
     )
+
+
+def test_active_scopes_are_visible_preserved_and_removable_without_cursor() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        page = client.get(
+            "/",
+            params={
+                "q": "book",
+                "author": "Тестов,Тест,",
+                "series": "Series",
+                "cursor": "old-page",
+            },
+        )
+
+    assert page.status_code == 200
+    assert 'type="hidden" name="author" value="Тестов,Тест,"' in page.text
+    assert 'type="hidden" name="series" value="Series"' in page.text
+    assert "Author: Тестов Тест" in page.text
+    assert "Series: Series" in page.text
+    assert 'aria-label="Remove author scope Тестов Тест"' in page.text
+    assert 'aria-label="Remove series scope Series"' in page.text
+    assert (
+        'href="/?q=book&amp;search_field=all&amp;language=&amp;genre=&amp;original_format=&amp;series=Series"'
+        in page.text
+    )
+    assert (
+        'href="/?q=book&amp;search_field=all&amp;language=&amp;genre=&amp;original_format=&amp;author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"'
+        in page.text
+    )
+    assert 'name="cursor"' not in page.text
+    assert 'class="catalog-clear" href="/">Clear search and filters</a>' in page.text
+
+
+def test_long_author_lists_use_native_overflow_disclosure() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        page = client.get("/?q=many-authors")
+
+    assert page.status_code == 200
+    assert "Очень длинное название книги для проверки многоязычного каталога" in page.text
+    assert 'aria-hidden="true">\u041e</div>' in page.text
+    assert "Тестов Тест" in page.text
+    assert "Примеров Пример Примерович" in page.text
+    assert "Third Author" in page.text
+    assert '<details class="author-overflow">' in page.text
+    assert "<summary>+2 more</summary>" in page.text
+    assert "Fourth Author" in page.text
+    assert "Fifth Author" in page.text
 
 
 def test_original_download_headers_body_and_status_mappings(
@@ -485,7 +769,7 @@ def test_main_page_polls_while_active_import_has_no_persisted_status() -> None:
 
     assert "No import has run yet" not in page.text
     assert "A Book" not in page.text
-    assert "Use the search form to find books" in page.text
+    assert "Start with a book you have in mind" in page.text
     assert catalog.requests == []
     assert "Catalog import is starting" in page.text
     assert "Waiting for the import run" in page.text
