@@ -22,6 +22,7 @@ from sopds.acquisition.contracts import (
     SourceRevision,
 )
 from sopds.catalog.contracts import (
+    BookAvailability,
     BookDetail,
     BookSummary,
     CatalogFilters,
@@ -55,12 +56,25 @@ class _Catalog:
                     series_number="1",
                     language="en",
                     original_format="fb2",
+                    availability=(
+                        BookAvailability.HIDDEN
+                        if request.query == "hidden"
+                        else BookAvailability.MISSED
+                        if request.query == "missed"
+                        else BookAvailability.ACTIVE
+                    ),
                 ),
             ),
             next_cursor="next-token" if request.cursor is None else None,
         )
 
-    async def details(self, public_id: str) -> BookDetail | None:
+    async def details(
+        self,
+        public_id: str,
+        *,
+        include_missed: bool = False,
+        include_hidden: bool = False,
+    ) -> BookDetail | None:
         if public_id != "public-1":
             return None
         return BookDetail(
@@ -261,6 +275,28 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         language="en",
         genre="sf",
         original_format="fb2",
+    )
+
+
+def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
+    app, catalog, _ = _app()
+    with TestClient(app) as client:
+        page = client.get("/?q=hidden&include_missed=true&include_hidden=true")
+        fragment = client.get("/catalog-fragment?q=missed&include_missed=true&include_hidden=true")
+
+    assert page.status_code == 200
+    assert 'name="include_missed" value="true" checked' in page.text
+    assert 'name="include_hidden" value="true" checked' in page.text
+    assert "(Hidden)" in page.text
+    assert 'href="/books/public-1?include_missed=true&amp;include_hidden=true"' in page.text
+    assert fragment.status_code == 200
+    assert "(Missed)" in fragment.text
+    assert fragment.headers["HX-Push-Url"].endswith("&include_missed=true&include_hidden=true")
+    assert (
+        CatalogRequest(query="hidden", include_missed=True, include_hidden=True) in catalog.requests
+    )
+    assert (
+        CatalogRequest(query="missed", include_missed=True, include_hidden=True) in catalog.requests
     )
 
 

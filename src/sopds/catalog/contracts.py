@@ -21,6 +21,12 @@ class SearchField(StrEnum):
     SERIES = "series"
 
 
+class BookAvailability(StrEnum):
+    ACTIVE = "active"
+    MISSED = "missed"
+    HIDDEN = "hidden"
+
+
 @dataclass(frozen=True, slots=True)
 class CatalogRequest:
     query: str = ""
@@ -32,6 +38,8 @@ class CatalogRequest:
     series: str | None = None
     without_series: bool = False
     search_field: SearchField = SearchField.ALL
+    include_missed: bool = False
+    include_hidden: bool = False
     page_size: int = 50
 
 
@@ -52,6 +60,7 @@ class BookSummary:
     rating: int | None = None
     keywords: str | None = None
     updated_at: datetime = datetime(1970, 1, 1, tzinfo=UTC)
+    availability: BookAvailability = BookAvailability.ACTIVE
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +78,7 @@ class BookDetail:
     original_format: str
     rating: int | None
     keywords: str | None
+    availability: BookAvailability = BookAvailability.ACTIVE
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +158,13 @@ class Catalog(Protocol):
 
     async def browse(self, request: CatalogRequest) -> CatalogPage: ...
 
-    async def details(self, public_id: str) -> BookDetail | None: ...
+    async def details(
+        self,
+        public_id: str,
+        *,
+        include_missed: bool = False,
+        include_hidden: bool = False,
+    ) -> BookDetail | None: ...
 
     async def filters(self) -> CatalogFilters: ...
 

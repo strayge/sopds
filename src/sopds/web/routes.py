@@ -81,6 +81,8 @@ def _catalog_request(
     language: str | None,
     genre: str | None,
     original_format: str | None,
+    include_missed: bool,
+    include_hidden: bool,
     cursor: str | None,
 ) -> CatalogRequest:
     return CatalogRequest(
@@ -89,6 +91,8 @@ def _catalog_request(
         language=language or None,
         genre=genre or None,
         original_format=original_format or None,
+        include_missed=include_missed,
+        include_hidden=include_hidden,
         cursor=cursor or None,
     )
 
@@ -102,6 +106,10 @@ def _catalog_url(path: str, catalog_request: CatalogRequest, cursor: str | None)
         "original_format": catalog_request.original_format or "",
         "cursor": cursor or "",
     }
+    if catalog_request.include_missed:
+        values["include_missed"] = "true"
+    if catalog_request.include_hidden:
+        values["include_hidden"] = "true"
     return f"{path}?{urlencode(values)}"
 
 
@@ -134,6 +142,16 @@ async def _results_context(
         "catalog_request": catalog_request,
         "next_href": next_href,
         "next_hx_url": next_hx_url,
+        "detail_query": urlencode(
+            {
+                name: "true"
+                for name, enabled in (
+                    ("include_missed", catalog_request.include_missed),
+                    ("include_hidden", catalog_request.include_hidden),
+                )
+                if enabled
+            }
+        ),
         "searched": searched,
     }
 
@@ -167,9 +185,20 @@ async def index(
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
+    include_missed: bool = False,
+    include_hidden: bool = False,
     cursor: str | None = None,
 ) -> Response:
-    catalog_request = _catalog_request(q, search_field, language, genre, original_format, cursor)
+    catalog_request = _catalog_request(
+        q,
+        search_field,
+        language,
+        genre,
+        original_format,
+        include_missed,
+        include_hidden,
+        cursor,
+    )
     searched = any(
         name in request.query_params
         for name in (
@@ -178,6 +207,8 @@ async def index(
             "language",
             "genre",
             "original_format",
+            "include_missed",
+            "include_hidden",
             "cursor",
         )
     )
@@ -229,9 +260,20 @@ async def catalog_fragment(
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
+    include_missed: bool = False,
+    include_hidden: bool = False,
     cursor: str | None = None,
 ) -> Response:
-    catalog_request = _catalog_request(q, search_field, language, genre, original_format, cursor)
+    catalog_request = _catalog_request(
+        q,
+        search_field,
+        language,
+        genre,
+        original_format,
+        include_missed,
+        include_hidden,
+        cursor,
+    )
     try:
         context = await _results_context(request, catalog_request)
     except CatalogInputError as error:
@@ -251,8 +293,17 @@ async def catalog_fragment(
 
 
 @router.get("/books/{public_id}", response_class=HTMLResponse)
-async def book_detail(request: Request, public_id: str) -> Response:
-    book = await _catalog(request).details(public_id)
+async def book_detail(
+    request: Request,
+    public_id: str,
+    include_missed: bool = False,
+    include_hidden: bool = False,
+) -> Response:
+    book = await _catalog(request).details(
+        public_id,
+        include_missed=include_missed,
+        include_hidden=include_hidden,
+    )
     if book is None:
         raise HTTPException(status_code=404, detail="Book not found")
     return templates.TemplateResponse(

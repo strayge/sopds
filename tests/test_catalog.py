@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from sopds.catalog.contracts import (
+    BookAvailability,
     BookDetail,
     BookSummary,
     CatalogFilters,
@@ -154,6 +155,20 @@ async def _seed(repository: CatalogRepository) -> None:
         language="zz",
         original_format="mobi",
     )
+    deleted = await Book.create(
+        using_db=connection,
+        id=102,
+        generation=active,
+        public_id="deleted",
+        archive=available,
+        member_filename="deleted.fb2",
+        title="Deleted unique",
+        title_sort="deleted unique",
+        size=1,
+        language="yy",
+        original_format="azw3",
+        hidden=True,
+    )
     staged = await Book.create(
         using_db=connection,
         id=101,
@@ -167,7 +182,11 @@ async def _seed(repository: CatalogRepository) -> None:
         language="xx",
         original_format="txt",
     )
-    for book, generation_id in ((hidden, active.id), (staged, staging.id)):
+    for book, generation_id in (
+        (hidden, active.id),
+        (deleted, active.id),
+        (staged, staging.id),
+    ):
         await connection.execute_query(
             "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
             "VALUES (?,?,?,?,?,?,?)",
@@ -231,7 +250,7 @@ async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Pat
         )
         await Book.create(
             using_db=connection,
-            id=102,
+            id=103,
             generation=superseded,
             public_id="old",
             archive=old_archive,
@@ -333,7 +352,15 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         ] == ["book-001"]
         assert not (await catalog.browse(CatalogRequest(query="first missing"))).books
         assert not (await catalog.browse(CatalogRequest(query="hidden"))).books
+        assert not (await catalog.browse(CatalogRequest(query="deleted"))).books
         assert not (await catalog.browse(CatalogRequest(query="staged"))).books
+
+        missed = await catalog.browse(CatalogRequest(query="hidden", include_missed=True))
+        assert [book.public_id for book in missed.books] == ["hidden"]
+        assert missed.books[0].availability is BookAvailability.MISSED
+        deleted = await catalog.browse(CatalogRequest(query="deleted", include_hidden=True))
+        assert [book.public_id for book in deleted.books] == ["deleted"]
+        assert deleted.books[0].availability is BookAvailability.HIDDEN
 
         assert [
             book.public_id for book in (await catalog.browse(CatalogRequest(language="ru"))).books
@@ -352,7 +379,14 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         assert detail.authors == ("First Ёжов", "Second Author")
         assert detail.genres == (("sf", "Science fiction"),)
         assert await catalog.details("hidden") is None
-        assert await catalog.details("staged") is None
+        assert await catalog.details("deleted") is None
+        missed_detail = await catalog.details("hidden", include_missed=True)
+        assert missed_detail is not None
+        assert missed_detail.availability is BookAvailability.MISSED
+        hidden_detail = await catalog.details("deleted", include_hidden=True)
+        assert hidden_detail is not None
+        assert hidden_detail.availability is BookAvailability.HIDDEN
+        assert await catalog.details("staged", include_missed=True, include_hidden=True) is None
 
         filters = await catalog.filters()
         assert [option.value for option in filters.languages] == ["en", "ru"]
@@ -385,7 +419,13 @@ async def test_hydration_omits_books_that_stop_being_visible(tmp_path: Path, cha
         original_summaries = repository.summaries
         changed = False
 
-        async def summaries(generation_id: int, book_ids: list[int]) -> list[BookSummary]:
+        async def summaries(
+            generation_id: int,
+            book_ids: list[int],
+            *,
+            include_missed: bool = False,
+            include_hidden: bool = False,
+        ) -> list[BookSummary]:
             nonlocal changed
             if not changed:
                 changed = True
@@ -397,7 +437,12 @@ async def test_hydration_omits_books_that_stop_being_visible(tmp_path: Path, cha
                     )
                 else:
                     await Book.filter(id=book_ids[0]).using_db(repository._connection).delete()
-            return await original_summaries(generation_id, book_ids)
+            return await original_summaries(
+                generation_id,
+                book_ids,
+                include_missed=include_missed,
+                include_hidden=include_hidden,
+            )
 
         repository.summaries = summaries  # type: ignore[method-assign]
         page = await catalog.browse(CatalogRequest())
@@ -416,7 +461,11 @@ async def test_browse_retries_activation_change_but_cursor_becomes_stale(tmp_pat
         activated = False
 
         async def activate_then_hydrate(
-            generation_id: int, book_ids: list[int]
+            generation_id: int,
+            book_ids: list[int],
+            *,
+            include_missed: bool = False,
+            include_hidden: bool = False,
         ) -> list[BookSummary]:
             nonlocal activated
             if not activated:
@@ -426,7 +475,12 @@ async def test_browse_retries_activation_change_but_cursor_becomes_stale(tmp_pat
                     .using_db(repository._connection)
                     .update(active_generation_id=2)
                 )
-            return await original_summaries(generation_id, book_ids)
+            return await original_summaries(
+                generation_id,
+                book_ids,
+                include_missed=include_missed,
+                include_hidden=include_hidden,
+            )
 
         repository.summaries = activate_then_hydrate  # type: ignore[method-assign]
         retried = await catalog.browse(CatalogRequest())
@@ -455,10 +509,19 @@ async def test_details_retries_activation_change_during_hydration(
         generation_ids: list[int] = []
 
         async def activate_then_return_detail(
-            generation_id: int, public_id: str
+            generation_id: int,
+            public_id: str,
+            *,
+            include_missed: bool = False,
+            include_hidden: bool = False,
         ) -> BookDetail | None:
             generation_ids.append(generation_id)
-            detail = await original_detail(generation_id, public_id)
+            detail = await original_detail(
+                generation_id,
+                public_id,
+                include_missed=include_missed,
+                include_hidden=include_hidden,
+            )
             if generation_id == 1:
                 await (
                     CatalogState.filter(id=1)
@@ -486,10 +549,19 @@ async def test_details_rejects_two_activation_changes(tmp_path: Path) -> None:
         generation_ids: list[int] = []
 
         async def change_activation_after_detail(
-            generation_id: int, public_id: str
+            generation_id: int,
+            public_id: str,
+            *,
+            include_missed: bool = False,
+            include_hidden: bool = False,
         ) -> BookDetail | None:
             generation_ids.append(generation_id)
-            detail = await original_detail(generation_id, public_id)
+            detail = await original_detail(
+                generation_id,
+                public_id,
+                include_missed=include_missed,
+                include_hidden=include_hidden,
+            )
             next_generation_id = 2 if generation_id == 1 else 1
             await (
                 CatalogState.filter(id=1)

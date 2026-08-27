@@ -83,6 +83,8 @@ class CatalogService:
                     author=request.author,
                     series=request.series,
                     without_series=request.without_series,
+                    include_missed=request.include_missed,
+                    include_hidden=request.include_hidden,
                     after=after,
                     limit=request.page_size + 1,
                 )
@@ -96,12 +98,19 @@ class CatalogService:
                     author=request.author,
                     series=request.series,
                     without_series=request.without_series,
+                    include_missed=request.include_missed,
+                    include_hidden=request.include_hidden,
                     after=after,
                     limit=request.page_size + 1,
                 )
             visible = rows[: request.page_size]
             books = tuple(
-                await self._repository.summaries(generation_id, [row[0] for row in visible])
+                await self._repository.summaries(
+                    generation_id,
+                    [row[0] for row in visible],
+                    include_missed=request.include_missed,
+                    include_hidden=request.include_hidden,
+                )
             )
             if await self._repository.active_snapshot() != snapshot:
                 if request.cursor is not None:
@@ -340,15 +349,31 @@ class CatalogService:
 
         raise AssertionError("Adaptive navigation retry bound was bypassed")
 
-    async def details(self, public_id: str) -> BookDetail | None:
-        if not public_id or len(public_id) > 64:
+    async def details(
+        self,
+        public_id: str,
+        *,
+        include_missed: bool = False,
+        include_hidden: bool = False,
+    ) -> BookDetail | None:
+        if (
+            not public_id
+            or len(public_id) > 64
+            or type(include_missed) is not bool
+            or type(include_hidden) is not bool
+        ):
             return None
         for attempt in range(2):
             snapshot = await self._repository.active_snapshot()
             generation_id = snapshot.generation_id
             if generation_id is None:
                 return None
-            detail = await self._repository.detail(generation_id, public_id)
+            detail = await self._repository.detail(
+                generation_id,
+                public_id,
+                include_missed=include_missed,
+                include_hidden=include_hidden,
+            )
             if await self._repository.active_snapshot() != snapshot:
                 if attempt == 0:
                     continue
@@ -411,6 +436,8 @@ def _validate_filters(request: CatalogRequest) -> None:
         request.without_series and request.series is not None
     ):
         raise CatalogInputError("Invalid series filter")
+    if type(request.include_missed) is not bool or type(request.include_hidden) is not bool:
+        raise CatalogInputError("Invalid availability filter")
 
 
 def _request_fingerprint(request: CatalogRequest, normalized: str) -> str:
@@ -424,6 +451,8 @@ def _request_fingerprint(request: CatalogRequest, normalized: str) -> str:
             request.series,
             request.without_series,
             request.search_field.value,
+            request.include_missed,
+            request.include_hidden,
             request.page_size,
         ],
         ensure_ascii=False,

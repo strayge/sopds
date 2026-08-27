@@ -4,7 +4,8 @@
   <p class="muted">Showing {{ page.books|length }} books</p>
   {% for book in page.books %}
     <article class="book">
-      <a href="/books/{{ book.public_id }}"><strong>{{ book.title }}</strong></a>
+      <a href="/books/{{ book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}"><strong>{{ book.title }}</strong></a>
+      {% if book.availability.value != "active" %}<span class="muted">({{ book.availability.value|capitalize }})</span>{% endif %}
       {% if book.authors %}<div>{{ book.authors|join(', ') }}</div>{% endif %}
       <div class="muted">
         {% if book.series %}{{ book.series }}{% if book.series_number %} #{{ book.series_number }}{% endif %} · {% endif %}
@@ -16,5 +17,5 @@
     <p><a href="{{ next_href }}" hx-get="{{ next_hx_url }}" hx-target="#catalog-results" hx-swap="innerHTML">Next page</a></p>
   {% endif %}
 {% else %}
-  <p>No available books found.</p>
+  <p>No books found.</p>
 {% endif %}

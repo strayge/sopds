@@ -55,6 +55,7 @@ class BookRow:
     original_format: str
     rating: int | None
     keywords: str | None
+    hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)

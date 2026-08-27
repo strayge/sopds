@@ -70,8 +70,12 @@ Use **Import now** in the web interface to force an import. A new catalog is
 built separately and activated atomically. A failure before activation leaves
 the previous catalog active.
 
-Books whose ZIP archives are missing are hidden. Periodic checks update archive
-availability without rebuilding catalog metadata.
+Books whose ZIP archives are missing are marked as missed. INPX records marked as
+deleted are hidden. Both categories are excluded from catalog search by default;
+the web search can include either category explicitly. After upgrading an existing
+database to this version, run **Force import** once to populate searchable hidden
+metadata. Periodic checks update archive availability without rebuilding catalog
+metadata.
 
 Book pages, OPDS clients, and Telegram download original files directly from
 the ZIP archives. No converted formats are currently offered.

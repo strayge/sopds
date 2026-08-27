@@ -7,9 +7,10 @@ from typing import cast
 import pytest
 from tortoise.context import TortoiseContext
 from tortoise.exceptions import IntegrityError
+from tortoise.migrations.api import migrate
 
 import sopds.db.connection as database_connection
-from sopds.db.configuration import SQLITE_BUSY_TIMEOUT_MS
+from sopds.db.configuration import SQLITE_BUSY_TIMEOUT_MS, build_tortoise_config
 from sopds.db.connection import close_database, initialize_database
 from sopds.db.migrations_runner import (
     MigrationError,
@@ -36,6 +37,7 @@ RELATION_INDEXES = {
     ("book", ("generation_id", "series_id", "series_number", "public_id")),
     ("book", ("generation_id", "language", "title_sort", "public_id")),
     ("book", ("generation_id", "libid")),
+    ("book", ("generation_id", "hidden", "title_sort", "public_id")),
     ("book_author", ("author_id", "book_id")),
     ("book_genre", ("genre_id", "book_id")),
     ("genre", ("generation_id", "label_sort", "id")),
@@ -72,7 +74,38 @@ async def test_fresh_migration_is_idempotent(tmp_path: Path) -> None:
         ("catalog", "0001_initial"),
         ("catalog", "0002_fts5"),
         ("catalog", "0003_book_series_index"),
+        ("catalog", "0004_book_hidden"),
     ]
+
+
+async def test_hidden_field_migration_upgrades_a_populated_database(tmp_path: Path) -> None:
+    database_path = tmp_path / "catalog.sqlite3"
+    config = build_tortoise_config(database_path)
+    async with TortoiseContext():
+        await migrate(
+            config=config,
+            app_labels=["catalog"],
+            target="catalog.0003_book_series_index",
+        )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO catalog_generation(id,state,created_at) "
+            "VALUES(1,'active',CURRENT_TIMESTAMP)"
+        )
+        connection.execute(
+            "INSERT INTO archive(id,generation_id,relative_path,available) "
+            "VALUES(1,1,'books.zip',1)"
+        )
+        connection.execute(
+            "INSERT INTO book(id,public_id,member_filename,title,title_sort,size,"
+            "original_format,archive_id,generation_id) "
+            "VALUES(1,'book','book.fb2','Book','book',1,'fb2',1,1)"
+        )
+
+    await apply_migrations(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT hidden FROM book").fetchall() == [(0,)]
 
 
 async def test_migrations_create_relational_and_fts_schema(tmp_path: Path) -> None:
@@ -320,9 +353,9 @@ async def test_runtime_validation_rejects_pending_migrations(tmp_path: Path) -> 
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
     with sqlite3.connect(database_path) as connection:
-        connection.execute("DELETE FROM tortoise_migrations WHERE name = '0003_book_series_index'")
+        connection.execute("DELETE FROM tortoise_migrations WHERE name = '0004_book_hidden'")
 
-    with pytest.raises(PendingMigrationsError, match="0003_book_series_index"):
+    with pytest.raises(PendingMigrationsError, match="0004_book_hidden"):
         await validate_migration_state(database_path)
 
 

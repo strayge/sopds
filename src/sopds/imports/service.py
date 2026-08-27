@@ -237,7 +237,7 @@ class CatalogImportService:
                     ) * _PROGRESS_RECORD_INTERVAL
             if counters[0] != counters[1] + counters[2] or counters[3] != 0:
                 raise CatalogDataError("Import counters failed structural validation")
-            await self._repository.validate_generation_counts(generation_id, counters[1])
+            await self._repository.validate_generation_counts(generation_id, counters[0])
             final_fingerprint = await hash_source(self._source_path, fingerprint)
             if final_fingerprint.sha256 != fingerprint.sha256:
                 raise SourceChangedError("INPX source content changed while it was being imported")
@@ -405,20 +405,16 @@ class CatalogImportService:
         book_genre_rows: list[BookGenreRow] = []
         search_rows: list[BookSearchRow] = []
         for record in records:
-            if not record.deleted:
-                _validate_mapped_metadata(record)
+            _validate_mapped_metadata(record)
         new_archive_paths = {
             record.locator.archive_relative_path.as_posix()
             for record in records
-            if not record.deleted
-            and record.locator.archive_relative_path.as_posix() not in archive_map
+            if record.locator.archive_relative_path.as_posix() not in archive_map
         }
         availability = await asyncio.to_thread(
             archive_availability, self._archive_root, new_archive_paths
         )
         for record in records:
-            if record.deleted:
-                continue
             archive_path = record.locator.archive_relative_path.as_posix()
             archive_id = archive_map.get(archive_path)
             if archive_id is None:
@@ -508,6 +504,7 @@ class CatalogImportService:
                     original_format=record.extension,
                     rating=record.library_rating,
                     keywords=record.keywords,
+                    hidden=record.deleted,
                 )
             )
             for position, author_id in enumerate(author_ids):
@@ -546,7 +543,7 @@ class CatalogImportService:
                 search_rows=tuple(search_rows),
             )
         )
-        return len(book_rows)
+        return sum(not record.deleted for record in records)
 
 
 def normalize_sort_key(value: str) -> str:

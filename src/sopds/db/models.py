@@ -183,6 +183,7 @@ class Book(Model):
     original_format = fields.CharField(max_length=32)
     rating = fields.SmallIntField(null=True)
     keywords = fields.TextField(null=True)
+    hidden = fields.BooleanField(default=False, db_default=False)
 
     author_links: fields.ReverseRelation[BookAuthor]
     genre_links: fields.ReverseRelation[BookGenre]
@@ -199,6 +200,7 @@ class Book(Model):
             ("generation_id", "series_id", "series_number", "public_id"),
             ("generation_id", "language", "title_sort", "public_id"),
             ("generation_id", "libid"),
+            ("generation_id", "hidden", "title_sort", "public_id"),
         )
 
 

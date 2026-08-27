@@ -345,34 +345,44 @@ async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config:
     book = _query(
         app_config.database.path,
         "SELECT public_id,title,title_sort,series_number,size,libid,published_date,language,"
-        "original_format,rating,keywords FROM book",
+        "original_format,rating,keywords,hidden FROM book ORDER BY id",
+    )
+    common = (
+        "Ёжик",
+        "ежик",
+        "A-2",
+        123,
+        "lib-1",
+        "2024-02-03",
+        "ru",
+        "fb2",
+        4,
+        "one,two",
     )
     assert book == [
-        (
-            derive_public_id("default", "nested/books.zip", "book.fb2"),
-            "Ёжик",
-            "ежик",
-            "A-2",
-            123,
-            "lib-1",
-            "2024-02-03",
-            "ru",
-            "fb2",
-            4,
-            "one,two",
-        )
+        (derive_public_id("default", "nested/books.zip", "book.fb2"), *common, 0),
+        (derive_public_id("default", "nested/books.zip", "gone.fb2"), *common, 1),
     ]
     assert _query(
         app_config.database.path,
-        "SELECT name,position FROM author JOIN book_author ON author.id=author_id ORDER BY position",
-    ) == [("Иван Ёлкин", 0), ("Jane Doe", 1)]
+        "SELECT name,position FROM author JOIN book_author ON author.id=author_id "
+        "ORDER BY book_id,position",
+    ) == [
+        ("Иван Ёлкин", 0),
+        ("Jane Doe", 1),
+        ("Иван Ёлкин", 0),
+        ("Jane Doe", 1),
+    ]
     assert _query(app_config.database.path, "SELECT code,label FROM genre ORDER BY code") == [
         ("prose", "Проза"),
         ("sf", "Научная фантастика"),
     ]
     assert _query(
         app_config.database.path, "SELECT title,authors,series,genres,language FROM book_fts"
-    ) == [("ежик", "иван елкин jane doe", "серия", "научная фантастика проза", "ru")]
+    ) == [
+        ("ежик", "иван елкин jane doe", "серия", "научная фантастика проза", "ru"),
+        ("ежик", "иван елкин jane doe", "серия", "научная фантастика проза", "ru"),
+    ]
     assert normalize_sort_key("  ЁЖ ") == "  еж "
 
 

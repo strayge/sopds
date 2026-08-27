@@ -10,6 +10,7 @@
       body { max-width: 64rem; margin: 2rem auto; padding: 0 1rem; font-family: system-ui, sans-serif; }
       form { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; }
       label { display: grid; gap: .2rem; }
+      label.checkbox { display: flex; align-items: center; gap: .35rem; padding-bottom: .45rem; }
       input, select, button { padding: .45rem; }
       .book { padding: .8rem 0; border-bottom: 1px solid #ddd; }
       .muted { color: #666; }
@@ -90,6 +91,14 @@
             <option value="">All</option>
             {% for option in filters.original_formats %}<option value="{{ option.value }}"{% if catalog_request.original_format == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
           </select>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="include_missed" value="true"{% if catalog_request.include_missed %} checked{% endif %}>
+          Search missed books
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="include_hidden" value="true"{% if catalog_request.include_hidden %} checked{% endif %}>
+          Search hidden books
         </label>
         <button type="submit">Find</button>
       </form>

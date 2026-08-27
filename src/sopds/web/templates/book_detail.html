@@ -5,6 +5,7 @@
     <main>
       <p><a href="/">← Catalog</a></p>
       <h1>{{ book.title }}</h1>
+      {% if book.availability.value != "active" %}<p><strong>Status:</strong> {{ book.availability.value|capitalize }}</p>{% endif %}
       {% if book.authors %}<p><strong>Authors:</strong> {{ book.authors|join(', ') }}</p>{% endif %}
       {% if book.series %}<p><strong>Series:</strong> {{ book.series }}{% if book.series_number %} #{{ book.series_number }}{% endif %}</p>{% endif %}
       {% if book.genres %}<p><strong>Genres:</strong> {% for code, label in book.genres %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}

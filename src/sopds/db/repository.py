@@ -15,6 +15,7 @@ from tortoise.transactions import in_transaction
 from sopds.acquisition.contracts import AcquisitionTarget
 from sopds.catalog.contracts import (
     AuthorBookCounts,
+    BookAvailability,
     BookDetail,
     BookSummary,
     CatalogFilters,
@@ -251,6 +252,7 @@ class CatalogRepository:
                         original_format=row.original_format,
                         rating=row.rating,
                         keywords=row.keywords,
+                        hidden=row.hidden,
                     )
                     for row in batch.books[offset : offset + DEFAULT_BATCH_SIZE]
                 ]
@@ -659,11 +661,20 @@ class CatalogRepository:
             if activated_at.tzinfo is None:
                 activated_at = activated_at.replace(tzinfo=UTC)
             activated_at = activated_at.astimezone(UTC)
-        persisted_books = await (
-            Book.filter(generation_id=generation_id).using_db(self._connection).count()
+        visible_books = await (
+            Book.filter(generation_id=generation_id, hidden=False)
+            .using_db(self._connection)
+            .count()
+        )
+        persisted_hidden_books = await (
+            Book.filter(generation_id=generation_id, hidden=True).using_db(self._connection).count()
         )
         missed_books = await (
-            Book.filter(generation_id=generation_id, archive__available=False)
+            Book.filter(
+                generation_id=generation_id,
+                hidden=False,
+                archive__available=False,
+            )
             .using_db(self._connection)
             .count()
         )
@@ -677,8 +688,11 @@ class CatalogRepository:
             .limit(1)
             .values("records_deleted")
         )
-        hidden_books = int(run_rows[0]["records_deleted"]) if run_rows else 0
-        total_books = persisted_books + hidden_books
+        recorded_hidden_books = int(run_rows[0]["records_deleted"]) if run_rows else 0
+        # Existing generations predate persisted hidden metadata. Keep their statistics
+        # accurate until the next forced import populates searchable hidden rows.
+        hidden_books = max(persisted_hidden_books, recorded_hidden_books)
+        total_books = visible_books + hidden_books
         return CatalogStatistics(
             total_books=total_books,
             hidden_books=hidden_books,
@@ -724,7 +738,7 @@ class CatalogRepository:
             member_filename=str(member),
         )
 
-    def _available_books(
+    def _visible_books(
         self,
         generation_id: int,
         *,
@@ -734,12 +748,19 @@ class CatalogRepository:
         author: str | None,
         series: str | None,
         without_series: bool = False,
+        include_missed: bool = False,
+        include_hidden: bool = False,
     ) -> QuerySet[Book]:
+        visibility = Q(hidden=False, archive__available=True)
+        if include_missed:
+            visibility |= Q(hidden=False, archive__available=False)
+        if include_hidden:
+            visibility |= Q(hidden=True)
         query = Book.filter(
             Q(series_id=None) | Q(series__generation_id=generation_id),
+            visibility,
             generation_id=generation_id,
             archive__generation_id=generation_id,
-            archive__available=True,
         ).using_db(self._connection)
         if language is not None:
             query = query.filter(language=language)
@@ -761,6 +782,28 @@ class CatalogRepository:
             query = query.filter(series_id=None)
         return query
 
+    def _available_books(
+        self,
+        generation_id: int,
+        *,
+        language: str | None,
+        genre: str | None,
+        original_format: str | None,
+        author: str | None,
+        series: str | None,
+        without_series: bool = False,
+    ) -> QuerySet[Book]:
+        """Prevent optional web scope from changing navigation and facet choices."""
+        return self._visible_books(
+            generation_id,
+            language=language,
+            genre=genre,
+            original_format=original_format,
+            author=author,
+            series=series,
+            without_series=without_series,
+        )
+
     async def browse_book_ids(
         self,
         generation_id: int,
@@ -771,10 +814,12 @@ class CatalogRepository:
         author: str | None,
         series: str | None,
         without_series: bool = False,
+        include_missed: bool = False,
+        include_hidden: bool = False,
         after: tuple[str, str] | None,
         limit: int,
     ) -> list[tuple[int, str, str]]:
-        query = self._available_books(
+        query = self._visible_books(
             generation_id,
             language=language,
             genre=genre,
@@ -782,6 +827,8 @@ class CatalogRepository:
             author=author,
             series=series,
             without_series=without_series,
+            include_missed=include_missed,
+            include_hidden=include_hidden,
         )
         if after is not None:
             title_sort, public_id = after
@@ -810,6 +857,8 @@ class CatalogRepository:
         author: str | None,
         series: str | None,
         without_series: bool = False,
+        include_missed: bool = False,
+        include_hidden: bool = False,
         after: tuple[str, str] | None,
         limit: int,
     ) -> list[tuple[int, str, str]]:
@@ -818,7 +867,9 @@ class CatalogRepository:
             "JOIN book b ON b.id=book_fts.book_id "
             "JOIN archive a ON a.id=b.archive_id "
             "WHERE book_fts MATCH ? AND b.generation_id=? "
-            "AND book_fts.generation_id=? AND a.generation_id=? AND a.available=1 "
+            "AND book_fts.generation_id=? AND a.generation_id=? "
+            "AND ((b.hidden=0 AND a.available=1) "
+            "OR (?=1 AND b.hidden=0 AND a.available=0) OR (?=1 AND b.hidden=1)) "
             "AND (b.series_id IS NULL OR EXISTS "
             "(SELECT 1 FROM series bs WHERE bs.id=b.series_id AND bs.generation_id=?))"
         )
@@ -827,6 +878,8 @@ class CatalogRepository:
             generation_id,
             generation_id,
             generation_id,
+            int(include_missed),
+            int(include_hidden),
             generation_id,
         ]
         if language is not None:
@@ -863,7 +916,14 @@ class CatalogRepository:
         _, rows = await self._connection.execute_query(sql, parameters)
         return [(int(row["id"]), str(row["title_sort"]), str(row["public_id"])) for row in rows]
 
-    async def summaries(self, generation_id: int, book_ids: list[int]) -> list[BookSummary]:
+    async def summaries(
+        self,
+        generation_id: int,
+        book_ids: list[int],
+        *,
+        include_missed: bool = False,
+        include_hidden: bool = False,
+    ) -> list[BookSummary]:
         if not book_ids:
             return []
         state = await (
@@ -877,27 +937,40 @@ class CatalogRepository:
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=UTC)
         books = await self._hydrated_books(
-            Book.filter(
-                Q(series_id=None) | Q(series__generation_id=generation_id),
-                id__in=book_ids,
-                generation_id=generation_id,
-                archive__generation_id=generation_id,
-                archive__available=True,
-            ),
+            self._visible_books(
+                generation_id,
+                language=None,
+                genre=None,
+                original_format=None,
+                author=None,
+                series=None,
+                include_missed=include_missed,
+                include_hidden=include_hidden,
+            ).filter(id__in=book_ids),
             generation_id,
         )
         by_id = {int(book.id): self._summary(book, updated_at) for book in books}
         return [by_id[book_id] for book_id in book_ids if book_id in by_id]
 
-    async def detail(self, generation_id: int, public_id: str) -> BookDetail | None:
+    async def detail(
+        self,
+        generation_id: int,
+        public_id: str,
+        *,
+        include_missed: bool = False,
+        include_hidden: bool = False,
+    ) -> BookDetail | None:
         books = await self._hydrated_books(
-            Book.filter(
-                Q(series_id=None) | Q(series__generation_id=generation_id),
-                generation_id=generation_id,
-                public_id=public_id,
-                archive__generation_id=generation_id,
-                archive__available=True,
-            ),
+            self._visible_books(
+                generation_id,
+                language=None,
+                genre=None,
+                original_format=None,
+                author=None,
+                series=None,
+                include_missed=include_missed,
+                include_hidden=include_hidden,
+            ).filter(public_id=public_id),
             generation_id,
         )
         if not books:
@@ -922,12 +995,13 @@ class CatalogRepository:
             original_format=book.original_format,
             rating=book.rating,
             keywords=book.keywords,
+            availability=self._availability(book),
         )
 
     async def _hydrated_books(self, query: QuerySet[Book], generation_id: int) -> list[Book]:
         return await (
             query.using_db(self._connection)
-            .select_related("series")
+            .select_related("series", "archive")
             .prefetch_related(
                 Prefetch(
                     "author_links",
@@ -971,7 +1045,16 @@ class CatalogRepository:
             rating=book.rating,
             keywords=book.keywords,
             updated_at=updated_at,
+            availability=CatalogRepository._availability(book),
         )
+
+    @staticmethod
+    def _availability(book: Book) -> BookAvailability:
+        if book.hidden:
+            return BookAvailability.HIDDEN
+        if not book.archive.available:
+            return BookAvailability.MISSED
+        return BookAvailability.ACTIVE
 
     def _available_authors(self, generation_id: int) -> QuerySet[Author]:
         return Author.filter(
@@ -981,6 +1064,7 @@ class CatalogRepository:
             book_links__book__generation_id=generation_id,
             book_links__book__archive__generation_id=generation_id,
             book_links__book__archive__available=True,
+            book_links__book__hidden=False,
         ).using_db(self._connection)
 
     def _available_series(self, generation_id: int, author: str | None = None) -> QuerySet[Series]:
@@ -989,6 +1073,7 @@ class CatalogRepository:
             books__generation_id=generation_id,
             books__archive__generation_id=generation_id,
             books__archive__available=True,
+            books__hidden=False,
         ).using_db(self._connection)
         if author is not None:
             query = query.filter(
@@ -1194,6 +1279,7 @@ class CatalogRepository:
                 book__generation_id=generation_id,
                 book__archive__generation_id=generation_id,
                 book__archive__available=True,
+                book__hidden=False,
                 genre__generation_id=generation_id,
             ).values("genre_id")
             genre_query = Genre.filter(
@@ -1230,6 +1316,7 @@ class CatalogRepository:
                 generation_id=generation_id,
                 archive__generation_id=generation_id,
                 archive__available=True,
+                hidden=False,
             )
             .using_db(self._connection)
             .exclude(language=None)
@@ -1250,6 +1337,7 @@ class CatalogRepository:
             generation_id=generation_id,
             archive__generation_id=generation_id,
             archive__available=True,
+            hidden=False,
         ).using_db(self._connection)
         languages = sorted(
             str(value)
@@ -1265,6 +1353,7 @@ class CatalogRepository:
             book__generation_id=generation_id,
             book__archive__generation_id=generation_id,
             book__archive__available=True,
+            book__hidden=False,
             genre__generation_id=generation_id,
         ).values("genre_id")
         genre_rows = await (
