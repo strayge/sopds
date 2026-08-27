@@ -1,5 +1,6 @@
 """Smoke tests for the initial HTTP application."""
 
+import asyncio
 import sqlite3
 import time
 from unittest.mock import AsyncMock, patch
@@ -15,10 +16,11 @@ from sopds.app import create_app
 from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig, TelegramConfig
 from sopds.conversion.cache import ArtifactCache
+from sopds.conversion.contracts import CacheCleanupSummary
 from sopds.conversion.service import ConversionService
 from sopds.db.connection import close_database
 from sopds.imports.coordinator import ImportCoordinator
-from sopds.lifecycle import _scheduled_checks
+from sopds.lifecycle import _scheduled_checks, _scheduled_conversion_cleanup
 
 
 def test_health_endpoint(migrated_app_config: AppConfig) -> None:
@@ -143,6 +145,58 @@ def test_missing_inpx_stays_healthy_and_records_immediate_check(
             '<dt>Error</dt><dd class="error">Could not read the configured catalog source</dd>'
             in status.text
         )
+
+
+def test_lifespan_logs_startup_failure_type_and_duration(
+    migrated_app_config: AppConfig,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch(
+            "sopds.lifecycle.validate_migration_state",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("sensitive startup detail"),
+        ),
+        pytest.raises(RuntimeError, match="sensitive startup detail"),
+        TestClient(create_app(migrated_app_config)),
+    ):
+        pass
+
+    assert "Application startup failed phase=startup" in caplog.text
+    assert "failure_type=RuntimeError" in caplog.text
+    assert "duration_ms=" in caplog.text
+    assert "sensitive startup detail" not in caplog.text
+
+
+async def test_partial_cache_cleanup_failure_recovers_once(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    summaries = iter(
+        [
+            CacheCleanupSummary(1, 1),
+            CacheCleanupSummary(0, 0),
+        ]
+    )
+
+    class FakeCache:
+        async def cleanup(self) -> CacheCleanupSummary:
+            try:
+                return next(summaries)
+            except StopIteration:
+                raise asyncio.CancelledError from None
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("sopds.lifecycle.asyncio.sleep", no_wait)
+    caplog.set_level("INFO", logger="sopds.lifecycle")
+    with pytest.raises(asyncio.CancelledError):
+        await _scheduled_conversion_cleanup(FakeCache(), 1)  # type: ignore[arg-type]
+
+    assert caplog.text.count("cleanup failed entries") == 1
+    assert caplog.text.count("cleanup recovered") == 1
+    assert "failure_count=1" in caplog.text
 
 
 def test_disabled_lifecycle_does_not_construct_telegram_bot(

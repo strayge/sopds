@@ -137,9 +137,7 @@ async def index(
         )
         import_coordinator = _imports(request)
         current_import_status = await import_coordinator.get_status()
-        import_pending = (
-            current_import_status is None and import_coordinator.is_import_active()
-        )
+        import_pending = current_import_status is None and import_coordinator.is_import_active()
         context.update(
             filters=await _catalog(request).filters(),
             opds_url=opds_url,
@@ -201,23 +199,21 @@ async def book_detail(request: Request, public_id: str) -> Response:
     )
 
 
-async def _stream_original(original: AcquiredOriginal, public_id: str) -> AsyncIterator[bytes]:
+async def _stream_original(original: AcquiredOriginal) -> AsyncIterator[bytes]:
     try:
         async for chunk in original.stream:
             yield chunk
-    except AcquisitionError:
-        _LOGGER.exception(
-            "Original download failed after streaming began",
-            extra={"book_public_id": public_id},
+    except AcquisitionError as error:
+        _LOGGER.warning(
+            f"Original download stream failed surface=web phase=stream "
+            f"failure_type={type(error).__name__} response_started=True"
         )
         raise
     finally:
         await original.stream.aclose()
 
 
-async def _close_owned_stream(
-    original: AcquiredOriginal, public_id: str, *, response_started: bool
-) -> bool:
+async def _close_owned_stream(original: AcquiredOriginal, *, response_started: bool) -> bool:
     """Finish response-owned cleanup even when its caller is repeatedly cancelled."""
     cleanup = asyncio.create_task(original.stream.aclose())
     cancelled = False
@@ -228,10 +224,10 @@ async def _close_owned_stream(
             cancelled = True
     try:
         cleanup.result()
-    except BaseException:
-        _LOGGER.exception(
-            "Original download cleanup failed",
-            extra={"book_public_id": public_id, "response_started": response_started},
+    except BaseException as error:
+        _LOGGER.error(
+            f"Original download cleanup failed surface=web phase=cleanup "
+            f"failure_type={type(error).__name__} response_started={response_started}"
         )
     return cancelled
 
@@ -239,14 +235,9 @@ async def _close_owned_stream(
 class _OwnedStreamingResponse(StreamingResponse):
     """Own an acquired stream for the complete ASGI response lifecycle."""
 
-    def __init__(self, original: AcquiredOriginal, public_id: str, headers: dict[str, str]) -> None:
+    def __init__(self, original: AcquiredOriginal, headers: dict[str, str]) -> None:
         self._original = original
-        self._public_id = public_id
-        super().__init__(
-            _stream_original(original, public_id),
-            status_code=200,
-            headers=headers,
-        )
+        super().__init__(_stream_original(original), status_code=200, headers=headers)
 
     @override
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -264,7 +255,6 @@ class _OwnedStreamingResponse(StreamingResponse):
             try:
                 await _close_owned_stream(
                     self._original,
-                    self._public_id,
                     response_started=response_started,
                 )
             finally:
@@ -272,7 +262,6 @@ class _OwnedStreamingResponse(StreamingResponse):
         else:
             if await _close_owned_stream(
                 self._original,
-                self._public_id,
                 response_started=response_started,
             ):
                 raise asyncio.CancelledError
@@ -287,15 +276,14 @@ async def download_original(request: Request, public_id: str) -> Response:
     except AcquisitionStoreShutdownError as error:
         raise HTTPException(status_code=503, detail="Service is shutting down") from error
     except _INTERNAL_ERRORS as error:
-        _LOGGER.exception(
-            "Original download could not be opened",
-            extra={"book_public_id": public_id, "failure_type": type(error).__name__},
+        _LOGGER.warning(
+            f"Original download integrity check failed surface=web phase=open "
+            f"failure_type={type(error).__name__}"
         )
         raise HTTPException(status_code=500, detail="Original cannot be served") from error
     except AcquisitionError as error:
-        _LOGGER.exception(
-            "Original download failed",
-            extra={"book_public_id": public_id, "failure_type": type(error).__name__},
+        _LOGGER.warning(
+            f"Original download failed surface=web phase=open failure_type={type(error).__name__}"
         )
         raise HTTPException(status_code=500, detail="Original cannot be served") from error
 
@@ -306,7 +294,7 @@ async def download_original(request: Request, public_id: str) -> Response:
             "Content-Disposition": content_disposition(original.filename),
             "X-Content-Type-Options": "nosniff",
         }
-        return _OwnedStreamingResponse(original, public_id, headers)
+        return _OwnedStreamingResponse(original, headers)
     except BaseException:
         await original.stream.aclose()
         raise
@@ -392,7 +380,10 @@ async def _database_ready(request: Request, endpoint: str) -> bool:
     try:
         await _catalog(request).check_readiness()
     except Exception as error:
-        _LOGGER.warning("Database readiness check failed at %s: %s", endpoint, type(error).__name__)
+        _LOGGER.warning(
+            f"Database readiness check failed component={endpoint} "
+            f"failure_type={type(error).__name__}"
+        )
         return False
     return True
 

@@ -36,7 +36,14 @@ from sopds.db.models import (
 )
 from sopds.db.rows import CatalogWriteBatch
 from sopds.imports.fingerprint import SourceFingerprint
-from sopds.imports.status import ImportState, ImportStatus, ImportTrigger
+from sopds.imports.status import (
+    ArchiveAvailabilitySummary,
+    GenerationCleanupSummary,
+    ImportState,
+    ImportStatus,
+    ImportTrigger,
+    RecoverySummary,
+)
 
 DEFAULT_BATCH_SIZE = 2_000
 
@@ -443,9 +450,9 @@ class CatalogRepository:
         value = values[0]["staging_generation_id"]
         return int(value) if value is not None else None
 
-    async def recover(self) -> None:
+    async def recover(self) -> RecoverySummary:
         now = datetime.now(UTC)
-        await (
+        interrupted_runs = await (
             ImportRun.filter(state=ImportState.RUNNING)
             .using_db(self._connection)
             .update(
@@ -454,14 +461,19 @@ class CatalogRepository:
                 error_summary="Import interrupted by process shutdown",
             )
         )
-        await (
+        failed_generations = await (
             CatalogGeneration.filter(state=GenerationState.IMPORTING)
             .using_db(self._connection)
             .update(state=GenerationState.FAILED, completed_at=now)
         )
-        await self.cleanup_inactive()
+        cleanup = await self.cleanup_inactive()
+        return RecoverySummary(
+            interrupted_runs=interrupted_runs,
+            failed_generations=failed_generations,
+            removed_generations=cleanup.removed_generations,
+        )
 
-    async def cleanup_inactive(self) -> None:
+    async def cleanup_inactive(self) -> GenerationCleanupSummary:
         state_values = (
             await CatalogState.filter(id=1)
             .using_db(self._connection)
@@ -469,6 +481,7 @@ class CatalogRepository:
         )
         active_value = state_values[0]["active_generation_id"] if state_values else None
         active_id = int(active_value) if active_value is not None else None
+        removed_generations = 0
         while True:
             stale_query = CatalogGeneration.filter(
                 state__in=(GenerationState.SUPERSEDED, GenerationState.FAILED)
@@ -477,12 +490,13 @@ class CatalogRepository:
                 stale_query = stale_query.exclude(id=active_id)
             stale = await stale_query.order_by("id").first()
             if stale is None:
-                return
+                return GenerationCleanupSummary(removed_generations=removed_generations)
             await self._delete_fts_rows(stale.id)
             await self._delete_generation_rows(Book, stale.id)
             for model in (Archive, Author, Genre, Series):
                 await self._delete_generation_rows(model, stale.id)
             await CatalogGeneration.filter(id=stale.id).using_db(self._connection).delete()
+            removed_generations += 1
 
     async def _delete_fts_rows(self, generation_id: int) -> None:
         """Bound FTS deletion because SQLite FTS5 is outside Tortoise's model system."""
@@ -527,9 +541,11 @@ class CatalogRepository:
         )
         return [(archive_id, relative_path) for archive_id, relative_path in rows]
 
-    async def update_archive_availability(self, values: dict[int, bool]) -> None:
+    async def update_archive_availability(
+        self, values: dict[int, bool]
+    ) -> ArchiveAvailabilitySummary:
         if not values:
-            return
+            return ArchiveAvailabilitySummary(0, 0, 0, 0, 0)
         async with in_transaction(CONNECTION_NAME) as transaction:
             state = (
                 await CatalogState.filter(id=1)
@@ -539,9 +555,11 @@ class CatalogRepository:
                 .first()
             )
             if state is None or state.active_generation is None:
-                return
+                return ArchiveAvailabilitySummary(0, 0, 0, 0, 0)
             active_generation_id = int(state.active_generation.id)
             changed_archives: list[Archive] = []
+            checked = available_count = unavailable_count = 0
+            changed_to_available = changed_to_unavailable = 0
             archive_ids = list(values)
             for offset in range(0, len(archive_ids), self._cleanup_batch_size):
                 chunk_ids = archive_ids[offset : offset + self._cleanup_batch_size]
@@ -551,11 +569,27 @@ class CatalogRepository:
                 ).using_db(transaction)
                 for archive in archives:
                     available = values[int(archive.id)]
+                    checked += 1
+                    if available:
+                        available_count += 1
+                    else:
+                        unavailable_count += 1
                     if archive.available != available:
                         archive.available = available
                         changed_archives.append(archive)
+                        if available:
+                            changed_to_available += 1
+                        else:
+                            changed_to_unavailable += 1
+            summary = ArchiveAvailabilitySummary(
+                checked,
+                available_count,
+                unavailable_count,
+                changed_to_available,
+                changed_to_unavailable,
+            )
             if not changed_archives:
-                return
+                return summary
             await Archive.bulk_update(
                 changed_archives,
                 fields=("available",),
@@ -568,6 +602,7 @@ class CatalogRepository:
             now = datetime.now(UTC)
             revision = max(now, previous.astimezone(UTC) + timedelta(microseconds=1))
             await CatalogState.filter(id=1).using_db(transaction).update(updated_at=revision)
+            return summary
 
     async def active_generation_id(self) -> int | None:
         values = await (

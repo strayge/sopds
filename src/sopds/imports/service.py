@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from time import perf_counter
 
 from tortoise.exceptions import BaseORMException
 
@@ -34,6 +35,32 @@ _LOGGER = logging.getLogger(__name__)
 _PROGRESS_RECORD_INTERVAL = 100_000
 
 
+def _log_import_terminal(
+    trigger: ImportTrigger,
+    outcome: ImportOutcome,
+    started: float,
+    counters: list[int],
+    *,
+    run_id: int | None = None,
+    generation_id: int | None = None,
+    failure_type: str | None = None,
+) -> None:
+    """Emit duration only after outcome finalization and owned worker cleanup."""
+    duration_ms = int((perf_counter() - started) * 1000)
+    identity = f" run_id={run_id} generation_id={generation_id}" if run_id is not None else ""
+    failure = f" failure_type={failure_type}" if failure_type is not None else ""
+    message = (
+        f"Catalog import finished phase=import trigger={trigger.value} "
+        f"outcome={outcome.value} duration_ms={duration_ms}{identity}{failure} "
+        f"read={counters[0]} imported={counters[1]} deleted={counters[2]} "
+        f"rejected={counters[3]}"
+    )
+    if outcome is ImportOutcome.IMPORTED:
+        _LOGGER.info(message)
+    else:
+        _LOGGER.warning(message)
+
+
 class SourceChangedError(RuntimeError):
     """Prevents a catalog assembled from a changing source from becoming visible."""
 
@@ -50,6 +77,7 @@ class _ParserWorker:
         self._batch_size = batch_size
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sopds-inpx")
         self._records: InpxRecordIterator | None = None
+        self._close_task: asyncio.Task[None] | None = None
 
     def _next_batch(self) -> list[InpxRecord]:
         if self._records is None:
@@ -69,9 +97,27 @@ class _ParserWorker:
         if self._records is not None:
             self._records.close()
 
+    async def _run_close(self) -> None:
+        try:
+            await asyncio.wrap_future(self._executor.submit(self._close))
+        finally:
+            self._executor.shutdown(wait=True)
+
     async def close(self) -> None:
-        await asyncio.wrap_future(self._executor.submit(self._close))
-        self._executor.shutdown(wait=True)
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._run_close())
+        cancelled = False
+        while not self._close_task.done():
+            try:
+                await asyncio.shield(self._close_task)
+            except asyncio.CancelledError:
+                cancelled = True
+                current = asyncio.current_task()
+                if current is not None:
+                    current.uncancel()
+        await self._close_task
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 @dataclass(slots=True)
@@ -121,15 +167,38 @@ class CatalogImportService:
         self, trigger: ImportTrigger, fingerprint: SourceFingerprint
     ) -> ImportResult:
         counters = [0, 0, 0, 0]
-        run_id, generation_id = await self._setup_import(trigger, fingerprint, counters)
+        started = perf_counter()
+        try:
+            run_id, generation_id = await self._setup_import(trigger, fingerprint, counters)
+        except asyncio.CancelledError:
+            _log_import_terminal(
+                trigger,
+                ImportOutcome.INTERRUPTED,
+                started,
+                counters,
+                failure_type="CancelledError",
+            )
+            raise
+        except Exception as error:
+            _LOGGER.exception(
+                f"Catalog import setup failed phase=import failure_type={type(error).__name__}"
+            )
+            _log_import_terminal(
+                trigger,
+                ImportOutcome.FAILED,
+                started,
+                counters,
+                failure_type=type(error).__name__,
+            )
+            raise
         _LOGGER.info(
-            "Catalog import started (run_id=%d, generation_id=%d, trigger=%s)",
-            run_id,
-            generation_id,
-            trigger.value,
+            f"Catalog import started run_id={run_id} generation_id={generation_id} "
+            f"trigger={trigger.value}"
         )
         worker: _ParserWorker | None = None
         activation_committed = False
+        terminal_outcome: ImportOutcome | None = None
+        terminal_failure_type: str | None = None
         next_progress_record = _PROGRESS_RECORD_INTERVAL
         try:
             ids = _MutableIds.from_counters(await self._repository.id_counters())
@@ -158,10 +227,9 @@ class CatalogImportService:
                 await self._repository.update_run_counters(run_id, _counter_tuple(counters))
                 if counters[0] >= next_progress_record:
                     _LOGGER.info(
-                        "Catalog import progress "
-                        "(run_id=%d, read=%d, imported=%d, deleted=%d, rejected=%d)",
-                        run_id,
-                        *counters,
+                        f"Catalog import progress run_id={run_id} read={counters[0]} "
+                        f"imported={counters[1]} deleted={counters[2]} "
+                        f"rejected={counters[3]}"
                     )
                     next_progress_record = (
                         counters[0] // _PROGRESS_RECORD_INTERVAL + 1
@@ -189,26 +257,21 @@ class CatalogImportService:
                 raise
             activation_committed = True
             _LOGGER.info(
-                "Catalog import activated "
-                "(run_id=%d, generation_id=%d, read=%d, imported=%d, deleted=%d, rejected=%d)",
-                run_id,
-                generation_id,
-                *counters,
+                f"Catalog import activated run_id={run_id} generation_id={generation_id} "
+                f"read={counters[0]} imported={counters[1]} deleted={counters[2]} "
+                f"rejected={counters[3]}"
             )
             try:
                 status = await self._repository.latest_status()
             except Exception:
                 _LOGGER.exception("Could not read status after catalog activation")
                 status = None
+            terminal_outcome = ImportOutcome.IMPORTED
             return ImportResult(ImportOutcome.IMPORTED, status)
         except asyncio.CancelledError:
             if not activation_committed:
-                _LOGGER.warning(
-                    "Catalog import interrupted "
-                    "(run_id=%d, read=%d, imported=%d, deleted=%d, rejected=%d)",
-                    run_id,
-                    *counters,
-                )
+                terminal_outcome = ImportOutcome.INTERRUPTED
+                terminal_failure_type = "CancelledError"
                 await self._finish_failed(
                     run_id,
                     generation_id,
@@ -216,18 +279,24 @@ class CatalogImportService:
                     "Import interrupted by application shutdown",
                     counters,
                 )
+            else:
+                terminal_outcome = ImportOutcome.IMPORTED
             raise
         except Exception as error:
             if activation_committed:
-                _LOGGER.exception("Catalog import follow-up failed after activation")
+                _LOGGER.exception(
+                    f"Catalog import follow-up failed after activation phase=import_follow_up "
+                    f"failure_type={type(error).__name__}"
+                )
+                terminal_outcome = ImportOutcome.IMPORTED
                 return ImportResult(ImportOutcome.IMPORTED, None)
-            _LOGGER.exception(
-                "Catalog import failed (run_id=%d, read=%d, imported=%d, deleted=%d, rejected=%d)",
-                run_id,
-                *counters,
-            )
             if isinstance(error, InpxParserError):
                 counters[3] += 1
+            terminal_outcome = ImportOutcome.FAILED
+            terminal_failure_type = type(error).__name__
+            _LOGGER.exception(
+                f"Catalog import failed phase=import failure_type={terminal_failure_type}"
+            )
             await self._finish_failed(
                 run_id,
                 generation_id,
@@ -238,11 +307,25 @@ class CatalogImportService:
             status = await self._repository.latest_status()
             return ImportResult(ImportOutcome.FAILED, status)
         finally:
-            if worker is not None:
-                try:
-                    await asyncio.shield(worker.close())
-                except Exception:
-                    _LOGGER.exception("Could not close parser worker")
+            try:
+                if worker is not None:
+                    try:
+                        await worker.close()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        _LOGGER.exception("Could not close parser worker")
+            finally:
+                if terminal_outcome is not None:
+                    _log_import_terminal(
+                        trigger,
+                        terminal_outcome,
+                        started,
+                        counters,
+                        run_id=run_id,
+                        generation_id=generation_id,
+                        failure_type=terminal_failure_type,
+                    )
 
     async def _setup_import(
         self,

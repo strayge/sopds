@@ -52,7 +52,10 @@ class StreamingInputFile(InputFile):
             except BaseException:
                 if primary is None:
                     raise
-                _LOGGER.warning("Upload stream cleanup failed after %s", type(primary).__name__)
+                _LOGGER.warning(
+                    f"Upload stream cleanup failed surface=telegram phase=cleanup "
+                    f"failure_type={type(primary).__name__}"
+                )
 
     async def aclose(self) -> None:
         if self._close_task is None:

@@ -228,7 +228,9 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     )
 
 
-def test_original_download_headers_body_and_status_mappings() -> None:
+def test_original_download_headers_body_and_status_mappings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     app, _, _ = _app()
     acquisition: _Acquisition = app.state.acquisition
     with TestClient(app) as client:
@@ -251,6 +253,9 @@ def test_original_download_headers_body_and_status_mappings() -> None:
     assert "AcquisitionNotFoundError" not in missing.text
     assert corrupt.status_code == 500
     assert shutdown.status_code == 503
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("failure_type=AcquisitionCorruptError" in message for message in messages)
+    assert "public-1" not in " ".join(messages)
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("send failed"), asyncio.CancelledError()])
@@ -259,7 +264,7 @@ async def test_owned_download_response_closes_if_send_fails_before_iteration(
 ) -> None:
     stream = _Stream()
     original = AcquiredOriginal("book.fb2", "application/octet-stream", 8, stream, "fb2", _REVISION)
-    response = routes._OwnedStreamingResponse(original, "public-1", {})
+    response = routes._OwnedStreamingResponse(original, {})
     scope: Scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.4"},
@@ -302,7 +307,7 @@ async def test_owned_download_cleanup_finishes_despite_repeated_cancellation() -
 
     stream = BlockingCloseStream()
     original = AcquiredOriginal("book.fb2", "application/octet-stream", 8, stream, "fb2", _REVISION)
-    response = routes._OwnedStreamingResponse(original, "public-1", {})
+    response = routes._OwnedStreamingResponse(original, {})
     scope: Scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.4"},

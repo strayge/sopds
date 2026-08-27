@@ -1,10 +1,13 @@
 """Runtime database connection lifecycle and SQLite invariant checks."""
 
+import logging
 from pathlib import Path
 
 from tortoise.context import TortoiseContext
 
 from sopds.db.configuration import CONNECTION_NAME, SQLITE_BUSY_TIMEOUT_MS, build_tortoise_config
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class DatabaseError(RuntimeError):
@@ -30,6 +33,10 @@ async def initialize_database(database_path: Path) -> TortoiseContext:
             _enable_global_fallback=True,
         )
         await _validate_sqlite_pragmas(context)
+        _LOGGER.info(
+            f"Database connection ready component=database backend=sqlite "
+            f"journal_mode=wal foreign_keys=True busy_timeout_ms={SQLITE_BUSY_TIMEOUT_MS}"
+        )
     except BaseException:
         try:
             await context.close_connections()

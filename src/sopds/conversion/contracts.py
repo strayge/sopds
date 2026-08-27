@@ -105,6 +105,12 @@ class ConversionSourceKey:
 
 
 @dataclass(frozen=True, slots=True)
+class CacheCleanupSummary:
+    removed_files: int
+    failed_entries: int
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactResult:
     content_length: int
     stream: AsyncByteStream

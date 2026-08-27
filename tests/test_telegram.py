@@ -579,7 +579,9 @@ def test_telegram_limits_count_utf16_code_units() -> None:
     [(SourceRevision(1, 2, 4), "fb2"), (SourceRevision(1, 2, 3), "epub")],
 )
 async def test_download_rejects_changed_source_identity_and_closes(
-    revision: SourceRevision, source_format: str
+    revision: SourceRevision,
+    source_format: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     acquisition = _FakeAcquisition(1, acquired_revision=revision, acquired_format=source_format)
     handlers = TelegramHandlers(
@@ -594,6 +596,24 @@ async def test_download_rejects_changed_source_identity_and_closes(
     assert acquisition.stream.closed == 1
     assert message.documents == []
     assert message.answers == [("The original file is currently unavailable.", None)]
+    assert "failure_type=metadata_mismatch" in caplog.text
+    assert "failure_type=size_mismatch" not in caplog.text
+
+
+async def test_download_classifies_only_length_difference_as_size_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    acquisition = _FakeAcquisition(2, acquired_size=1)
+    handlers = TelegramHandlers(
+        cast(Catalog, _FakeCatalog([])),
+        cast(Acquisition, acquisition),
+        CallbackStateStore(),
+    )
+
+    await handlers.on_callback(cast(CallbackQuery, _FakeCallback("x:book-0", _FakeMessage())))
+
+    assert acquisition.stream.closed == 1
+    assert "failure_type=size_mismatch" in caplog.text
 
 
 async def test_tracker_closes_admission_and_cancels_active_update() -> None:
@@ -735,6 +755,49 @@ async def test_runner_deletes_webhook_once_across_fatal_polling_retry() -> None:
     assert dispatcher.polling_calls == 2
     assert bot.delete_calls == 1
     await runner.shutdown()
+
+
+async def test_runner_resets_polling_delay_after_successful_recovery(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = _FakeBot()
+
+    class CyclingDispatcher(_FakeDispatcher):
+        @override
+        async def start_polling(self, bot: object, **kwargs: object) -> None:
+            del bot, kwargs
+            self.polling_calls += 1
+            if self.polling_calls in {1, 3}:
+                raise RuntimeError("polling failed")
+
+    dispatcher = CyclingDispatcher()
+    config = TelegramConfig.model_validate(
+        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
+    )
+    runner = TelegramRunner(
+        config,
+        cast(Catalog, _FakeCatalog([])),
+        cast(Acquisition, _FakeAcquisition(1)),
+        bot=cast(Bot, bot),
+        dispatcher=cast(Dispatcher, dispatcher),
+    )
+    delays: list[float] = []
+
+    async def record_retry(delay: float) -> bool:
+        delays.append(delay)
+        if len(delays) == 3:
+            runner._stop.set()
+            return True
+        return False
+
+    runner._retry_delay = record_retry  # type: ignore[method-assign]
+    caplog.set_level("INFO", logger="sopds.telegram.runner")
+    await runner._run()
+
+    assert delays == [1.0, 1.0, 1.0]
+    assert "Telegram polling recovered" in caplog.text
+    assert "Telegram polling cycle ended" in caplog.text
+    assert caplog.text.count("Telegram polling stopped") == 1
 
 
 async def test_runner_retries_initial_webhook_delete_and_shutdown_wakes_retry() -> None:

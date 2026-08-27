@@ -34,6 +34,10 @@ def test_cli_applies_migrations_before_uvicorn(
     assert events == ["migrate", "uvicorn"]
     log_config = uvicorn_arguments["log_config"]
     assert isinstance(log_config, dict)
+    formatters = log_config["formatters"]
+    assert isinstance(formatters, dict)
+    assert formatters["default"]["()"] == "uvicorn.logging.DefaultFormatter"
+    assert formatters["access"]["()"] == "sopds.access_log.QuerySafeAccessFormatter"
     loggers = log_config["loggers"]
     assert isinstance(loggers, dict)
     assert loggers["sopds"] == {

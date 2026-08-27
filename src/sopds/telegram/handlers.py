@@ -18,6 +18,9 @@ from sopds.acquisition.contracts import (
     AcquiredOriginal,
     Acquisition,
     AcquisitionError,
+    AcquisitionMemberNotFoundError,
+    AcquisitionNotFoundError,
+    AcquisitionUnavailableError,
     OriginalDescription,
 )
 from sopds.catalog.contracts import Catalog, CatalogPage, CatalogRequest
@@ -93,7 +96,7 @@ class TelegramHandlers:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            _LOGGER.warning("Telegram search failed: %s", type(error).__name__)
+            _LOGGER.warning(f"Telegram search failed failure_type={type(error).__name__}")
             await message.answer("Search is temporarily unavailable.")
             return
         markup = await self._result_markup(message.chat.id, query, page)
@@ -108,7 +111,7 @@ class TelegramHandlers:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            _LOGGER.warning("Telegram detail failed: %s", type(error).__name__)
+            _LOGGER.warning(f"Telegram detail failed failure_type={type(error).__name__}")
             await message.answer("Book details are temporarily unavailable.")
             return
         if book is None:
@@ -143,7 +146,7 @@ class TelegramHandlers:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            _LOGGER.warning("Telegram pagination failed: %s", type(error).__name__)
+            _LOGGER.warning(f"Telegram pagination failed failure_type={type(error).__name__}")
             await message.answer("Search is temporarily unavailable.")
             return
         markup = await self._result_markup(message.chat.id, state.query, page)
@@ -165,7 +168,12 @@ class TelegramHandlers:
                 await acquired.stream.aclose()
                 await message.answer("This file is too large to send through Telegram.")
                 return
-            if not _matches_description(description, acquired):
+            mismatch = _description_mismatch(description, acquired)
+            if mismatch is not None:
+                _LOGGER.warning(
+                    f"Telegram acquisition integrity check failed surface=telegram "
+                    f"phase=acquisition failure_type={mismatch}"
+                )
                 await acquired.stream.aclose()
                 await message.answer("The original file is currently unavailable.")
                 return
@@ -179,11 +187,25 @@ class TelegramHandlers:
             raise
         except AcquisitionError as error:
             primary = error
-            _LOGGER.warning("Telegram acquisition failed: %s", type(error).__name__)
+            if not isinstance(
+                error,
+                (
+                    AcquisitionNotFoundError,
+                    AcquisitionUnavailableError,
+                    AcquisitionMemberNotFoundError,
+                ),
+            ):
+                _LOGGER.warning(
+                    f"Telegram acquisition failed surface=telegram phase=acquisition "
+                    f"failure_type={type(error).__name__}"
+                )
             await message.answer("The original file is currently unavailable.")
         except Exception as error:
             primary = error
-            _LOGGER.warning("Telegram upload failed: %s", type(error).__name__)
+            _LOGGER.warning(
+                f"Telegram upload failed surface=telegram phase=upload "
+                f"failure_type={type(error).__name__}"
+            )
             await message.answer("The original file is currently unavailable.")
         finally:
             if upload is not None:
@@ -193,7 +215,8 @@ class TelegramHandlers:
                     if primary is None:
                         raise
                     _LOGGER.warning(
-                        "Telegram upload cleanup failed after %s", type(primary).__name__
+                        f"Telegram upload cleanup failed surface=telegram phase=cleanup "
+                        f"failure_type={type(primary).__name__}"
                     )
 
     async def _result_markup(
@@ -221,13 +244,16 @@ def _normalized_source_format(value: str) -> str:
     return value.strip().removeprefix(".").casefold()
 
 
-def _matches_description(description: OriginalDescription, acquired: AcquiredOriginal) -> bool:
-    return (
-        acquired.source_revision == description.revision
-        and _normalized_source_format(acquired.source_format)
-        == _normalized_source_format(description.source_format)
-        and acquired.content_length == description.content_length
-    )
+def _description_mismatch(
+    description: OriginalDescription, acquired: AcquiredOriginal
+) -> str | None:
+    if acquired.content_length != description.content_length:
+        return "size_mismatch"
+    if acquired.source_revision != description.revision or _normalized_source_format(
+        acquired.source_format
+    ) != _normalized_source_format(description.source_format):
+        return "metadata_mismatch"
+    return None
 
 
 def _valid_public_id(value: str) -> bool:

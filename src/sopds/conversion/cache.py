@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
@@ -18,6 +19,7 @@ from typing import BinaryIO, TypeVar
 from sopds.conversion.contracts import (
     ArtifactProducer,
     ArtifactResult,
+    CacheCleanupSummary,
     ConversionShutdownError,
     ConversionSourceKey,
     InvalidConversionOutputError,
@@ -26,6 +28,7 @@ from sopds.conversion.contracts import (
 CACHE_CHUNK_SIZE = 64 * 1024
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _T = TypeVar("_T")
+_LOGGER = logging.getLogger(__name__)
 
 
 class _InvalidCachedArtifact(Exception):
@@ -50,17 +53,26 @@ def cache_digest(key: ConversionSourceKey) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _safe_remove(path: Path) -> None:
+def _safe_remove(path: Path) -> bool | None:
     """Remove one cache entry without following it or traversing a directory."""
     try:
         path.unlink()
     except FileNotFoundError:
-        pass
+        return None
     except IsADirectoryError:
-        with suppress(OSError):
+        try:
             path.rmdir()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return False
     except OSError:
-        pass
+        return False
+    return True
+
+
+def _discard(path: Path) -> None:
+    _safe_remove(path)
 
 
 def _artifact_stat(path: Path) -> os.stat_result | None:
@@ -150,7 +162,17 @@ class ArtifactCache:
                 return
             self._started = True
             await self._worker(lambda: self._dir.mkdir(parents=True, exist_ok=True))
-        await self.cleanup()
+        summary = await self.cleanup()
+        if summary.removed_files:
+            _LOGGER.info(
+                f"Startup conversion cache cleanup removed files phase=startup_cleanup "
+                f"removed_files={summary.removed_files}"
+            )
+        if summary.failed_entries:
+            _LOGGER.warning(
+                f"Startup conversion cache cleanup failed entries "
+                f"phase=startup_cleanup failed_entries={summary.failed_entries}"
+            )
 
     def _artifact_path(self, digest: str) -> Path:
         if not _DIGEST.fullmatch(digest):
@@ -300,7 +322,7 @@ class ArtifactCache:
         async with self._lock:
             if self._closing:
                 raise ConversionShutdownError("Conversion cache is shutting down")
-            path = await self._worker(create, cancel_cleanup=_safe_remove)
+            path = await self._worker(create, cancel_cleanup=_discard)
             self._working_paths.add(path)
             return path
 
@@ -325,12 +347,21 @@ class ArtifactCache:
             self._leases.discard(stream)
         await self._release_digest(digest)
 
-    async def cleanup(self) -> None:
+    async def cleanup(self) -> CacheCleanupSummary:
         async with self._lock:
             if self._closing:
-                return
+                return CacheCleanupSummary(0, 0)
 
-            def clean() -> None:
+            def clean() -> CacheCleanupSummary:
+                removed_files = failed_entries = 0
+
+                def account(result: bool | None) -> None:
+                    nonlocal removed_files, failed_entries
+                    if result is True:
+                        removed_files += 1
+                    elif result is False:
+                        failed_entries += 1
+
                 self._dir.mkdir(parents=True, exist_ok=True)
                 now_ns = time.time_ns()
                 for path in self._dir.iterdir():
@@ -338,23 +369,31 @@ class ArtifactCache:
                         continue
                     name = path.name
                     if name.endswith((".tmp", ".source")):
-                        _safe_remove(path)
+                        account(_safe_remove(path))
                         continue
                     if not name.endswith(".artifact"):
                         continue
                     digest = name.removesuffix(".artifact")
                     if digest in self._active or not _DIGEST.fullmatch(digest):
                         continue
-                    result = _artifact_stat(path)
-                    if result is None:
+                    try:
+                        result = path.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        failed_entries += 1
+                        continue
+                    if not stat.S_ISREG(result.st_mode) or result.st_size <= 0:
+                        account(_safe_remove(path))
                         continue
                     age_ns = now_ns - result.st_mtime_ns
                     if age_ns < 0 or age_ns >= self._ttl * 1_000_000_000:
-                        _safe_remove(path)
+                        account(_safe_remove(path))
+                return CacheCleanupSummary(removed_files, failed_entries)
 
             # Registration/admission uses the same lock, making the scan atomic with
             # every working path and active artifact becoming visible.
-            await self._worker(clean)
+            return await self._worker(clean)
 
     async def _run_shutdown(self) -> None:
         async with self._lock:

@@ -285,6 +285,20 @@ async def test_import_emits_start_progress_and_completion_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(service_module, "_PROGRESS_RECORD_INTERVAL", 1)
+    events: list[str] = []
+    original_close = service_module._ParserWorker.close
+    original_terminal = service_module._log_import_terminal
+
+    async def observed_close(worker: service_module._ParserWorker) -> None:
+        await original_close(worker)
+        events.append("close")
+
+    def observed_terminal(*args: Any, **kwargs: Any) -> None:
+        events.append("terminal")
+        original_terminal(*args, **kwargs)
+
+    monkeypatch.setattr(service_module._ParserWorker, "close", observed_close)
+    monkeypatch.setattr(service_module, "_log_import_terminal", observed_terminal)
     caplog.set_level("INFO", logger="sopds.imports")
     _write_inpx(app_config.catalog.inpx_path, _line(), _line(FILE="gone", DEL="1"))
 
@@ -303,7 +317,13 @@ async def test_import_emits_start_progress_and_completion_logs(
         for message in messages
     )
     assert any("Catalog import activated" in message for message in messages)
-    assert any("outcome=imported" in message for message in messages)
+    terminal_messages = [message for message in messages if "Catalog import finished" in message]
+    assert len(terminal_messages) == 1
+    assert "outcome=imported" in terminal_messages[0]
+    assert "duration_ms=" in terminal_messages[0]
+    assert events == ["close", "terminal"]
+    assert "Ёжик" not in " ".join(messages)
+    assert str(app_config.catalog.inpx_path) not in " ".join(messages)
 
 
 async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config: AppConfig) -> None:
@@ -380,7 +400,7 @@ async def test_fingerprint_fast_paths_and_forced_generation(app_config: AppConfi
 
 @pytest.mark.parametrize("failure", ["parser", "duplicate"])
 async def test_failed_import_preserves_active_generation_and_fingerprint(
-    app_config: AppConfig, failure: str
+    app_config: AppConfig, failure: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     _write_inpx(app_config.catalog.inpx_path, _line())
     async with _coordinator(app_config) as (coordinator, _):
@@ -395,9 +415,18 @@ async def test_failed_import_preserves_active_generation_and_fingerprint(
             _write_inpx(app_config.catalog.inpx_path, b"not-crlf")
         else:
             _write_inpx(app_config.catalog.inpx_path, _line(), _line(TITLE="other"))
+        caplog.clear()
         failed = await coordinator.check_for_changes()
 
     assert failed.outcome is ImportOutcome.FAILED
+    terminal_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Catalog import finished" in record.getMessage()
+    ]
+    assert len(terminal_messages) == 1
+    assert "outcome=failed" in terminal_messages[0]
+    assert "duration_ms=" in terminal_messages[0]
     assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
         (before,)
     ]
@@ -626,7 +655,10 @@ async def test_source_identity_change_clears_matching_metadata_fingerprint(
 
 @pytest.mark.parametrize("stage", ["during_setup", "after_setup"])
 async def test_cancellation_around_atomic_setup_cleans_known_state(
-    app_config: AppConfig, monkeypatch: pytest.MonkeyPatch, stage: str
+    app_config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     _write_inpx(app_config.catalog.inpx_path, _line())
     async with _coordinator(app_config) as (coordinator, _):
@@ -662,6 +694,50 @@ async def test_cancellation_around_atomic_setup_cleans_known_state(
 
     assert _query(app_config.database.path, "SELECT state FROM import_run") == [("interrupted",)]
     assert _query(app_config.database.path, "SELECT state FROM catalog_generation") == [("failed",)]
+    terminal_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Catalog import finished" in record.getMessage()
+    ]
+    assert len(terminal_messages) == 1
+    assert "outcome=interrupted" in terminal_messages[0]
+    assert "duration_ms=" in terminal_messages[0]
+
+
+async def test_repeated_cancellation_during_parser_cleanup_keeps_terminal_log(
+    app_config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _write_inpx(app_config.catalog.inpx_path, _line())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_close = service_module._ParserWorker._run_close
+
+    async def blocked_close(worker: service_module._ParserWorker) -> None:
+        entered.set()
+        await release.wait()
+        await original_close(worker)
+
+    monkeypatch.setattr(service_module._ParserWorker, "_run_close", blocked_close)
+    caplog.set_level("INFO", logger="sopds.imports")
+    async with _coordinator(app_config) as (coordinator, _):
+        task = asyncio.create_task(coordinator.force_import())
+        await entered.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    terminal_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Catalog import finished" in record.getMessage()
+    ]
+    assert len(terminal_messages) == 1
+    assert "outcome=imported" in terminal_messages[0]
 
 
 @pytest.mark.parametrize("stage", ["before", "during", "just_after"])

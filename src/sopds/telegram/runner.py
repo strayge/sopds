@@ -72,22 +72,36 @@ class TelegramRunner:
 
     async def _run(self) -> None:
         delay = 1.0
+        webhook_failures = 0
         while not self._stop.is_set() and not self._webhook_deleted:
             try:
                 await self.bot.delete_webhook(drop_pending_updates=True)
                 self._webhook_deleted = True
+                if webhook_failures:
+                    _LOGGER.info(
+                        f"Telegram webhook setup recovered phase=webhook "
+                        f"failure_count={webhook_failures}"
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                _LOGGER.warning("Telegram webhook setup failed: %s", type(error).__name__)
+                webhook_failures += 1
+                _LOGGER.warning(
+                    f"Telegram webhook setup failed phase=webhook "
+                    f"failure_type={type(error).__name__} attempt={webhook_failures} "
+                    f"retry_delay_seconds={delay}"
+                )
                 if await self._retry_delay(delay):
                     return
                 delay = min(delay * 2, 30)
 
         delay = 1.0
+        polling_failures = 0
         while not self._stop.is_set() and self._webhook_deleted:
+            failed = False
             try:
                 self._polling_active = True
+                _LOGGER.info("Telegram polling started phase=polling")
                 await self.dispatcher.start_polling(
                     self.bot,
                     allowed_updates=["message", "callback_query"],
@@ -99,12 +113,32 @@ class TelegramRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                _LOGGER.warning("Telegram polling failed: %s", type(error).__name__)
+                failed = True
+                polling_failures += 1
+                _LOGGER.warning(
+                    f"Telegram polling failed phase=polling "
+                    f"failure_type={type(error).__name__} attempt={polling_failures} "
+                    f"retry_delay_seconds={delay}"
+                )
             finally:
                 self._polling_active = False
-            if not self._stop.is_set() and await self._retry_delay(delay):
+                if self._stop.is_set():
+                    _LOGGER.info("Telegram polling stopped phase=polling")
+            if self._stop.is_set():
                 return
-            delay = min(delay * 2, 30)
+            if not failed:
+                if polling_failures:
+                    _LOGGER.info(
+                        f"Telegram polling recovered phase=polling failure_count={polling_failures}"
+                    )
+                    polling_failures = 0
+                delay = 1.0
+            _LOGGER.info(f"Telegram polling cycle ended phase=polling retry_delay_seconds={delay}")
+            if await self._retry_delay(delay):
+                _LOGGER.info("Telegram polling stopped phase=polling")
+                return
+            if failed:
+                delay = min(delay * 2, 30)
 
     async def _retry_delay(self, delay: float) -> bool:
         try:
@@ -148,3 +182,4 @@ class TelegramRunner:
         if not self._session_closed:
             self._session_closed = True
             await self.bot.session.close()
+        _LOGGER.info("Telegram shutdown completed phase=shutdown")

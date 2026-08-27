@@ -30,6 +30,27 @@ class ImportOutcome(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class RecoverySummary:
+    interrupted_runs: int
+    failed_generations: int
+    removed_generations: int
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationCleanupSummary:
+    removed_generations: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAvailabilitySummary:
+    checked: int
+    available: int
+    unavailable: int
+    changed_to_available: int
+    changed_to_unavailable: int
+
+
+@dataclass(frozen=True, slots=True)
 class ImportStatus:
     run_id: int
     trigger: ImportTrigger

@@ -255,6 +255,28 @@ async def test_cleanup_excludes_active_artifact_leases(tmp_path: Path) -> None:
     await cache.shutdown()
 
 
+async def test_cleanup_counts_artifact_inspection_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = ArtifactCache(tmp_path, 1)
+    await cache.startup()
+    artifact_path = tmp_path / f"{cache_digest(_key())}.artifact"
+    artifact_path.write_bytes(b"stale")
+    real_stat = Path.stat
+
+    def fail_target_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == artifact_path and not follow_symlinks:
+            raise PermissionError
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", fail_target_stat)
+    summary = await cache.cleanup()
+
+    assert summary.removed_files == 0
+    assert summary.failed_entries == 1
+    await cache.shutdown()
+
+
 async def test_service_spools_and_closes_source_and_sanitizes_name(tmp_path: Path) -> None:
     body = b"x" * (CACHE_CHUNK_SIZE * 3 + 7)
     acquisition = _Acquisition(body=body)
