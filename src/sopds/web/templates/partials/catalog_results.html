@@ -6,10 +6,10 @@
     <article class="book">
       <a href="/books/{{ book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}"><strong>{{ book.title }}</strong></a>
       {% if book.availability.value != "active" %}<span class="muted">({{ book.availability.value|capitalize }})</span>{% endif %}
-      {% if book.authors %}<div>{{ book.authors|join(', ') }}</div>{% endif %}
+      {% if book.authors %}<div>{% for author in book.authors %}<a href="/?author={{ author|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
       <div class="muted">
-        {% if book.series %}{{ book.series }}{% if book.series_number %} #{{ book.series_number }}{% endif %} · {% endif %}
-        {{ book.original_format }}{% if book.language %} · {{ book.language }}{% endif %}
+        {% if book.series %}<a href="/?series={{ book.series|urlencode }}{% if detail_query %}&amp;{{ detail_query }}{% endif %}">{{ book.series }}</a>{% if book.series_number %} #{{ book.series_number }}{% endif %} · {% endif %}
+        {{ book.original_format }}{% if book.language %} · {{ book.language }}{% endif %}{% if book.published_date %} · {{ book.published_date }}{% endif %} · {{ book.size|kilobytes }}
       </div>
     </article>
   {% endfor %}

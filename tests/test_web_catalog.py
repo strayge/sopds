@@ -3,7 +3,7 @@
 import asyncio
 import secrets
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import override
@@ -51,11 +51,16 @@ class _Catalog:
                 BookSummary(
                     public_id="public-1",
                     title="A Book",
-                    authors=("Author",),
+                    authors=(
+                        "Тестов,Тест,",
+                        " Примеров,Пример,Примерович",
+                    ),
                     series="Series",
                     series_number="1",
                     language="en",
                     original_format="fb2",
+                    size=126_000,
+                    published_date=date(2024, 2, 3),
                     availability=(
                         BookAvailability.HIDDEN
                         if request.query == "hidden"
@@ -80,11 +85,14 @@ class _Catalog:
         return BookDetail(
             public_id=public_id,
             title="A Book",
-            authors=("Author",),
+            authors=(
+                "Тестов,Тест,",
+                " Примеров,Пример,Примерович",
+            ),
             genres=(("sf", "Science fiction"),),
             series="Series",
             series_number="1",
-            size=123,
+            size=126_000,
             libid=None,
             published_date=None,
             language="en",
@@ -214,9 +222,21 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         )
         detail = client.get("/books/public-1")
         missing = client.get("/books/missing")
+        author_page = client.get("/", params={"author": "Тестов,Тест,"})
+        series_page = client.get("/", params={"series": "Series"})
 
     assert page.status_code == 200
     assert "A Book" in page.text
+    assert "Тестов Тест" in page.text
+    assert "Примеров Пример Примерович" in page.text
+    assert "Тестов,Тест" not in page.text
+    assert "2024-02-03" in page.text
+    assert "123 KB" in page.text
+    assert (
+        'href="/?author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"'
+        in page.text
+    )
+    assert 'href="/?series=Series"' in page.text
     assert "Science fiction" in page.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in page.text
     assert page.text.index('id="health"') < page.text.index("<main>")
@@ -267,8 +287,21 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     )
     assert detail.status_code == 200
     assert "Original format" in detail.text
+    assert "Тестов Тест" in detail.text
+    assert "Примеров Пример Примерович" in detail.text
+    assert "Тестов,Тест" not in detail.text
+    assert (
+        'href="/?author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"'
+        in detail.text
+    )
+    assert 'href="/?series=Series"' in detail.text
+    assert "<strong>Size:</strong> 123 KB" in detail.text
     assert 'href="/books/public-1/download"' in detail.text
     assert missing.status_code == 404
+    assert author_page.status_code == 200
+    assert series_page.status_code == 200
+    assert CatalogRequest(author="Тестов,Тест,") in catalog.requests
+    assert CatalogRequest(series="Series") in catalog.requests
     assert catalog.requests[0] == CatalogRequest(
         query="book",
         search_field=SearchField.TITLE,

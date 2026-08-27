@@ -63,6 +63,18 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "unavailable"]
 
 
+def _format_author_name(value: str) -> str:
+    return " ".join(part.strip() for part in value.split(",") if part.strip())
+
+
+def _format_kilobytes(size: int) -> str:
+    return f"{(size + 512) // 1024} KB"
+
+
+templates.env.filters["author_name"] = _format_author_name
+templates.env.filters["kilobytes"] = _format_kilobytes
+
+
 def _catalog(request: Request) -> Catalog:
     return cast(Catalog, request.app.state.catalog)
 
@@ -81,6 +93,8 @@ def _catalog_request(
     language: str | None,
     genre: str | None,
     original_format: str | None,
+    author: str | None,
+    series: str | None,
     include_missed: bool,
     include_hidden: bool,
     cursor: str | None,
@@ -91,6 +105,8 @@ def _catalog_request(
         language=language or None,
         genre=genre or None,
         original_format=original_format or None,
+        author=author or None,
+        series=series or None,
         include_missed=include_missed,
         include_hidden=include_hidden,
         cursor=cursor or None,
@@ -106,6 +122,10 @@ def _catalog_url(path: str, catalog_request: CatalogRequest, cursor: str | None)
         "original_format": catalog_request.original_format or "",
         "cursor": cursor or "",
     }
+    if catalog_request.author is not None:
+        values["author"] = catalog_request.author
+    if catalog_request.series is not None:
+        values["series"] = catalog_request.series
     if catalog_request.include_missed:
         values["include_missed"] = "true"
     if catalog_request.include_hidden:
@@ -121,6 +141,19 @@ def _next_urls(
     return (
         _catalog_url("/", catalog_request, next_cursor),
         _catalog_url("/catalog-fragment", catalog_request, next_cursor),
+    )
+
+
+def _availability_query(include_missed: bool, include_hidden: bool) -> str:
+    return urlencode(
+        {
+            name: "true"
+            for name, enabled in (
+                ("include_missed", include_missed),
+                ("include_hidden", include_hidden),
+            )
+            if enabled
+        }
     )
 
 
@@ -142,15 +175,9 @@ async def _results_context(
         "catalog_request": catalog_request,
         "next_href": next_href,
         "next_hx_url": next_hx_url,
-        "detail_query": urlencode(
-            {
-                name: "true"
-                for name, enabled in (
-                    ("include_missed", catalog_request.include_missed),
-                    ("include_hidden", catalog_request.include_hidden),
-                )
-                if enabled
-            }
+        "detail_query": _availability_query(
+            catalog_request.include_missed,
+            catalog_request.include_hidden,
         ),
         "searched": searched,
     }
@@ -185,6 +212,8 @@ async def index(
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
+    author: str | None = None,
+    series: str | None = None,
     include_missed: bool = False,
     include_hidden: bool = False,
     cursor: str | None = None,
@@ -195,6 +224,8 @@ async def index(
         language,
         genre,
         original_format,
+        author,
+        series,
         include_missed,
         include_hidden,
         cursor,
@@ -207,6 +238,8 @@ async def index(
             "language",
             "genre",
             "original_format",
+            "author",
+            "series",
             "include_missed",
             "include_hidden",
             "cursor",
@@ -260,6 +293,8 @@ async def catalog_fragment(
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
+    author: str | None = None,
+    series: str | None = None,
     include_missed: bool = False,
     include_hidden: bool = False,
     cursor: str | None = None,
@@ -270,6 +305,8 @@ async def catalog_fragment(
         language,
         genre,
         original_format,
+        author,
+        series,
         include_missed,
         include_hidden,
         cursor,
@@ -309,7 +346,10 @@ async def book_detail(
     return templates.TemplateResponse(
         request=request,
         name="book_detail.html",
-        context={"book": book},
+        context={
+            "book": book,
+            "detail_query": _availability_query(include_missed, include_hidden),
+        },
     )
 
 
