@@ -10,6 +10,7 @@ from tortoise.exceptions import IntegrityError
 from tortoise.migrations.api import migrate
 
 import sopds.db.connection as database_connection
+import sopds.db.migrations as migrations_package
 from sopds.db.configuration import SQLITE_BUSY_TIMEOUT_MS, build_tortoise_config
 from sopds.db.connection import close_database, initialize_database
 from sopds.db.migrations_runner import (
@@ -44,6 +45,10 @@ RELATION_INDEXES = {
     ("series", ("generation_id", "name_sort", "id")),
 }
 
+MIGRATION_NAMES = tuple(
+    sorted(path.stem for path in Path(migrations_package.__file__).parent.glob("[0-9]*.py"))
+)
+
 RELATIONAL_TABLES = {
     "archive",
     "author",
@@ -70,12 +75,7 @@ async def test_fresh_migration_is_idempotent(tmp_path: Path) -> None:
         history = connection.execute(
             "SELECT app, name FROM tortoise_migrations ORDER BY name"
         ).fetchall()
-    assert history == [
-        ("catalog", "0001_initial"),
-        ("catalog", "0002_fts5"),
-        ("catalog", "0003_book_series_index"),
-        ("catalog", "0004_book_hidden"),
-    ]
+    assert history == [("catalog", name) for name in MIGRATION_NAMES]
 
 
 async def test_hidden_field_migration_upgrades_a_populated_database(tmp_path: Path) -> None:
@@ -352,10 +352,11 @@ async def test_close_database_exits_context_when_connection_close_fails() -> Non
 async def test_runtime_validation_rejects_pending_migrations(tmp_path: Path) -> None:
     database_path = tmp_path / "catalog.sqlite3"
     await apply_migrations(database_path)
+    latest_migration = MIGRATION_NAMES[-1]
     with sqlite3.connect(database_path) as connection:
-        connection.execute("DELETE FROM tortoise_migrations WHERE name = '0004_book_hidden'")
+        connection.execute("DELETE FROM tortoise_migrations WHERE name = ?", (latest_migration,))
 
-    with pytest.raises(PendingMigrationsError, match="0004_book_hidden"):
+    with pytest.raises(PendingMigrationsError, match=latest_migration):
         await validate_migration_state(database_path)
 
 
