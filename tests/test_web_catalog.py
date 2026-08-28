@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
-from starlette.types import Message, Scope
+from starlette.types import Message, Receive, Scope, Send
 
 from sopds.acquisition.archive import (
     ArchiveEntryStatus,
@@ -54,6 +54,7 @@ from sopds.imports.status import ImportState, ImportStatus, ImportTrigger
 from sopds.web import routes
 
 _REVISION = SourceRevision(1, 2, 3)
+_SAME_ORIGIN_FORM_HEADERS = {"Sec-Fetch-Site": "same-origin"}
 
 
 class _Catalog:
@@ -1198,6 +1199,7 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
         download = client.post(
             "/selected/download",
             data={"ids": json.dumps(payload["ids"]), "preset": payload["preset"]},
+            headers=_SAME_ORIGIN_FORM_HEADERS,
         )
 
     assert page.status_code == 200
@@ -1472,13 +1474,80 @@ def test_selected_download_rejects_extra_duplicate_missing_and_malformed_form(
         response = client.post(
             "/selected/download",
             content=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                **_SAME_ORIGIN_FORM_HEADERS,
+            },
         )
 
     assert response.status_code == 400
     assert "Invalid selected-books request" in response.text
     assert len(response.content) < 3_000
     assert app.state.archive.download_requests == []
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Origin": "https://catalog.example"},
+        {"Origin": "https://catalog.example:443"},
+        {"Sec-Fetch-Site": "same-origin"},
+    ],
+)
+def test_selected_download_accepts_canonical_same_origin_transport(
+    headers: dict[str, str],
+) -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/download",
+            data={"ids": '["public-1"]', "preset": "nested"},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert archive.download_requests == [ArchiveRequest(["public-1"], "nested")]
+    assert archive.last_file is not None and archive.last_file.closed
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Origin": "null"},
+        {"Origin": "https://[malformed"},
+        {"Origin": "https://catalog.example/"},
+        {"Origin": "https://catalog.example?"},
+        {"Origin": "https://catalog.example:"},
+        {"Origin": "https://catalog.example:444"},
+        {"Origin": "https://sibling.catalog.example"},
+        {"Sec-Fetch-Site": "cross-site"},
+        {
+            "Origin": "https://catalog.example",
+            "Sec-Fetch-Site": "cross-site",
+        },
+        {"Sec-Fetch-Site": "same-site"},
+    ],
+)
+def test_selected_download_rejects_untrusted_transport_before_parsing_or_building(
+    headers: dict[str, str],
+) -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/download",
+            content=b"not-even-a-valid-form",
+            headers=headers,
+        )
+
+    assert response.status_code == 403
+    assert routes._SELECTED_ORIGIN_ERROR in response.text
+    assert len(response.content) < 3_000
+    assert archive.download_requests == []
 
 
 def test_selected_json_and_form_apply_the_same_logical_validation() -> None:
@@ -1491,6 +1560,7 @@ def test_selected_json_and_form_apply_the_same_logical_validation() -> None:
         download = client.post(
             "/selected/download",
             data={"ids": '["public-1"]', "preset": "unknown"},
+            headers=_SAME_ORIGIN_FORM_HEADERS,
         )
         wrong_preview_type = client.post(
             "/selected/preview",
@@ -1500,7 +1570,7 @@ def test_selected_json_and_form_apply_the_same_logical_validation() -> None:
         wrong_download_type = client.post(
             "/selected/download",
             content=b"ids=%5B%5D&preset=nested",
-            headers={"Content-Type": "text/plain"},
+            headers={"Content-Type": "text/plain", **_SAME_ORIGIN_FORM_HEADERS},
         )
 
     assert preview.status_code == download.status_code == 422
@@ -1521,7 +1591,10 @@ def test_selected_routes_stop_oversized_bodies_before_decoding() -> None:
         download = client.post(
             "/selected/download",
             content=oversized,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                **_SAME_ORIGIN_FORM_HEADERS,
+            },
         )
 
     assert preview.status_code == download.status_code == 413
@@ -1554,6 +1627,7 @@ def test_selected_download_status_mappings_are_bounded_and_path_free(
         response = client.post(
             "/selected/download",
             data={"ids": '["secret-public-id"]', "preset": "nested"},
+            headers=_SAME_ORIGIN_FORM_HEADERS,
         )
 
     assert response.status_code == status_code
@@ -1594,6 +1668,195 @@ def test_selected_preview_status_mappings_are_bounded_and_path_free(
     assert "secret-public-id" not in response.text
     assert "/private/" not in caplog.text
     assert "secret-public-id" not in caplog.text
+
+
+def _selected_download_scope() -> Scope:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/selected/download",
+        "raw_path": b"/selected/download",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"catalog.example"),
+            (b"content-type", b"application/x-www-form-urlencoded"),
+            (b"origin", b"https://catalog.example"),
+        ],
+        "client": ("127.0.0.1", 1234),
+        "server": ("catalog.example", 443),
+    }
+
+
+async def _run_synthetic_selected_download(app: FastAPI, receive: Receive, send: Send) -> None:
+    await app(_selected_download_scope(), receive, send)
+
+
+async def test_selected_download_disconnect_cancels_and_drains_blocked_build() -> None:
+    app, _, _ = _app()
+    build_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    class BlockingArchive(_Archive):
+        @override
+        async def download(self, request: ArchiveRequest) -> StagedArchive:
+            self.download_requests.append(request)
+            build_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await cleanup_release.wait()
+                cleaned.set()
+            raise AssertionError("cancelled build resumed")
+
+    app.state.archive = BlockingArchive()
+    disconnect = asyncio.Event()
+    receive_calls = 0
+    messages: list[Message] = []
+
+    async def receive() -> Message:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            return {
+                "type": "http.request",
+                "body": b"ids=%5B%22public-1%22%5D&preset=nested",
+                "more_body": False,
+            }
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    serving = asyncio.create_task(_run_synthetic_selected_download(app, receive, send))
+    await build_started.wait()
+    disconnect.set()
+    await cleanup_started.wait()
+    await asyncio.sleep(0)
+
+    assert not serving.done()
+    assert messages == []
+
+    cleanup_release.set()
+    await serving
+
+    assert cleaned.is_set()
+    assert messages == []
+
+
+async def test_selected_download_completion_disconnect_race_closes_returned_archive() -> None:
+    app, _, _ = _app()
+    build_waiting = asyncio.Event()
+    receive_waiting = asyncio.Event()
+    complete = asyncio.Event()
+    staged_file = io.BytesIO(b"archive")
+
+    class RacingArchive(_Archive):
+        @override
+        async def download(self, request: ArchiveRequest) -> StagedArchive:
+            self.download_requests.append(request)
+            build_waiting.set()
+            await complete.wait()
+            return StagedArchive(staged_file, 7)
+
+    app.state.archive = RacingArchive()
+    receive_calls = 0
+    messages: list[Message] = []
+
+    async def receive() -> Message:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            return {
+                "type": "http.request",
+                "body": b"ids=%5B%22public-1%22%5D&preset=nested",
+                "more_body": False,
+            }
+        receive_waiting.set()
+        await complete.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    serving = asyncio.create_task(_run_synthetic_selected_download(app, receive, send))
+    await build_waiting.wait()
+    await receive_waiting.wait()
+    complete.set()
+    await serving
+
+    assert staged_file.closed
+    assert messages == []
+
+
+async def test_selected_download_repeated_cancellation_drains_build_cleanup() -> None:
+    app, _, _ = _app()
+    build_started = asyncio.Event()
+    listener_started = asyncio.Event()
+    listener_finished = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    class BlockingArchive(_Archive):
+        @override
+        async def download(self, request: ArchiveRequest) -> StagedArchive:
+            self.download_requests.append(request)
+            build_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await cleanup_release.wait()
+                cleaned.set()
+            raise AssertionError("cancelled build resumed")
+
+    app.state.archive = BlockingArchive()
+    receive_calls = 0
+    messages: list[Message] = []
+
+    async def receive() -> Message:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            return {
+                "type": "http.request",
+                "body": b"ids=%5B%22public-1%22%5D&preset=nested",
+                "more_body": False,
+            }
+        listener_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            listener_finished.set()
+        raise AssertionError("unreachable")
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    serving = asyncio.create_task(_run_synthetic_selected_download(app, receive, send))
+    await build_started.wait()
+    await listener_started.wait()
+    serving.cancel()
+    await cleanup_started.wait()
+    serving.cancel()
+    await asyncio.sleep(0)
+
+    assert not serving.done()
+
+    cleanup_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await serving
+
+    assert cleaned.is_set()
+    assert listener_finished.is_set()
+    assert messages == []
 
 
 def _archive_response_scope(*, spec_version: str = "2.4") -> Scope:
@@ -1765,6 +2028,7 @@ def test_selected_download_closes_staged_archive_if_response_creation_fails(
         response = client.post(
             "/selected/download",
             data={"ids": '["public-1"]', "preset": "nested"},
+            headers=_SAME_ORIGIN_FORM_HEADERS,
         )
 
     assert response.status_code == 500

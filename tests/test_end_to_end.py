@@ -308,6 +308,7 @@ def test_selected_preview_and_zip_download_use_real_catalog_stack(
             response = client.post(
                 "/selected/download",
                 data={"ids": json.dumps(selected_ids), "preset": preset},
+                headers={"Sec-Fetch-Site": "same-origin"},
             )
             assert response.status_code == 200
             assert response.headers["content-type"] == "application/zip"
@@ -326,6 +327,7 @@ def test_selected_preview_and_zip_download_use_real_catalog_stack(
         empty = client.post(
             "/selected/download",
             data={"ids": json.dumps([missed_id, unknown_id]), "preset": "nested"},
+            headers={"Sec-Fetch-Site": "same-origin"},
         )
         assert empty.status_code == 422
         assert "No selected books are available for download" in empty.text

@@ -59,6 +59,7 @@ _LOGGER = logging.getLogger(__name__)
 _WEB_PAGE_SIZE = 200
 _MAX_SELECTED_BODY_BYTES = 8_388_608
 _SELECTED_ARCHIVE_FILENAME = "selected-books.zip"
+_SELECTED_ORIGIN_ERROR = "Selected-books download request is not allowed"
 _PUBLIC_ARCHIVE_INPUT_MESSAGES = frozenset(
     {
         "Invalid archive preset",
@@ -461,6 +462,59 @@ def _media_type(request: Request) -> str:
     return request.headers.get("content-type", "").partition(";")[0].strip().casefold()
 
 
+def _http_origin(
+    value: object, *, allow_resource_path: bool = False
+) -> tuple[str, str, int] | None:
+    """Normalize HTTP origins while rejecting paths in submitted Origin headers."""
+    text = str(value)
+    if (
+        not text
+        or text != text.strip()
+        or any(character.isspace() for character in text)
+        or (not allow_resource_path and any(delimiter in text for delimiter in "?#"))
+    ):
+        return None
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.casefold()
+    host = parsed.hostname
+    if (
+        scheme not in {"http", "https"}
+        or host is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or (bool(parsed.path) and not allow_resource_path)
+        or parsed.query
+        or parsed.fragment
+        or parsed.netloc.endswith(":")
+        or "%" in host
+    ):
+        return None
+    effective_port = port if port is not None else (443 if scheme == "https" else 80)
+    return scheme, host.casefold(), effective_port
+
+
+def _selected_download_is_same_origin(request: Request) -> bool:
+    fetch_sites = request.headers.getlist("sec-fetch-site")
+    if any(value.strip().casefold() == "cross-site" for value in fetch_sites):
+        return False
+
+    origins = request.headers.getlist("origin")
+    if origins:
+        if len(origins) != 1:
+            return False
+        submitted = _http_origin(origins[0])
+        configured = _http_origin(
+            request.app.state.config.server.base_url, allow_resource_path=True
+        )
+        return submitted is not None and submitted == configured
+
+    return len(fetch_sites) == 1 and fetch_sites[0].strip().casefold() == "same-origin"
+
+
 def _reject_json_constant(_value: str) -> object:
     raise ValueError
 
@@ -653,6 +707,87 @@ async def _close_staged_archive(staged: StagedArchive, *, response_started: bool
     return cancelled
 
 
+async def _wait_for_disconnect(request: Request) -> None:
+    while True:
+        if (await request.receive())["type"] == "http.disconnect":
+            return
+
+
+async def _drain_route_task[T](task: asyncio.Task[T]) -> bool:
+    """Consume a task while recording cancellation of the owning route."""
+    current = asyncio.current_task()
+    cancelled = current is not None and current.cancelling() > 0
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            cancelled = cancelled or (current is not None and current.cancelling() > 0)
+        except BaseException:
+            break
+    return cancelled
+
+
+async def _discard_archive_build(build: asyncio.Task[StagedArchive], *, cancel: bool) -> bool:
+    """Drain an abandoned build and close any archive produced by a completion race."""
+    if cancel and not build.done():
+        build.cancel()
+    cancelled = await _drain_route_task(build)
+    if build.cancelled():
+        return cancelled
+    try:
+        staged = build.result()
+    except BaseException:
+        return cancelled
+    close_cancelled = await _close_staged_archive(staged, response_started=False)
+    return cancelled or close_cancelled
+
+
+async def _download_while_connected(
+    request: Request, archive_request: ArchiveRequest
+) -> StagedArchive | None:
+    build = asyncio.create_task(_archive(request).download(archive_request))
+    disconnect = asyncio.create_task(_wait_for_disconnect(request))
+    try:
+        completed, _pending = await asyncio.wait(
+            {build, disconnect}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        disconnect.cancel()
+        build.cancel()
+        await _drain_route_task(disconnect)
+        await _discard_archive_build(build, cancel=False)
+        raise
+
+    if disconnect in completed:
+        disconnect_error: BaseException | None = None
+        try:
+            disconnect.result()
+        except BaseException as error:
+            disconnect_error = error
+        cancelled = await _discard_archive_build(build, cancel=True)
+        if cancelled:
+            raise asyncio.CancelledError
+        if disconnect_error is not None:
+            raise disconnect_error
+        return None
+
+    disconnect.cancel()
+    cancelled = await _drain_route_task(disconnect)
+    if cancelled:
+        await _discard_archive_build(build, cancel=False)
+        raise asyncio.CancelledError
+    return build.result()
+
+
+class _ClientDisconnectedResponse(Response):
+    """Complete routing without sending after transport closure is confirmed."""
+
+    @override
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        return None
+
+
 class _OwnedStagedArchiveResponse(StreamingResponse):
     """Own a staged archive for the complete ASGI response lifecycle."""
 
@@ -697,6 +832,14 @@ class _OwnedStagedArchiveResponse(StreamingResponse):
 
 @router.post("/selected/download")
 async def selected_download(request: Request) -> Response:
+    if not _selected_download_is_same_origin(request):
+        return _selected_error_response(
+            request,
+            message=_SELECTED_ORIGIN_ERROR,
+            status_code=403,
+            fragment=False,
+        )
+
     try:
         archive_request = await _form_archive_request(request)
     except _SelectedBodyError as error:
@@ -705,7 +848,7 @@ async def selected_download(request: Request) -> Response:
         return _selected_input_error(request, error, fragment=False)
 
     try:
-        staged = await _archive(request).download(archive_request)
+        staged = await _download_while_connected(request, archive_request)
     except ArchiveInputError as error:
         return _selected_input_error(request, error, fragment=False)
     except CatalogInputError:
@@ -755,6 +898,9 @@ async def selected_download(request: Request) -> Response:
             status_code=500,
             fragment=False,
         )
+
+    if staged is None:
+        return _ClientDisconnectedResponse()
 
     headers = {
         "Content-Type": "application/zip",
