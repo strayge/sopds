@@ -1583,9 +1583,7 @@ class CatalogRepository:
             languages=tuple(
                 FilterOption(value=str(value), label=str(value)) for value in languages
             ),
-            genres=tuple(
-                FilterOption(value=str(code), label=str(label)) for code, label in genres
-            ),
+            genres=tuple(FilterOption(value=str(code), label=str(label)) for code, label in genres),
             original_formats=tuple(
                 FilterOption(value=str(value), label=str(value)) for value in formats
             ),
