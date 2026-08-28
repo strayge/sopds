@@ -367,6 +367,9 @@ def _format_bytes(size: int) -> str:
     raise AssertionError("Database size unit bound was bypassed")
 
 
+templates.env.filters["filesize"] = _format_bytes
+
+
 async def _statistics_context(request: Request) -> dict[str, object]:
     statistics = await _catalog(request).statistics()
     return {

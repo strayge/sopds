@@ -8,6 +8,7 @@
     <link rel="alternate" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="{{ opds_url }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
     <script src="{{ url_for('static', path='/vendor/htmx/htmx-2.0.10.min.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/selection.js') }}"></script>
     {% block head %}{% endblock %}
   </head>
   <body>
@@ -20,7 +21,7 @@
         </a>
         <nav class="site-navigation" aria-label="Primary navigation">
           <a href="/"{% if active_navigation == "catalog" %} aria-current="page"{% endif %}>Catalog</a>
-          <a href="/selected"{% if active_navigation == "selected" %} aria-current="page"{% endif %}>Selected</a>
+          <a href="/selected"{% if active_navigation == "selected" %} aria-current="page"{% endif %}>Selected <span data-selection-count hidden>0</span></a>
           <a href="{{ opds_url }}">OPDS</a>
           <a href="/manage"{% if active_navigation == "manage" %} aria-current="page"{% endif %}>Manage</a>
         </nav>

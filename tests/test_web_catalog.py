@@ -229,6 +229,7 @@ class _Archive:
         self.preview_requests: list[ArchiveRequest] = []
         self.download_requests: list[ArchiveRequest] = []
         self.preview_error: Exception | None = None
+        self.preview_value: ArchiveManifest | None = None
         self.download_error: Exception | None = None
         self.body = b"staged archive"
         self.last_file: io.BytesIO | None = None
@@ -237,6 +238,8 @@ class _Archive:
         self.preview_requests.append(request)
         if self.preview_error is not None:
             raise self.preview_error
+        if self.preview_value is not None:
+            return self.preview_value
         if not request.ids:
             return ArchiveManifest(request, 7, (), (), 0)
         summary = BookSummary(
@@ -1159,6 +1162,31 @@ def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() 
     assert "min-height: 2.75rem;" in coarse_rules.group(1)
 
 
+def test_narrow_navigation_uses_two_touch_safe_rows_without_count_overflow() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        stylesheet = client.get("/static/css/app.css")
+
+    assert stylesheet.status_code == 200
+    narrow_rules = stylesheet.text.split("@media (max-width: 34rem) {", 1)[1].split(
+        "@media (pointer: coarse)", 1
+    )[0]
+    assert re.search(
+        r"\.site-navigation \{[^}]*width: 100%;[^}]*flex: 1 0 100%;[^}]*"
+        r"grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);",
+        narrow_rules,
+        re.S,
+    )
+    assert re.search(r"\.site-navigation a \{[^}]*min-width: 0;", narrow_rules, re.S)
+    assert re.search(
+        r"\.site-navigation \[data-selection-count\] \{[^}]*flex: 0 0 auto;"
+        r"[^}]*margin-left: var\(--space-1\);",
+        narrow_rules,
+        re.S,
+    )
+    assert re.search(r"\.site-navigation a \{[^}]*min-height: 2\.75rem;", stylesheet.text, re.S)
+
+
 def test_selected_page_preview_and_download_use_strict_matching_requests() -> None:
     app, _, _ = _app()
     archive: _Archive = app.state.archive
@@ -1173,9 +1201,16 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
         )
 
     assert page.status_code == 200
-    assert '<a href="/selected" aria-current="page">Selected</a>' in page.text
+    assert '<a href="/selected" aria-current="page">Selected <span' in page.text
+    assert "data-selection-count hidden>0</span>" in page.text
+    assert "/static/selection.js" in page.text
     assert 'action="/selected/download"' in page.text
+    assert 'method="post"' in page.text
+    assert 'name="ids" value="[]" data-selected-ids' in page.text
     assert "data-selected-preview-target" in page.text
+    assert "data-selection-clear" in page.text
+    assert "data-selected-request-status" in page.text
+    assert "data-selected-download disabled" in page.text
     assert "public-1" not in page.text
     assert preview.status_code == 200
     assert 'data-selected-count="2"' in preview.text
@@ -1185,7 +1220,13 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert 'data-status="unknown"' in preview.text
     assert 'data-collision="true"' in preview.text
     assert "Selected Book" in preview.text
-    assert "Archive name collision" in preview.text
+    assert "Archive name conflicts; ZIP names will be made unique." in preview.text
+    assert preview.text.count("data-selection-remove") == 2
+    assert 'aria-label="Remove Selected Book"' in preview.text
+    assert 'aria-label="Remove unknown selection missing"' in preview.text
+    assert 'data-selected-summary tabindex="-1"' in preview.text
+    assert "Reader One/Selected Book.fb2" not in preview.text
+    assert 'href="/books/public-1?return_to=%2Fselected"' in preview.text
     assert download.status_code == 200
     assert download.content == archive.body
     assert download.headers["content-type"] == "application/zip"
@@ -1197,6 +1238,188 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert archive.preview_requests == [ArchiveRequest(["public-1", "missing"], "nested")]
     assert archive.download_requests == [ArchiveRequest(["public-1", "missing"], "nested")]
     assert archive.preview_requests[0] is not archive.download_requests[0]
+
+
+def test_catalog_selection_hooks_only_render_for_downloadable_non_missed_books() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        available = client.get("/?q=book")
+        missed = client.get("/?q=missed&include_missed=true")
+        unavailable = client.get("/?q=hidden-unavailable&include_hidden=true")
+        management = client.get("/manage")
+
+    assert 'data-selection-checkbox data-public-id="public-1"' in available.text
+    assert "data-selection-control hidden" in available.text
+    assert "availability-badge--active" not in available.text
+    assert "data-selection-checkbox" not in missed.text
+    assert "data-selection-checkbox" not in unavailable.text
+    for response in (available, missed, unavailable, management):
+        assert "<span data-selection-count hidden>0</span>" in response.text
+        assert (
+            '<script defer src="http://testserver/static/selection.js"></script>' in response.text
+        )
+
+
+def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_paths() -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+    hidden = BookSummary(
+        public_id="hidden-1",
+        title="Hidden Book",
+        authors=("Writer,Hidden,",),
+        series="Shelf",
+        series_number="2",
+        language="en",
+        original_format="epub",
+        size=456,
+        availability=BookAvailability.HIDDEN,
+    )
+    missed = BookSummary(
+        public_id="missed-1",
+        title="Missed Book",
+        authors=("Writer,Missed,",),
+        series=None,
+        series_number=None,
+        language=None,
+        original_format="fb2",
+        size=789,
+        availability=BookAvailability.MISSED,
+        downloadable=False,
+    )
+    member = ArchiveMember(
+        hidden.public_id,
+        hidden,
+        "Writer Hidden/Hidden Book.epub",
+        "Writer Hidden/Hidden Book.epub",
+        collision=True,
+        collision_group="private/path/key",
+    )
+    request = ArchiveRequest([hidden.public_id, missed.public_id, "unknown-1"], "nested")
+    archive.preview_value = ArchiveManifest(
+        request,
+        7,
+        (
+            ArchivePreviewEntry(
+                hidden.public_id,
+                hidden,
+                ArchiveEntryStatus.DOWNLOADABLE,
+                collision=True,
+                collision_group=member.collision_group,
+            ),
+            ArchivePreviewEntry(missed.public_id, missed, ArchiveEntryStatus.UNAVAILABLE),
+            ArchivePreviewEntry("unknown-1", None, ArchiveEntryStatus.UNKNOWN),
+        ),
+        (member,),
+        hidden.size,
+    )
+
+    with TestClient(app) as client:
+        preview = client.post(
+            "/selected/preview",
+            json={"ids": list(request.ids), "preset": request.preset.value},
+        )
+
+    assert preview.status_code == 200
+    assert preview.text.count('class="book-tile ') == 3
+    assert preview.text.count('aria-label="Book metadata"') == 2
+    assert preview.text.count("data-selection-remove") == 3
+    assert 'data-status="downloadable" data-collision="true"' in preview.text
+    assert 'data-status="unavailable" data-collision="false"' in preview.text
+    assert 'data-status="unknown"' in preview.text
+    assert "unavailable book is excluded" in preview.text
+    assert "unknown selection is excluded" in preview.text
+    assert "Archive name collisions affect 1 book" in preview.text
+    assert "Archive name conflicts; ZIP names will be made unique." in preview.text
+    assert 'aria-label="Remove Hidden Book"' in preview.text
+    assert 'aria-label="Remove Missed Book"' in preview.text
+    assert 'aria-label="Remove unknown selection unknown-1"' in preview.text
+    assert "Writer Hidden/Hidden Book.epub" not in preview.text
+    assert "private/path/key" not in preview.text
+    assert 'href="/books/hidden-1?return_to=%2Fselected&amp;include_hidden=true"' in preview.text
+    assert 'href="/books/missed-1?return_to=%2Fselected&amp;include_missed=true"' in preview.text
+
+
+def test_selected_preview_empty_state_provides_focus_fallback() -> None:
+    app, _, _ = _app()
+
+    with TestClient(app) as client:
+        preview = client.post("/selected/preview", json={"ids": [], "preset": "nested"})
+
+    assert preview.status_code == 200
+    assert 'data-selected-summary tabindex="-1"' in preview.text
+    assert 'data-selected-empty tabindex="-1"' in preview.text
+
+
+def test_selection_static_asset_has_browser_local_and_normal_form_contracts() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        script = client.get("/static/selection.js")
+        page = client.get("/selected")
+
+    assert script.status_code == 200
+    for contract in (
+        '"sopds.selected-books.v1"',
+        "JSON.parse",
+        "JSON.stringify",
+        "new Set",
+        "MAX_SELECTED = 10_000",
+        "value.length <= 64",
+        "localStorage.getItem",
+        "localStorage.setItem",
+        '"DOMContentLoaded"',
+        '"htmx:afterSwap"',
+        '"storage"',
+        "AbortController",
+        "previewGeneration",
+        "requestGeneration !== previewGeneration",
+        "pendingPreviewFocus",
+        "saveSelection([], {publicId: null})",
+        "resetPreviewState(page)",
+        "restorePreviewFocus(target, requestIds)",
+        'target.querySelector("[data-selected-preview-error]")',
+        "showPreviewError(target)",
+        'response.ok && !content.hasAttribute("data-selected-preview-error")',
+        "button.dataset.publicId === preferredId",
+        'window.fetch("/selected/preview"',
+        '"Content-Type": "application/json"',
+        "response.text()",
+    ):
+        assert contract in script.text
+    loading_markup = "target.innerHTML = '<p class=\"selected-loading\">Loading selection…</p>';"
+    fetch_start = 'const response = await window.fetch("/selected/preview"'
+    assert f"{loading_markup}\n    resetPreviewState(page);" in script.text
+    assert script.text.index(loading_markup) < script.text.index(fetch_start)
+    storage_handler = re.search(
+        r"function handleStorage\(event\) \{(.*?)\n  \}\n\n  function initialize",
+        script.text,
+        re.S,
+    )
+    assert storage_handler is not None
+    assert "event.key !== STORAGE_KEY && event.key !== null" in storage_handler.group(1)
+    assert "selectedIds = readSelection();" in storage_handler.group(1)
+    assert "event.newValue" not in storage_handler.group(1)
+    assert "count.textContent = String(selectedIds.length);" in script.text
+    assert script.text.count("restorePreviewFocus(target, requestIds);") == 3
+    refresh_body = script.text.split("async function refreshSelectedPreview()", 1)[1].split(
+        "function handleChange", 1
+    )[0]
+    assert refresh_body.index("requestGeneration !== previewGeneration") < refresh_body.index(
+        "target.innerHTML = markup;"
+    )
+    catch_body = refresh_body.split("} catch (error)", 1)[1]
+    assert (
+        catch_body.index("requestGeneration !== previewGeneration")
+        < catch_body.index("showPreviewError(target);")
+        < catch_body.index("restorePreviewFocus(target, requestIds);")
+    )
+    assert 'data-selected-preview-error role="alert" tabindex="-1"' in script.text
+    assert "querySelector(`[data-public-id=" not in script.text
+    assert "Blob" not in script.text
+    assert 'method="post" action="/selected/download"' in page.text
+    assert 'type="hidden" name="ids"' in page.text
+    assert '<option value="nested" selected>' in page.text
+    assert '<option value="flatten">' in page.text
+    assert '<option value="list">' in page.text
 
 
 @pytest.mark.parametrize(
@@ -1365,6 +1588,8 @@ def test_selected_preview_status_mappings_are_bounded_and_path_free(
 
     assert response.status_code == status_code
     assert len(response.content) < 1_000
+    assert "data-selected-preview-error" in response.text
+    assert 'tabindex="-1"' in response.text
     assert "/private/" not in response.text
     assert "secret-public-id" not in response.text
     assert "/private/" not in caplog.text

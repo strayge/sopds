@@ -1,41 +1,72 @@
 {% if message %}
-  <div id="selected-preview-content" data-selected-preview-error role="alert">
+  <div id="selected-preview-content"
+       class="selected-preview-error"
+       data-selected-count="0"
+       data-downloadable-count="0"
+       data-total-size="0"
+       data-selected-preview-error
+       role="alert"
+       tabindex="-1">
     <p>{{ message }}</p>
   </div>
 {% elif manifest %}
+  {% set counts = namespace(unavailable=0, unknown=0, collisions=0) %}
+  {% for entry in manifest.entries %}
+    {% if entry.status.value == "unavailable" %}{% set counts.unavailable = counts.unavailable + 1 %}{% endif %}
+    {% if entry.status.value == "unknown" %}{% set counts.unknown = counts.unknown + 1 %}{% endif %}
+    {% if entry.collision %}{% set counts.collisions = counts.collisions + 1 %}{% endif %}
+  {% endfor %}
   <div id="selected-preview-content"
        data-selected-count="{{ manifest.entries|length }}"
        data-downloadable-count="{{ manifest.members|length }}"
        data-total-size="{{ manifest.total_size }}">
-    <p data-selected-summary>
-      {{ manifest.entries|length|integer }} selected ·
-      {{ manifest.members|length|integer }} downloadable ·
-      {{ manifest.total_size|integer }} bytes
-    </p>
+    <div class="selected-preview-summary" data-selected-summary tabindex="-1">
+      <p><strong>{{ manifest.entries|length|integer }}</strong> selected · <strong>{{ manifest.members|length|integer }}</strong> downloadable · {{ manifest.total_size|filesize }}</p>
+    </div>
+
+    {% if counts.unavailable or counts.unknown or counts.collisions %}
+      <div class="selected-notices" aria-label="Selection notices">
+        {% if counts.unavailable %}<p class="selected-notice selected-notice--unavailable">{{ counts.unavailable|integer }} unavailable {% if counts.unavailable == 1 %}book is{% else %}books are{% endif %} excluded from the ZIP.</p>{% endif %}
+        {% if counts.unknown %}<p class="selected-notice selected-notice--unknown">{{ counts.unknown|integer }} unknown {% if counts.unknown == 1 %}selection is{% else %}selections are{% endif %} excluded from the ZIP.</p>{% endif %}
+        {% if counts.collisions %}<p class="selected-notice selected-notice--collision">Archive name collisions affect {{ counts.collisions|integer }} {% if counts.collisions == 1 %}book{% else %}books{% endif %}; their ZIP names will be made unique.</p>{% endif %}
+      </div>
+    {% endif %}
+
     {% if manifest.entries %}
-      <div class="result-list" data-selected-entries>
+      <div class="result-list selected-result-list" data-selected-entries>
         {% for entry in manifest.entries %}
-          <article class="result-row"
-                   data-selected-entry
-                   data-status="{{ entry.status.value }}"
-                   data-collision="{{ 'true' if entry.collision else 'false' }}">
-            <div class="result-row__body">
-              {% if entry.summary %}
-                <h3 class="result-row__title">{{ entry.summary.title }}</h3>
-                {% if entry.summary.authors %}
-                  <p>{{ entry.summary.authors[0]|author_name }}</p>
-                {% endif %}
-              {% else %}
-                <h3 class="result-row__title">Unknown selection</h3>
-              {% endif %}
-              <p data-entry-status>{{ entry.status.value|capitalize }}</p>
-              {% if entry.collision %}<p data-collision-notice>Archive name collision</p>{% endif %}
-            </div>
-          </article>
+          {% if entry.summary %}
+            {% with row_mode="selected", row_book=entry.summary, row_entry=entry, row_index=loop.index0 %}
+              {% include "partials/book_row.html" %}
+            {% endwith %}
+          {% else %}
+            <article class="result-row result-row--selected result-row--unknown"
+                     data-selected-entry
+                     data-public-id="{{ entry.public_id }}"
+                     data-status="unknown"
+                     data-collision="false">
+              <div class="book-tile book-tile--{{ (loop.index0 % 4) + 1 }}" aria-hidden="true">?</div>
+              <div class="result-row__body">
+                <div class="result-row__heading">
+                  <h2 class="result-row__title">Unknown selection</h2>
+                  <span class="availability-badge availability-badge--unknown">Unknown</span>
+                </div>
+                <p class="selected-entry-note">No current catalog record matches <code>{{ entry.public_id }}</code>.</p>
+              </div>
+              <p class="result-metadata">Not included in the ZIP</p>
+              <div class="result-row__actions">
+                <button class="selection-remove" type="button" data-selection-remove data-public-id="{{ entry.public_id }}" aria-label="Remove unknown selection {{ entry.public_id }}">Remove</button>
+              </div>
+            </article>
+          {% endif %}
         {% endfor %}
       </div>
     {% else %}
-      <p data-selected-empty>No books are selected.</p>
+      <div class="catalog-results__message selected-empty" data-selected-empty tabindex="-1">
+        <h2>No books selected</h2>
+        <p>Select downloadable books from the catalog to build a ZIP.</p>
+        <p><a href="/">Browse the catalog</a></p>
+      </div>
     {% endif %}
   </div>
 {% endif %}
