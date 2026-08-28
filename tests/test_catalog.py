@@ -192,6 +192,8 @@ async def _seed(repository: CatalogRepository) -> None:
             "VALUES (?,?,?,?,?,?,?)",
             [book.id, generation_id, normalize_text(book.title), "", "", "", book.language],
         )
+    await repository.materialize_generation_summaries(active.id)
+    await repository.materialize_generation_summaries(staging.id)
 
 
 async def test_catalog_statistics_describe_active_generation_and_database(tmp_path: Path) -> None:
@@ -232,6 +234,26 @@ async def test_catalog_statistics_describe_active_generation_and_database(tmp_pa
 
         await repository.vacuum()
         assert (await catalog.statistics()).database_size_bytes > 0
+
+
+async def test_summary_reads_follow_archive_availability_without_rematerializing(
+    tmp_path: Path,
+) -> None:
+    async with _catalog(tmp_path / "summary-availability.sqlite3") as (catalog, repository):
+        await _seed(repository)
+        assert [option.value for option in (await catalog.filters()).languages] == ["en", "ru"]
+        assert (await catalog.statistics()).missed_books == 1
+
+        await repository.update_archive_availability({1: False})
+
+        assert (await catalog.filters()).languages == ()
+        statistics = await catalog.statistics()
+        assert statistics.missed_books == 56
+        assert statistics.active_books == 0
+
+        await repository.update_archive_availability({1: True})
+        assert [option.value for option in (await catalog.filters()).languages] == ["en", "ru"]
+        assert (await catalog.statistics()).missed_books == 1
 
 
 async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Path) -> None:

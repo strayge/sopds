@@ -365,6 +365,18 @@ async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config:
     ]
     assert _query(
         app_config.database.path,
+        "SELECT visible_book_count,hidden_book_count FROM catalog_generation",
+    ) == [(1, 1)]
+    assert _query(app_config.database.path, "SELECT visible_book_count FROM archive") == [(1,)]
+    assert _query(app_config.database.path, "SELECT language FROM archive_language") == [("ru",)]
+    assert _query(
+        app_config.database.path, "SELECT original_format FROM archive_original_format"
+    ) == [("fb2",)]
+    assert _query(
+        app_config.database.path, "SELECT genre_id FROM archive_genre ORDER BY genre_id"
+    ) == [(1,), (2,)]
+    assert _query(
+        app_config.database.path,
         "SELECT name,position FROM author JOIN book_author ON author.id=author_id "
         "ORDER BY book_id,position",
     ) == [

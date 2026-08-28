@@ -22,6 +22,8 @@ class CatalogGeneration(Model):
     created_at = fields.DatetimeField(auto_now_add=True)
     completed_at = fields.DatetimeField(null=True)
     activated_at = fields.DatetimeField(null=True)
+    visible_book_count = fields.BigIntField(default=0, db_default=0)
+    hidden_book_count = fields.BigIntField(default=0, db_default=0)
 
     archives: fields.ReverseRelation[Archive]
     authors: fields.ReverseRelation[Author]
@@ -102,8 +104,12 @@ class Archive(Model):
     )
     relative_path = fields.TextField()
     available = fields.BooleanField(default=True)
+    visible_book_count = fields.BigIntField(default=0, db_default=0)
 
     books: fields.ReverseRelation[Book]
+    languages: fields.ReverseRelation[ArchiveLanguage]
+    original_formats: fields.ReverseRelation[ArchiveOriginalFormat]
+    genre_links: fields.ReverseRelation[ArchiveGenre]
 
     class Meta:
         table = "archive"
@@ -137,11 +143,51 @@ class Genre(Model):
     label_sort = fields.CharField(max_length=256)
 
     book_links: fields.ReverseRelation[BookGenre]
+    archive_links: fields.ReverseRelation[ArchiveGenre]
 
     class Meta:
         table = "genre"
         unique_together = (("generation", "code"),)
         indexes = (("generation_id", "label_sort", "id"),)
+
+
+class ArchiveLanguage(Model):
+    id = fields.BigIntField(primary_key=True)
+    archive: fields.ForeignKeyRelation[Archive] = fields.ForeignKeyField(
+        "catalog.Archive", related_name="languages", on_delete=fields.CASCADE
+    )
+    language = fields.CharField(max_length=32)
+
+    class Meta:
+        table = "archive_language"
+        unique_together = (("archive", "language"),)
+
+
+class ArchiveOriginalFormat(Model):
+    id = fields.BigIntField(primary_key=True)
+    archive: fields.ForeignKeyRelation[Archive] = fields.ForeignKeyField(
+        "catalog.Archive", related_name="original_formats", on_delete=fields.CASCADE
+    )
+    original_format = fields.CharField(max_length=32)
+
+    class Meta:
+        table = "archive_original_format"
+        unique_together = (("archive", "original_format"),)
+
+
+class ArchiveGenre(Model):
+    id = fields.BigIntField(primary_key=True)
+    archive: fields.ForeignKeyRelation[Archive] = fields.ForeignKeyField(
+        "catalog.Archive", related_name="genre_links", on_delete=fields.CASCADE
+    )
+    genre: fields.ForeignKeyRelation[Genre] = fields.ForeignKeyField(
+        "catalog.Genre", related_name="archive_links", on_delete=fields.CASCADE
+    )
+
+    class Meta:
+        table = "archive_genre"
+        unique_together = (("archive", "genre"),)
+        indexes = (("genre_id",),)
 
 
 class Series(Model):

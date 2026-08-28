@@ -7,7 +7,7 @@ from pathlib import Path
 from pypika_tortoise.functions import Substring as PypikaSubstring
 from tortoise.backends.base.client import BaseDBAsyncClient
 from tortoise.expressions import Function, Q, Subquery
-from tortoise.functions import Count, Max
+from tortoise.functions import Count, Max, Sum
 from tortoise.query_utils import Prefetch
 from tortoise.queryset import QuerySet
 from tortoise.transactions import in_transaction
@@ -26,6 +26,9 @@ from sopds.catalog.contracts import (
 from sopds.db.configuration import CONNECTION_NAME
 from sopds.db.models import (
     Archive,
+    ArchiveGenre,
+    ArchiveLanguage,
+    ArchiveOriginalFormat,
     Author,
     Book,
     BookAuthor,
@@ -414,6 +417,89 @@ class CatalogRepository:
             if changed != 1:
                 raise RuntimeError("Catalog source singleton is missing")
 
+    async def materialize_generation_summaries(self, generation_id: int) -> None:
+        """Refresh the bounded read projections before a generation can be activated."""
+        async with in_transaction(CONNECTION_NAME) as transaction:
+            await transaction.execute_query(
+                """
+                UPDATE catalog_generation
+                SET visible_book_count = (
+                        SELECT COUNT(*) FROM book
+                        WHERE book.generation_id = catalog_generation.id AND book.hidden = 0
+                    ),
+                    hidden_book_count = (
+                        SELECT COUNT(*) FROM book
+                        WHERE book.generation_id = catalog_generation.id AND book.hidden = 1
+                    )
+                WHERE id=?
+                """,
+                [generation_id],
+            )
+            await transaction.execute_query(
+                """
+                UPDATE archive
+                SET visible_book_count = (
+                    SELECT COUNT(*) FROM book
+                    WHERE book.archive_id = archive.id AND book.hidden = 0
+                )
+                WHERE generation_id=?
+                """,
+                [generation_id],
+            )
+            await transaction.execute_query(
+                "DELETE FROM archive_language WHERE archive_id IN "
+                "(SELECT id FROM archive WHERE generation_id=?)",
+                [generation_id],
+            )
+            await transaction.execute_query(
+                "DELETE FROM archive_original_format WHERE archive_id IN "
+                "(SELECT id FROM archive WHERE generation_id=?)",
+                [generation_id],
+            )
+            await transaction.execute_query(
+                "DELETE FROM archive_genre WHERE archive_id IN "
+                "(SELECT id FROM archive WHERE generation_id=?)",
+                [generation_id],
+            )
+            await transaction.execute_query(
+                """
+                INSERT INTO archive_language(archive_id, language)
+                SELECT DISTINCT b.archive_id, b.language
+                FROM book b JOIN archive a ON a.id=b.archive_id
+                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                  AND b.language IS NOT NULL
+                  AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
+                      WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
+                """,
+                [generation_id, generation_id],
+            )
+            await transaction.execute_query(
+                """
+                INSERT INTO archive_original_format(archive_id, original_format)
+                SELECT DISTINCT b.archive_id, b.original_format
+                FROM book b JOIN archive a ON a.id=b.archive_id
+                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                  AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
+                      WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
+                """,
+                [generation_id, generation_id],
+            )
+            await transaction.execute_query(
+                """
+                INSERT INTO archive_genre(archive_id, genre_id)
+                SELECT DISTINCT b.archive_id, bg.genre_id
+                FROM book b
+                JOIN archive a ON a.id=b.archive_id
+                JOIN book_genre bg ON bg.book_id=b.id
+                JOIN genre g ON g.id=bg.genre_id
+                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                  AND g.generation_id=b.generation_id
+                  AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
+                      WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
+                """,
+                [generation_id, generation_id],
+            )
+
     async def validate_generation_counts(self, generation_id: int, expected: int) -> None:
         books = await Book.filter(generation_id=generation_id).using_db(self._connection).count()
         # FTS5 is intentionally not represented as an ORM model, so its count remains raw.
@@ -421,7 +507,110 @@ class CatalogRepository:
             "SELECT COUNT(*) AS count FROM book_fts WHERE generation_id=?", [generation_id]
         )
         fts = int(rows[0]["count"]) if len(rows) == 1 else -1
-        if books != expected or fts != expected:
+        generation_rows = await self._connection.execute_query(
+            "SELECT visible_book_count, hidden_book_count FROM catalog_generation WHERE id=?",
+            [generation_id],
+        )
+        summary_complete = len(generation_rows[1]) == 1
+        if summary_complete:
+            summary = generation_rows[1][0]
+            visible = int(summary["visible_book_count"])
+            hidden = int(summary["hidden_book_count"])
+            _, visible_rows = await self._connection.execute_query(
+                "SELECT COUNT(*) AS count FROM book WHERE generation_id=? AND hidden=0",
+                [generation_id],
+            )
+            _, archive_count_rows = await self._connection.execute_query(
+                "SELECT SUM(visible_book_count) AS count FROM archive WHERE generation_id=?",
+                [generation_id],
+            )
+            summary_complete = (
+                visible == int(visible_rows[0]["count"])
+                and hidden == books - visible
+                and int(archive_count_rows[0]["count"] or 0) == visible
+            )
+        if summary_complete:
+            _, archive_rows = await self._connection.execute_query(
+                """
+                SELECT COUNT(*) AS count
+                FROM archive a
+                WHERE a.generation_id=? AND a.visible_book_count != (
+                    SELECT COUNT(*) FROM book b
+                    WHERE b.archive_id=a.id AND b.hidden=0
+                )
+                """,
+                [generation_id],
+            )
+            summary_complete = int(archive_rows[0]["count"]) == 0
+        mapping_queries = (
+            """
+            WITH expected(archive_id, value) AS (
+                SELECT DISTINCT b.archive_id, b.language FROM book b
+                JOIN archive a ON a.id=b.archive_id
+                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                  AND b.language IS NOT NULL
+                  AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
+                      WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
+            ), actual(archive_id, value) AS (
+                SELECT archive_id, language FROM archive_language al
+                JOIN archive a ON a.id=al.archive_id WHERE a.generation_id=?
+            ), missing AS (
+                SELECT archive_id, value FROM expected EXCEPT SELECT archive_id, value FROM actual
+            ), extra AS (
+                SELECT archive_id, value FROM actual EXCEPT SELECT archive_id, value FROM expected
+            ), differences AS (
+                SELECT archive_id, value FROM missing UNION ALL SELECT archive_id, value FROM extra
+            ) SELECT COUNT(*) AS count FROM differences
+            """,
+            """
+            WITH expected(archive_id, value) AS (
+                SELECT DISTINCT b.archive_id, b.original_format FROM book b
+                JOIN archive a ON a.id=b.archive_id
+                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                  AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
+                      WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
+            ), actual(archive_id, value) AS (
+                SELECT archive_id, original_format FROM archive_original_format af
+                JOIN archive a ON a.id=af.archive_id WHERE a.generation_id=?
+            ), missing AS (
+                SELECT archive_id, value FROM expected EXCEPT SELECT archive_id, value FROM actual
+            ), extra AS (
+                SELECT archive_id, value FROM actual EXCEPT SELECT archive_id, value FROM expected
+            ), differences AS (
+                SELECT archive_id, value FROM missing UNION ALL SELECT archive_id, value FROM extra
+            ) SELECT COUNT(*) AS count FROM differences
+            """,
+            """
+            WITH expected(archive_id, value) AS (
+                SELECT DISTINCT b.archive_id, bg.genre_id FROM book b
+                JOIN archive a ON a.id=b.archive_id
+                JOIN book_genre bg ON bg.book_id=b.id
+                JOIN genre g ON g.id=bg.genre_id
+                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                  AND g.generation_id=b.generation_id
+                  AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
+                      WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
+            ), actual(archive_id, value) AS (
+                SELECT archive_id, genre_id FROM archive_genre ag
+                JOIN archive a ON a.id=ag.archive_id WHERE a.generation_id=?
+            ), missing AS (
+                SELECT archive_id, value FROM expected EXCEPT SELECT archive_id, value FROM actual
+            ), extra AS (
+                SELECT archive_id, value FROM actual EXCEPT SELECT archive_id, value FROM expected
+            ), differences AS (
+                SELECT archive_id, value FROM missing UNION ALL SELECT archive_id, value FROM extra
+            ) SELECT COUNT(*) AS count FROM differences
+            """,
+        )
+        if summary_complete:
+            for query in mapping_queries:
+                _, mapping_rows = await self._connection.execute_query(
+                    query, [generation_id, generation_id, generation_id]
+                )
+                if not mapping_rows or int(mapping_rows[0]["count"]) != 0:
+                    summary_complete = False
+                    break
+        if books != expected or fts != expected or not summary_complete:
             raise RuntimeError("Persisted catalog projection counts do not match imported records")
 
     async def latest_status(self) -> ImportStatus | None:
@@ -654,30 +843,26 @@ class CatalogRepository:
         generation_rows = await (
             CatalogGeneration.filter(id=generation_id)
             .using_db(self._connection)
-            .values("activated_at")
+            .values("activated_at", "visible_book_count", "hidden_book_count")
         )
         activated_at = generation_rows[0]["activated_at"] if generation_rows else None
         if activated_at is not None:
             if activated_at.tzinfo is None:
                 activated_at = activated_at.replace(tzinfo=UTC)
             activated_at = activated_at.astimezone(UTC)
-        visible_books = await (
-            Book.filter(generation_id=generation_id, hidden=False)
+        if not generation_rows:
+            visible_books = 0
+            persisted_hidden_books = 0
+        else:
+            visible_books = int(generation_rows[0]["visible_book_count"])
+            persisted_hidden_books = int(generation_rows[0]["hidden_book_count"])
+        missed_rows = await (
+            Archive.filter(generation_id=generation_id, available=False)
             .using_db(self._connection)
-            .count()
+            .annotate(count=Sum("visible_book_count"))
+            .values("count")
         )
-        persisted_hidden_books = await (
-            Book.filter(generation_id=generation_id, hidden=True).using_db(self._connection).count()
-        )
-        missed_books = await (
-            Book.filter(
-                generation_id=generation_id,
-                hidden=False,
-                archive__available=False,
-            )
-            .using_db(self._connection)
-            .count()
-        )
+        missed_books = int(missed_rows[0]["count"] or 0) if missed_rows else 0
         run_rows = await (
             ImportRun.filter(
                 staging_generation_id=generation_id,
@@ -1056,6 +1241,16 @@ class CatalogRepository:
             return BookAvailability.MISSED
         return BookAvailability.ACTIVE
 
+    def _available_genres(self, generation_id: int) -> QuerySet[Genre]:
+        available_genre_ids = ArchiveGenre.filter(
+            archive__generation_id=generation_id,
+            archive__available=True,
+        ).values("genre_id")
+        return Genre.filter(
+            generation_id=generation_id,
+            id__in=Subquery(available_genre_ids),
+        ).using_db(self._connection)
+
     def _available_authors(self, generation_id: int) -> QuerySet[Author]:
         return Author.filter(
             Q(book_links__book__series_id=None)
@@ -1274,18 +1469,7 @@ class CatalogRepository:
             )
             return [(str(row[0]), str(row[1]), str(row[2]), str(row[2])) for row in rows]
         if kind == "genres":
-            available_genre_ids = BookGenre.filter(
-                Q(book__series_id=None) | Q(book__series__generation_id=generation_id),
-                book__generation_id=generation_id,
-                book__archive__generation_id=generation_id,
-                book__archive__available=True,
-                book__hidden=False,
-                genre__generation_id=generation_id,
-            ).values("genre_id")
-            genre_query = Genre.filter(
-                generation_id=generation_id,
-                id__in=Subquery(available_genre_ids),
-            ).using_db(self._connection)
+            genre_query = self._available_genres(generation_id)
             if after is not None:
                 genre_query = genre_query.filter(
                     Q(label_sort__gt=after[0]) | Q(label_sort=after[0], id__gt=int(after[1]))
@@ -1310,17 +1494,10 @@ class CatalogRepository:
                 .values_list("id", "name_sort", "name")
             )
             return [(str(row[0]), str(row[1]), str(row[2]), str(row[2])) for row in rows]
-        language_query = (
-            Book.filter(
-                Q(series_id=None) | Q(series__generation_id=generation_id),
-                generation_id=generation_id,
-                archive__generation_id=generation_id,
-                archive__available=True,
-                hidden=False,
-            )
-            .using_db(self._connection)
-            .exclude(language=None)
-        )
+        language_query = ArchiveLanguage.filter(
+            archive__generation_id=generation_id,
+            archive__available=True,
+        ).using_db(self._connection)
         if after is not None:
             language_query = language_query.filter(language__gt=after[0])
         values = (
@@ -1332,41 +1509,40 @@ class CatalogRepository:
         return [(str(value), str(value), str(value), str(value)) for value in values]
 
     async def catalog_filters(self, generation_id: int) -> CatalogFilters:
-        base = Book.filter(
-            Q(series_id=None) | Q(series__generation_id=generation_id),
-            generation_id=generation_id,
-            archive__generation_id=generation_id,
-            archive__available=True,
-            hidden=False,
-        ).using_db(self._connection)
-        languages = sorted(
-            str(value)
-            for value in await base.exclude(language=None)
-            .distinct()
-            .values_list("language", flat=True)
-        )
-        formats = sorted(
-            str(value) for value in await base.distinct().values_list("original_format", flat=True)
-        )
-        available_genre_ids = BookGenre.filter(
-            Q(book__series_id=None) | Q(book__series__generation_id=generation_id),
-            book__generation_id=generation_id,
-            book__archive__generation_id=generation_id,
-            book__archive__available=True,
-            book__hidden=False,
-            genre__generation_id=generation_id,
-        ).values("genre_id")
-        genre_rows = await (
-            Genre.filter(
-                generation_id=generation_id,
-                id__in=Subquery(available_genre_ids),
+        languages = await (
+            ArchiveLanguage.filter(
+                archive__generation_id=generation_id,
+                archive__available=True,
             )
             .using_db(self._connection)
+            .distinct()
+            .order_by("language")
+            .values_list("language", flat=True)
+        )
+        formats = await (
+            ArchiveOriginalFormat.filter(
+                archive__generation_id=generation_id,
+                archive__available=True,
+            )
+            .using_db(self._connection)
+            .distinct()
+            .order_by("original_format")
+            .values_list("original_format", flat=True)
+        )
+        genres = await (
+            self._available_genres(generation_id)
+            .distinct()
             .order_by("label_sort", "code")
             .values_list("code", "label")
         )
         return CatalogFilters(
-            languages=tuple(FilterOption(value=value, label=value) for value in languages),
-            genres=tuple(FilterOption(value=code, label=label) for code, label in genre_rows),
-            original_formats=tuple(FilterOption(value=value, label=value) for value in formats),
+            languages=tuple(
+                FilterOption(value=str(value), label=str(value)) for value in languages
+            ),
+            genres=tuple(
+                FilterOption(value=str(code), label=str(label)) for code, label in genres
+            ),
+            original_formats=tuple(
+                FilterOption(value=str(value), label=str(value)) for value in formats
+            ),
         )

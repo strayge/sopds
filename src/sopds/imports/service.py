@@ -237,6 +237,7 @@ class CatalogImportService:
                     ) * _PROGRESS_RECORD_INTERVAL
             if counters[0] != counters[1] + counters[2] or counters[3] != 0:
                 raise CatalogDataError("Import counters failed structural validation")
+            await self._repository.materialize_generation_summaries(generation_id)
             await self._repository.validate_generation_counts(generation_id, counters[0])
             final_fingerprint = await hash_source(self._source_path, fingerprint)
             if final_fingerprint.sha256 != fingerprint.sha256:

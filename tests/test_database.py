@@ -21,6 +21,9 @@ from sopds.db.migrations_runner import (
 )
 from sopds.db.models import (
     Archive,
+    ArchiveGenre,
+    ArchiveLanguage,
+    ArchiveOriginalFormat,
     Author,
     Book,
     BookAuthor,
@@ -32,6 +35,7 @@ from sopds.db.models import (
 
 RELATION_INDEXES = {
     ("archive", ("generation_id", "available")),
+    ("archive_genre", ("genre_id",)),
     ("author", ("generation_id", "name_sort", "id")),
     ("book", ("series_id",)),
     ("book", ("generation_id", "title_sort", "public_id")),
@@ -51,6 +55,9 @@ MIGRATION_NAMES = tuple(
 
 RELATIONAL_TABLES = {
     "archive",
+    "archive_genre",
+    "archive_language",
+    "archive_original_format",
     "author",
     "book",
     "book_author",
@@ -106,6 +113,50 @@ async def test_hidden_field_migration_upgrades_a_populated_database(tmp_path: Pa
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT hidden FROM book").fetchall() == [(0,)]
+
+
+async def test_materialized_summary_migration_backfills_existing_rows(tmp_path: Path) -> None:
+    database_path = tmp_path / "catalog.sqlite3"
+    config = build_tortoise_config(database_path)
+    async with TortoiseContext():
+        await migrate(
+            config=config,
+            app_labels=["catalog"],
+            target="catalog.0004_book_hidden",
+        )
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            INSERT INTO catalog_generation(id,state,created_at)
+            VALUES(1,'active',CURRENT_TIMESTAMP);
+            INSERT INTO archive(id,generation_id,relative_path,available)
+            VALUES(1,1,'books.zip',0);
+            INSERT INTO genre(id,generation_id,code,label,label_sort)
+            VALUES(1,1,'sf','Science fiction','science fiction');
+            INSERT INTO book(
+                id,public_id,member_filename,title,title_sort,size,original_format,
+                archive_id,generation_id,language,hidden
+            ) VALUES
+                (1,'visible','visible.fb2','Visible','visible',1,'fb2',1,1,'ru',0),
+                (2,'hidden','hidden.mobi','Hidden','hidden',1,'mobi',1,1,'zz',1);
+            INSERT INTO book_genre(id,book_id,genre_id) VALUES(1,1,1);
+            """
+        )
+
+    await apply_migrations(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT visible_book_count,hidden_book_count FROM catalog_generation"
+        ).fetchall() == [(1, 1)]
+        assert connection.execute("SELECT visible_book_count FROM archive").fetchall() == [(1,)]
+        assert connection.execute("SELECT language FROM archive_language").fetchall() == [("ru",)]
+        assert connection.execute(
+            "SELECT original_format FROM archive_original_format"
+        ).fetchall() == [("fb2",)]
+        assert connection.execute("SELECT archive_id,genre_id FROM archive_genre").fetchall() == [
+            (1, 1)
+        ]
 
 
 async def test_migrations_create_relational_and_fts_schema(tmp_path: Path) -> None:
@@ -281,12 +332,25 @@ async def test_deleting_generation_cascades_all_relational_rows(tmp_path: Path) 
         )
         await BookAuthor.create(book=book, author=author, position=0)
         await BookGenre.create(book=book, genre=genre)
+        await ArchiveLanguage.create(archive=archive, language="en")
+        await ArchiveOriginalFormat.create(archive=archive, original_format="fb2")
+        await ArchiveGenre.create(archive=archive, genre=genre)
 
         await generation.delete()
 
         remaining = {
             model.Meta.table: await model.all().count()
-            for model in (Archive, Author, Book, BookAuthor, BookGenre, Genre)
+            for model in (
+                Archive,
+                ArchiveLanguage,
+                ArchiveOriginalFormat,
+                ArchiveGenre,
+                Author,
+                Book,
+                BookAuthor,
+                BookGenre,
+                Genre,
+            )
         }
     finally:
         await close_database(context)

@@ -12,6 +12,9 @@ from sopds.db.connection import ensure_database_parent
 REQUIRED_SCHEMA_OBJECTS = frozenset(
     {
         "archive",
+        "archive_language",
+        "archive_original_format",
+        "archive_genre",
         "author",
         "book",
         "book_author",
