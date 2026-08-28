@@ -1218,11 +1218,15 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert 'data-selected-count="2"' in preview.text
     assert 'data-downloadable-count="1"' in preview.text
     assert 'data-total-size="321"' in preview.text
+    assert 'data-catalog-generation="7"' in preview.text
     assert 'data-status="downloadable"' in preview.text
     assert 'data-status="unknown"' in preview.text
     assert 'data-collision="true"' in preview.text
     assert "Selected Book" in preview.text
     assert "Archive name conflicts; ZIP names will be made unique." in preview.text
+    assert preview.text.count("data-selection-checkbox") == 2
+    assert "Include Selected Book in archive" in preview.text
+    assert "Include unknown selection missing in archive" in preview.text
     assert preview.text.count("data-selection-remove") == 2
     assert 'aria-label="Remove Selected Book"' in preview.text
     assert 'aria-label="Remove unknown selection missing"' in preview.text
@@ -1324,6 +1328,10 @@ def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_path
     assert preview.status_code == 200
     assert preview.text.count('class="book-tile ') == 3
     assert preview.text.count('aria-label="Book metadata"') == 2
+    assert preview.text.count("data-selection-checkbox") == 3
+    assert "Include Hidden Book in archive" in preview.text
+    assert "Include Missed Book in archive" in preview.text
+    assert "Include unknown selection unknown-1 in archive" in preview.text
     assert preview.text.count("data-selection-remove") == 3
     assert 'data-status="downloadable" data-collision="true"' in preview.text
     assert 'data-status="unavailable" data-collision="false"' in preview.text
@@ -1375,12 +1383,18 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         "previewGeneration",
         "requestGeneration !== previewGeneration",
         "pendingPreviewFocus",
-        "saveSelection([], {publicId: null})",
+        "saveSelection([], {publicId: null}, true)",
         "resetPreviewState(page)",
         "restorePreviewFocus(target, requestIds)",
         'target.querySelector("[data-selected-preview-error]")',
         "showPreviewError(target)",
-        'response.ok && !content.hasAttribute("data-selected-preview-error")',
+        "mergeSelectedPreview(target, incomingContent)",
+        "showPreservedPreviewError(target, incomingContent)",
+        "createSelectedEmptyState()",
+        "const includedIds = new Set(selectedIds)",
+        "hasExcludedDisplayedEntries()",
+        "refreshSelectedPreview({preserveEntries})",
+        'response.ok && !incomingContent.hasAttribute("data-selected-preview-error")',
         "button.dataset.publicId === preferredId",
         'window.fetch("/selected/preview"',
         '"Content-Type": "application/json"',
@@ -1389,7 +1403,8 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         assert contract in script.text
     loading_markup = "target.innerHTML = '<p class=\"selected-loading\">Loading selection…</p>';"
     fetch_start = 'const response = await window.fetch("/selected/preview"'
-    assert f"{loading_markup}\n    resetPreviewState(page);" in script.text
+    assert "if (!keepEntries) {" in script.text
+    assert loading_markup in script.text
     assert script.text.index(loading_markup) < script.text.index(fetch_start)
     storage_handler = re.search(
         r"function handleStorage\(event\) \{(.*?)\n  \}\n\n  function initialize",
@@ -1402,7 +1417,7 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
     assert "event.newValue" not in storage_handler.group(1)
     assert "count.textContent = String(selectedIds.length);" in script.text
     assert script.text.count("restorePreviewFocus(target, requestIds);") == 3
-    refresh_body = script.text.split("async function refreshSelectedPreview()", 1)[1].split(
+    refresh_body = script.text.split("async function refreshSelectedPreview(", 1)[1].split(
         "function handleChange", 1
     )[0]
     assert refresh_body.index("requestGeneration !== previewGeneration") < refresh_body.index(

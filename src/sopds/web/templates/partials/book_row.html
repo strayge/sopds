@@ -1,10 +1,10 @@
 {# Required context: row_mode, row_book, row_index. Selected mode also requires row_entry. #}
 <article class="result-row{% if row_mode == 'catalog' %} result-row--catalog{% endif %}{% if row_mode == 'selected' %} result-row--selected result-row--{{ row_entry.status.value }}{% if row_entry.collision %} result-row--collision{% endif %}{% endif %}"
          {% if row_mode == "selected" %}data-selected-entry data-public-id="{{ row_entry.public_id }}" data-status="{{ row_entry.status.value }}" data-collision="{{ 'true' if row_entry.collision else 'false' }}"{% endif %}>
-  {% if row_mode == "catalog" and row_book.downloadable and row_book.availability.value != "missed" %}
+  {% if (row_mode == "catalog" and row_book.downloadable and row_book.availability.value != "missed") or row_mode == "selected" %}
     <label class="selection-control" data-selection-control hidden>
       <input type="checkbox" data-selection-checkbox data-public-id="{{ row_book.public_id }}">
-      <span class="visually-hidden">Select {{ row_book.title }}</span>
+      <span class="visually-hidden">{% if row_mode == "selected" %}Include {{ row_book.title }} in archive{% else %}Select {{ row_book.title }}{% endif %}</span>
     </label>
   {% endif %}
   <div class="book-tile book-tile--{{ (row_index % 4) + 1 }}" aria-hidden="true">{{ (row_book.title|trim|first)|upper }}</div>

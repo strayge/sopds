@@ -88,13 +88,22 @@
   }
 
   function syncCheckboxes(root = document) {
+    const includedIds = new Set(selectedIds);
     root.querySelectorAll("[data-selection-checkbox]").forEach((checkbox) => {
       const publicId = checkbox.dataset.publicId;
-      checkbox.checked = isValidId(publicId) && selectedIds.includes(publicId);
+      const included = isValidId(publicId) && includedIds.has(publicId);
+      checkbox.checked = included;
       checkbox.disabled = !storageReady;
       const control = checkbox.closest("[data-selection-control]");
       if (control) {
         control.hidden = !storageReady;
+      }
+      const selectedEntry = checkbox.closest("[data-selected-entry]");
+      if (selectedEntry) {
+        selectedEntry.dataset.included = String(included);
+        if (!included) {
+          clearCollisionState(selectedEntry);
+        }
       }
     });
   }
@@ -120,7 +129,7 @@
     syncSelectedPageForm();
   }
 
-  function saveSelection(nextIds, previewFocus = null) {
+  function saveSelection(nextIds, previewFocus = null, preserveEntries = false) {
     const normalized = normalizeIds(nextIds);
     if (!storageReady) {
       showSelectionStatus("Book selection is unavailable in this browser.", true);
@@ -142,11 +151,11 @@
     }
     showSelectionStatus("");
     syncInterface();
-    refreshSelectedPreview();
+    refreshSelectedPreview({preserveEntries});
     return true;
   }
 
-  function appendId(publicId) {
+  function appendId(publicId, preserveEntries = false) {
     if (!isValidId(publicId) || selectedIds.includes(publicId)) {
       syncInterface();
       return;
@@ -156,32 +165,48 @@
       syncInterface();
       return;
     }
-    saveSelection([...selectedIds, publicId]);
+    saveSelection([...selectedIds, publicId], null, preserveEntries);
   }
 
-  function removeId(publicId) {
+  function removeId(publicId, preserveEntries = false) {
     if (!isValidId(publicId)) {
       syncInterface();
       return;
     }
-    saveSelection(selectedIds.filter((selectedId) => selectedId !== publicId));
-  }
-
-  function removeSelectedId(publicId) {
-    const index = selectedIds.indexOf(publicId);
-    if (!isValidId(publicId) || index < 0) {
-      syncInterface();
-      return;
-    }
-    const publicIdToFocus = selectedIds[index + 1] || selectedIds[index - 1] || null;
     saveSelection(
       selectedIds.filter((selectedId) => selectedId !== publicId),
-      {publicId: publicIdToFocus},
+      null,
+      preserveEntries,
     );
   }
 
+  function removeSelectedId(publicId, entry) {
+    const index = selectedIds.indexOf(publicId);
+    if (!isValidId(publicId)) {
+      syncInterface();
+      return;
+    }
+    if (index < 0) {
+      entry?.remove();
+      syncInterface();
+      if (!document.querySelector("[data-selected-entry]")) {
+        refreshSelectedPreview();
+      }
+      return;
+    }
+    const publicIdToFocus = selectedIds[index + 1] || selectedIds[index - 1] || null;
+    const saved = saveSelection(
+      selectedIds.filter((selectedId) => selectedId !== publicId),
+      {publicId: publicIdToFocus},
+      true,
+    );
+    if (saved) {
+      entry?.remove();
+    }
+  }
+
   function clearSelection() {
-    saveSelection([], {publicId: null});
+    saveSelection([], {publicId: null}, true);
   }
 
   function formatSize(size) {
@@ -267,7 +292,145 @@
     target.innerHTML = '<div class="selected-preview-error" data-selected-preview-error role="alert" tabindex="-1"><p>Could not load the selection preview.</p></div>';
   }
 
-  async function refreshSelectedPreview() {
+  function createSelectedEmptyState() {
+    const emptyState = document.createElement("div");
+    emptyState.className = "catalog-results__message selected-empty";
+    emptyState.dataset.selectedEmpty = "";
+    emptyState.setAttribute("tabindex", "-1");
+    emptyState.innerHTML = "<h2>No books selected</h2><p>Select downloadable books from the catalog to build a ZIP.</p><p><a href=\"/\">Browse the catalog</a></p>";
+    return emptyState;
+  }
+
+  function replacePreviewHeader(currentContent, currentEntries, incomingContent) {
+    for (const child of [...currentContent.children]) {
+      if (child !== currentEntries) {
+        child.remove();
+      }
+    }
+    for (const child of incomingContent.children) {
+      if (!child.matches("[data-selected-entries], [data-selected-empty]")) {
+        currentContent.insertBefore(child.cloneNode(true), currentEntries);
+      }
+    }
+  }
+
+  function clearCollisionState(entry) {
+    entry.dataset.collision = "false";
+    entry.classList.remove("result-row--collision");
+    entry.querySelector("[data-collision-notice]")?.remove();
+  }
+
+  function updateSelectedEntry(entry, incoming) {
+    const control = entry.querySelector(":scope > [data-selection-control]");
+    entry.className = incoming.className;
+    entry.dataset.status = incoming.dataset.status;
+    entry.dataset.collision = incoming.dataset.collision;
+    for (const child of [...entry.children]) {
+      if (child !== control) {
+        child.remove();
+      }
+    }
+    for (const child of incoming.children) {
+      if (!child.matches("[data-selection-control]")) {
+        entry.append(child.cloneNode(true));
+      }
+    }
+  }
+
+  function showPreservedPreviewError(target, incomingContent = null) {
+    const currentContent = target.querySelector("#selected-preview-content");
+    const currentEntries = currentContent && currentContent.querySelector("[data-selected-entries]");
+    if (!currentContent || !currentEntries) {
+      showPreviewError(target);
+      return;
+    }
+    currentContent.dataset.selectedCount = "0";
+    currentContent.dataset.downloadableCount = "0";
+    currentContent.dataset.totalSize = "0";
+    for (const child of [...currentContent.children]) {
+      if (child !== currentEntries) {
+        child.remove();
+      }
+    }
+    let errorContent;
+    if (incomingContent) {
+      errorContent = incomingContent.cloneNode(true);
+      errorContent.removeAttribute("id");
+    } else {
+      errorContent = document.createElement("div");
+      errorContent.className = "selected-preview-error";
+      errorContent.dataset.selectedPreviewError = "";
+      errorContent.setAttribute("role", "alert");
+      errorContent.setAttribute("tabindex", "-1");
+      errorContent.innerHTML = "<p>Could not load the selection preview.</p>";
+    }
+    currentContent.insertBefore(errorContent, currentEntries);
+    currentContent.querySelectorAll("[data-selected-entry]").forEach(clearCollisionState);
+    if (!currentEntries.querySelector("[data-selected-entry]")) {
+      currentEntries.replaceWith(createSelectedEmptyState());
+    }
+  }
+
+  function mergeSelectedPreview(target, incomingContent) {
+    const currentContent = target.querySelector("#selected-preview-content");
+    const currentEntries = currentContent && currentContent.querySelector("[data-selected-entries]");
+    if (!currentContent || !currentEntries) {
+      return false;
+    }
+
+    const generationChanged =
+      currentContent.dataset.catalogGeneration !== incomingContent.dataset.catalogGeneration;
+    currentContent.dataset.selectedCount = incomingContent.dataset.selectedCount || "0";
+    currentContent.dataset.downloadableCount = incomingContent.dataset.downloadableCount || "0";
+    currentContent.dataset.totalSize = incomingContent.dataset.totalSize || "0";
+    currentContent.dataset.catalogGeneration = incomingContent.dataset.catalogGeneration || "";
+    replacePreviewHeader(currentContent, currentEntries, incomingContent);
+
+    const incomingEntries = new Map();
+    incomingContent.querySelectorAll("[data-selected-entry]").forEach((entry) => {
+      incomingEntries.set(entry.dataset.publicId, entry);
+    });
+    const includedIds = new Set(selectedIds);
+    currentEntries.querySelectorAll("[data-selected-entry]").forEach((entry) => {
+      const publicId = entry.dataset.publicId;
+      const incoming = incomingEntries.get(publicId);
+      clearCollisionState(entry);
+      if (!includedIds.has(publicId) || !incoming) {
+        return;
+      }
+      if (generationChanged) {
+        updateSelectedEntry(entry, incoming);
+      } else if (incoming.dataset.collision === "true") {
+        entry.dataset.collision = "true";
+        entry.classList.add("result-row--collision");
+        const collisionNotice = incoming.querySelector("[data-collision-notice]");
+        const body = entry.querySelector(".result-row__body");
+        if (collisionNotice && body) {
+          body.append(collisionNotice.cloneNode(true));
+        }
+      }
+      incomingEntries.delete(publicId);
+    });
+    incomingEntries.forEach((entry, publicId) => {
+      if (includedIds.has(publicId)) {
+        currentEntries.append(entry.cloneNode(true));
+      }
+    });
+    if (!currentEntries.querySelector("[data-selected-entry]")) {
+      const emptyState = incomingContent.querySelector("[data-selected-empty]");
+      currentEntries.replaceWith(
+        emptyState ? emptyState.cloneNode(true) : createSelectedEmptyState(),
+      );
+    }
+    syncCheckboxes(target);
+    return true;
+  }
+
+  function hasExcludedDisplayedEntries() {
+    return Boolean(document.querySelector('[data-selected-entry][data-included="false"]'));
+  }
+
+  async function refreshSelectedPreview({preserveEntries = false} = {}) {
     const page = document.querySelector("[data-selection-page]");
     if (!page) {
       return;
@@ -279,6 +442,7 @@
       return;
     }
 
+    const keepEntries = preserveEntries && Boolean(target.querySelector("[data-selected-entries]"));
     previewGeneration += 1;
     const requestGeneration = previewGeneration;
     if (previewController) {
@@ -287,7 +451,9 @@
     previewController = new AbortController();
     const requestIds = [...selectedIds];
     target.setAttribute("aria-busy", "true");
-    target.innerHTML = '<p class="selected-loading">Loading selection…</p>';
+    if (!keepEntries) {
+      target.innerHTML = '<p class="selected-loading">Loading selection…</p>';
+    }
     resetPreviewState(page);
     setPreviewStatus(page, "Loading preview…");
 
@@ -302,17 +468,35 @@
       if (requestGeneration !== previewGeneration) {
         return;
       }
-      target.innerHTML = markup;
-      const content = target.querySelector("#selected-preview-content");
-      if (!content) {
+      const template = document.createElement("template");
+      template.innerHTML = markup;
+      const incomingContent = template.content.querySelector("#selected-preview-content");
+      if (!incomingContent) {
         throw new Error("Invalid preview response");
       }
-      const successful = response.ok && !content.hasAttribute("data-selected-preview-error");
+      const successful =
+        response.ok && !incomingContent.hasAttribute("data-selected-preview-error");
       if (!successful) {
+        if (keepEntries) {
+          showPreservedPreviewError(target, incomingContent);
+        } else {
+          target.innerHTML = markup;
+        }
         resetPreviewState(page);
         setPreviewStatus(page, "Preview needs attention.", true);
         restorePreviewFocus(target, requestIds);
         return;
+      }
+
+      let content = incomingContent;
+      if (keepEntries) {
+        if (!mergeSelectedPreview(target, incomingContent)) {
+          throw new Error("Could not preserve selected entries");
+        }
+      } else {
+        target.innerHTML = markup;
+        content = target.querySelector("#selected-preview-content");
+        syncCheckboxes(target);
       }
       applySuccessfulPreviewState(page, content);
       setPreviewStatus(page, "");
@@ -325,7 +509,11 @@
         return;
       }
       resetPreviewState(page);
-      showPreviewError(target);
+      if (keepEntries) {
+        showPreservedPreviewError(target);
+      } else {
+        showPreviewError(target);
+      }
       setPreviewStatus(page, "Could not refresh the selection preview.", true);
       restorePreviewFocus(target, requestIds);
     } finally {
@@ -340,17 +528,18 @@
     if (!checkbox) {
       return;
     }
+    const preserveEntries = Boolean(checkbox.closest("[data-selected-entry]"));
     if (checkbox.checked) {
-      appendId(checkbox.dataset.publicId);
+      appendId(checkbox.dataset.publicId, preserveEntries);
     } else {
-      removeId(checkbox.dataset.publicId);
+      removeId(checkbox.dataset.publicId, preserveEntries);
     }
   }
 
   function handleClick(event) {
     const remove = event.target.closest("[data-selection-remove]");
     if (remove) {
-      removeSelectedId(remove.dataset.publicId);
+      removeSelectedId(remove.dataset.publicId, remove.closest("[data-selected-entry]"));
       return;
     }
     if (event.target.closest("[data-selection-clear]")) {
@@ -367,7 +556,7 @@
       pendingPreviewFocus = null;
     }
     syncInterface();
-    refreshSelectedPreview();
+    refreshSelectedPreview({preserveEntries: hasExcludedDisplayedEntries()});
   }
 
   function initialize() {
@@ -382,7 +571,9 @@
     window.addEventListener("storage", handleStorage);
     const preset = document.querySelector("[data-selected-preset]");
     if (preset) {
-      preset.addEventListener("change", refreshSelectedPreview);
+      preset.addEventListener("change", () => {
+        refreshSelectedPreview({preserveEntries: hasExcludedDisplayedEntries()});
+      });
     }
     refreshSelectedPreview();
   }

@@ -19,7 +19,8 @@
   <div id="selected-preview-content"
        data-selected-count="{{ manifest.entries|length }}"
        data-downloadable-count="{{ manifest.members|length }}"
-       data-total-size="{{ manifest.total_size }}">
+       data-total-size="{{ manifest.total_size }}"
+       data-catalog-generation="{{ manifest.generation_id if manifest.generation_id is not none else '' }}">
     <div class="selected-preview-summary" data-selected-summary tabindex="-1">
       <p><strong>{{ manifest.entries|length|integer }}</strong> selected · <strong>{{ manifest.members|length|integer }}</strong> downloadable · {{ manifest.total_size|filesize }}</p>
     </div>
@@ -45,6 +46,10 @@
                      data-public-id="{{ entry.public_id }}"
                      data-status="unknown"
                      data-collision="false">
+              <label class="selection-control" data-selection-control hidden>
+                <input type="checkbox" data-selection-checkbox data-public-id="{{ entry.public_id }}">
+                <span class="visually-hidden">Include unknown selection {{ entry.public_id }} in archive</span>
+              </label>
               <div class="book-tile book-tile--{{ (loop.index0 % 4) + 1 }}" aria-hidden="true">?</div>
               <div class="result-row__body">
                 <div class="result-row__heading">
