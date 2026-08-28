@@ -55,6 +55,22 @@ def test_implicit_layout_maps_unicode_metadata_and_physical_location() -> None:
     assert second.keywords is None
 
 
+def test_title_and_series_replace_em_dashes_with_en_dashes(tmp_path: Path) -> None:
+    line = _implicit_line(
+        AUTHOR="Writer\N{EM DASH}Name:",
+        TITLE="Title\N{EM DASH}Subtitle",
+        SERIES="Series\N{EM DASH}Part",
+    )
+    archive_path = _write_archive(tmp_path / "dashes.inpx", [("books.inp", line)])
+
+    with parse_inpx(archive_path) as records:
+        record = next(records)
+
+    assert record.title == "Title\N{EN DASH}Subtitle"
+    assert record.series == "Series\N{EN DASH}Part"
+    assert record.authors == ("Writer\N{EM DASH}Name",)
+
+
 def test_declared_layout_maps_by_normalized_name_and_preserves_unknown_fields() -> None:
     with parse_inpx(FIXTURES / "declared.inpx") as records:
         first, second = tuple(records)
