@@ -21,6 +21,7 @@ from sopds.acquisition.contracts import (
     AcquiredOriginal,
     AcquisitionCorruptError,
     AcquisitionNotFoundError,
+    AcquisitionSourceIOError,
     AcquisitionStoreShutdownError,
     SourceRevision,
 )
@@ -55,6 +56,7 @@ class _Catalog:
         self.detail_rating: int | None = None
         self.detail_keywords: str | None = None
         self.detail_libid: str | None = None
+        self.detail_downloadable = True
         self.available_filters = CatalogFilters(
             languages=(FilterOption("en", "en"),),
             genres=(FilterOption("sf", "Science fiction"),),
@@ -110,11 +112,12 @@ class _Catalog:
                     ),
                     availability=(
                         BookAvailability.HIDDEN
-                        if request.query == "hidden"
+                        if request.query in {"hidden", "hidden-unavailable"}
                         else BookAvailability.MISSED
                         if request.query == "missed"
                         else BookAvailability.ACTIVE
                     ),
+                    downloadable=request.query != "hidden-unavailable",
                 ),
             ),
             next_cursor="next-token" if request.cursor is None else None,
@@ -155,6 +158,7 @@ class _Catalog:
             rating=self.detail_rating,
             keywords=self.detail_keywords,
             availability=availability,
+            downloadable=self.detail_downloadable,
         )
 
     async def filters(self) -> CatalogFilters:
@@ -799,6 +803,21 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     )
 
 
+def test_unavailable_hidden_book_has_no_catalog_or_detail_download_action() -> None:
+    app, catalog, _ = _app()
+    catalog.detail_downloadable = False
+    with TestClient(app) as client:
+        results = client.get("/?q=hidden-unavailable&include_hidden=true")
+        detail = client.get("/books/public-1?include_hidden=true")
+
+    assert results.status_code == 200
+    assert 'class="availability-badge availability-badge--hidden">Hidden</span>' in results.text
+    assert 'class="result-row__download"' not in results.text
+    assert detail.status_code == 200
+    assert "Original file unavailable" in detail.text
+    assert 'href="/books/public-1/download"' not in detail.text
+
+
 def test_result_detail_link_preserves_exact_catalog_context() -> None:
     app, catalog, _ = _app()
     params = {
@@ -1081,6 +1100,8 @@ def test_original_download_headers_body_and_status_mappings(
         missing = client.get("/books/missing/download")
         acquisition.error = AcquisitionCorruptError()
         corrupt = client.get("/books/public-1/download")
+        acquisition.error = AcquisitionSourceIOError()
+        source_io = client.get("/books/public-1/download")
         acquisition.error = AcquisitionStoreShutdownError()
         shutdown = client.get("/books/public-1/download")
 
@@ -1094,9 +1115,11 @@ def test_original_download_headers_body_and_status_mappings(
     assert missing.status_code == 404
     assert "AcquisitionNotFoundError" not in missing.text
     assert corrupt.status_code == 500
+    assert source_io.status_code == 500
     assert shutdown.status_code == 503
     messages = [record.getMessage() for record in caplog.records]
     assert any("failure_type=AcquisitionCorruptError" in message for message in messages)
+    assert any("failure_type=AcquisitionSourceIOError" in message for message in messages)
     assert "public-1" not in " ".join(messages)
 
 

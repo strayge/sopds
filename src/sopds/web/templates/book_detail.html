@@ -69,7 +69,7 @@
       </section>
 
       <aside class="book-detail__download surface surface--raised" aria-label="Original file">
-        {% if book.availability.value == "missed" %}
+        {% if not book.downloadable or book.availability.value == "missed" %}
           <p class="book-detail__unavailable" role="status">Original file unavailable</p>
           <p class="muted">The catalog record remains available, but its original file is missing.</p>
         {% else %}

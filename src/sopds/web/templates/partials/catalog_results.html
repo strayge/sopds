@@ -53,7 +53,7 @@
           </li>
         </ul>
         <div class="result-row__actions">
-          {% if book.availability.value != "missed" %}<a class="result-row__download" href="/books/{{ book.public_id|urlencode }}/download">Download</a>{% endif %}
+          {% if book.downloadable and book.availability.value != "missed" %}<a class="result-row__download" href="/books/{{ book.public_id|urlencode }}/download">Download</a>{% endif %}
           <a class="result-row__action" href="/books/{{ book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">Open details</a>
         </div>
       </article>

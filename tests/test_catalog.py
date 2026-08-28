@@ -2,7 +2,7 @@
 
 import asyncio
 import base64
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -169,6 +169,20 @@ async def _seed(repository: CatalogRepository) -> None:
         original_format="azw3",
         hidden=True,
     )
+    hidden_unavailable = await Book.create(
+        using_db=connection,
+        id=104,
+        generation=active,
+        public_id="hidden-unavailable",
+        archive=unavailable,
+        member_filename="hidden-unavailable.fb2",
+        title="Hidden unavailable",
+        title_sort="hidden unavailable",
+        size=1,
+        language="zz",
+        original_format="fb2",
+        hidden=True,
+    )
     staged = await Book.create(
         using_db=connection,
         id=101,
@@ -185,6 +199,7 @@ async def _seed(repository: CatalogRepository) -> None:
     for book, generation_id in (
         (hidden, active.id),
         (deleted, active.id),
+        (hidden_unavailable, active.id),
         (staged, staging.id),
     ):
         await connection.execute_query(
@@ -284,7 +299,10 @@ async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Pat
         )
 
         target = await repository.acquisition_target("book-001")
+        expected_target = await repository.acquisition_target("book-001", expected_generation_id=1)
         assert target is not None
+        assert expected_target == target
+        assert await repository.acquisition_target("book-001", expected_generation_id=2) is None
         assert target.generation_id == 1
         assert target.archive_relative_path == "available.zip"
         assert target.member_filename == "book-001.fb2"
@@ -301,6 +319,114 @@ async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Pat
         activated = await repository.acquisition_target("staged")
         assert activated is not None
         assert activated.generation_id == 2
+        assert await repository.acquisition_target("staged", expected_generation_id=2) == activated
+        assert await repository.acquisition_target("staged", expected_generation_id=1) is None
+        assert await repository.acquisition_target("book-001", expected_generation_id=1) is None
+
+
+async def test_bulk_summaries_include_all_current_records_in_input_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _catalog(tmp_path / "bulk-summaries.sqlite3") as (catalog, repository):
+        await _seed(repository)
+        monkeypatch.setattr("sopds.db.repository.PUBLIC_ID_LOOKUP_BATCH_SIZE", 2)
+
+        batch = await catalog.bulk_summaries(
+            [
+                "deleted",
+                "unknown",
+                "hidden",
+                "book-001",
+                "hidden-unavailable",
+            ]
+        )
+
+        assert batch.generation_id == 1
+        assert [book.public_id for book in batch.books] == [
+            "deleted",
+            "hidden",
+            "book-001",
+            "hidden-unavailable",
+        ]
+        assert [book.availability for book in batch.books] == [
+            BookAvailability.HIDDEN,
+            BookAvailability.MISSED,
+            BookAvailability.ACTIVE,
+            BookAvailability.HIDDEN,
+        ]
+        assert [book.downloadable for book in batch.books] == [True, False, True, False]
+
+
+async def test_bulk_summaries_retry_one_activation_change(tmp_path: Path) -> None:
+    async with _catalog(tmp_path / "bulk-activation.sqlite3") as (catalog, repository):
+        await _seed(repository)
+        original_lookup = repository.summaries_by_public_ids
+        generation_ids: list[int] = []
+
+        async def activate_then_lookup(
+            generation_id: int,
+            public_ids: Sequence[str],
+        ) -> list[BookSummary]:
+            generation_ids.append(generation_id)
+            books = await original_lookup(generation_id, public_ids)
+            if generation_id == 1:
+                await (
+                    CatalogState.filter(id=1)
+                    .using_db(repository._connection)
+                    .update(active_generation_id=2)
+                )
+            return books
+
+        repository.summaries_by_public_ids = activate_then_lookup  # type: ignore[method-assign]
+
+        batch = await catalog.bulk_summaries(["book-001", "staged"])
+
+        assert generation_ids == [1, 2]
+        assert batch.generation_id == 2
+        assert [book.public_id for book in batch.books] == ["staged"]
+
+
+async def test_bulk_summaries_reject_repeated_activation_changes(tmp_path: Path) -> None:
+    async with _catalog(tmp_path / "bulk-repeated-activation.sqlite3") as (
+        catalog,
+        repository,
+    ):
+        await _seed(repository)
+        original_lookup = repository.summaries_by_public_ids
+        generation_ids: list[int] = []
+
+        async def change_activation_after_lookup(
+            generation_id: int,
+            public_ids: Sequence[str],
+        ) -> list[BookSummary]:
+            generation_ids.append(generation_id)
+            books = await original_lookup(generation_id, public_ids)
+            await (
+                CatalogState.filter(id=1)
+                .using_db(repository._connection)
+                .update(active_generation_id=2 if generation_id == 1 else 1)
+            )
+            return books
+
+        repository.summaries_by_public_ids = (  # type: ignore[method-assign]
+            change_activation_after_lookup
+        )
+
+        with pytest.raises(CatalogInputError, match="Catalog changed while loading"):
+            await catalog.bulk_summaries(["book-001", "staged"])
+
+        assert generation_ids == [1, 2]
+
+
+@pytest.mark.parametrize("public_id", ["", "x" * 65, "bad\x00id"])
+async def test_bulk_summaries_reject_invalid_public_ids(
+    tmp_path: Path,
+    public_id: str,
+) -> None:
+    async with _catalog(tmp_path / "bulk-invalid.sqlite3") as (catalog, _repository):
+        with pytest.raises(CatalogInputError, match="Invalid public book ID"):
+            await catalog.bulk_summaries([public_id])
 
 
 def test_normalization_and_safe_fts_terms() -> None:
@@ -383,9 +509,11 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         missed = await catalog.browse(CatalogRequest(query="hidden", include_missed=True))
         assert [book.public_id for book in missed.books] == ["hidden"]
         assert missed.books[0].availability is BookAvailability.MISSED
+        assert missed.books[0].downloadable is False
         deleted = await catalog.browse(CatalogRequest(query="deleted", include_hidden=True))
         assert [book.public_id for book in deleted.books] == ["deleted"]
         assert deleted.books[0].availability is BookAvailability.HIDDEN
+        assert deleted.books[0].downloadable is True
 
         assert [
             book.public_id for book in (await catalog.browse(CatalogRequest(language="ru"))).books
@@ -408,9 +536,15 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         missed_detail = await catalog.details("hidden", include_missed=True)
         assert missed_detail is not None
         assert missed_detail.availability is BookAvailability.MISSED
+        assert missed_detail.downloadable is False
         hidden_detail = await catalog.details("deleted", include_hidden=True)
         assert hidden_detail is not None
         assert hidden_detail.availability is BookAvailability.HIDDEN
+        assert hidden_detail.downloadable is True
+        hidden_unavailable_detail = await catalog.details("hidden-unavailable", include_hidden=True)
+        assert hidden_unavailable_detail is not None
+        assert hidden_unavailable_detail.availability is BookAvailability.HIDDEN
+        assert hidden_unavailable_detail.downloadable is False
         assert await catalog.details("staged", include_missed=True, include_hidden=True) is None
 
         filters = await catalog.filters()

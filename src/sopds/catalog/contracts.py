@@ -61,6 +61,7 @@ class BookSummary:
     keywords: str | None = None
     updated_at: datetime = datetime(1970, 1, 1, tzinfo=UTC)
     availability: BookAvailability = BookAvailability.ACTIVE
+    downloadable: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,13 @@ class BookDetail:
     rating: int | None
     keywords: str | None
     availability: BookAvailability = BookAvailability.ACTIVE
+    downloadable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogSummaryBatch:
+    generation_id: int | None
+    books: tuple[BookSummary, ...]
 
 
 @dataclass(frozen=True, slots=True)

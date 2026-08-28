@@ -1,5 +1,6 @@
 """Catalog persistence through Tortoise models and explicit FTS boundaries."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,6 +54,7 @@ from sopds.imports.status import (
 )
 
 DEFAULT_BATCH_SIZE = 2_000
+PUBLIC_ID_LOOKUP_BATCH_SIZE = 500
 
 
 class _Substring(Function):
@@ -890,15 +892,22 @@ class CatalogRepository:
     async def vacuum(self) -> None:
         await self._connection.execute_script("VACUUM")
 
-    async def acquisition_target(self, public_id: str) -> AcquisitionTarget | None:
+    async def acquisition_target(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> AcquisitionTarget | None:
         """Materialize all file coordinates from one active-generation query."""
+        query = Book.filter(
+            public_id=public_id,
+            archive__available=True,
+            generation__active_catalog_states__id=1,
+        )
+        if expected_generation_id is not None:
+            query = query.filter(generation_id=expected_generation_id)
         rows = await (
-            Book.filter(
-                public_id=public_id,
-                archive__available=True,
-                generation__active_catalog_states__id=1,
-            )
-            .using_db(self._connection)
+            query.using_db(self._connection)
             .limit(1)
             .values_list(
                 "generation_id",
@@ -1137,6 +1146,39 @@ class CatalogRepository:
         by_id = {int(book.id): self._summary(book, updated_at) for book in books}
         return [by_id[book_id] for book_id in book_ids if book_id in by_id]
 
+    async def summaries_by_public_ids(
+        self,
+        generation_id: int,
+        public_ids: Sequence[str],
+    ) -> list[BookSummary]:
+        if not public_ids:
+            return []
+        state = await (
+            CatalogState.filter(id=1, active_generation_id=generation_id)
+            .using_db(self._connection)
+            .values("updated_at")
+        )
+        if not state:
+            return []
+        updated_at = state[0]["updated_at"]
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=UTC)
+
+        by_public_id: dict[str, BookSummary] = {}
+        for offset in range(0, len(public_ids), PUBLIC_ID_LOOKUP_BATCH_SIZE):
+            chunk = public_ids[offset : offset + PUBLIC_ID_LOOKUP_BATCH_SIZE]
+            books = await self._hydrated_books(
+                Book.filter(
+                    Q(series_id=None) | Q(series__generation_id=generation_id),
+                    generation_id=generation_id,
+                    archive__generation_id=generation_id,
+                    public_id__in=chunk,
+                ).using_db(self._connection),
+                generation_id,
+            )
+            by_public_id.update((book.public_id, self._summary(book, updated_at)) for book in books)
+        return [by_public_id[public_id] for public_id in public_ids if public_id in by_public_id]
+
     async def detail(
         self,
         generation_id: int,
@@ -1181,6 +1223,7 @@ class CatalogRepository:
             rating=book.rating,
             keywords=book.keywords,
             availability=self._availability(book),
+            downloadable=book.archive.available,
         )
 
     async def _hydrated_books(self, query: QuerySet[Book], generation_id: int) -> list[Book]:
@@ -1231,6 +1274,7 @@ class CatalogRepository:
             keywords=book.keywords,
             updated_at=updated_at,
             availability=CatalogRepository._availability(book),
+            downloadable=book.archive.available,
         )
 
     @staticmethod

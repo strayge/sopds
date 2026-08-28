@@ -88,12 +88,24 @@ class _Acquisition:
         self.body = body
         self.streams: list[_BytesStream] = []
 
-    async def describe(self, public_id: str) -> OriginalDescription:
+    async def describe(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> OriginalDescription:
+        del expected_generation_id
         return OriginalDescription(
             public_id, "Unsafe / title", "FB2", len(self.body), self.revision
         )
 
-    async def acquire(self, public_id: str) -> AcquiredOriginal:
+    async def acquire(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> AcquiredOriginal:
+        del public_id, expected_generation_id
         stream = _BytesStream(self.body)
         self.streams.append(stream)
         return AcquiredOriginal(

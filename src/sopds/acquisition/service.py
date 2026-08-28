@@ -39,16 +39,32 @@ class AcquisitionService:
         self._repository = repository
         self._store = store
 
-    async def _target(self, public_id: str) -> AcquisitionTarget:
+    async def _target(
+        self,
+        public_id: str,
+        expected_generation_id: int | None,
+    ) -> AcquisitionTarget:
         if not public_id or len(public_id) > 64 or "\x00" in public_id:
             raise AcquisitionNotFoundError("Original is unavailable")
-        target = await self._repository.acquisition_target(public_id)
+        target = (
+            await self._repository.acquisition_target(public_id)
+            if expected_generation_id is None
+            else await self._repository.acquisition_target(
+                public_id,
+                expected_generation_id=expected_generation_id,
+            )
+        )
         if target is None:
             raise AcquisitionNotFoundError("Original is unavailable")
         return target
 
-    async def describe(self, public_id: str) -> OriginalDescription:
-        target = await self._target(public_id)
+    async def describe(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> OriginalDescription:
+        target = await self._target(public_id, expected_generation_id)
         revision = await self._store.describe(target)
         return OriginalDescription(
             public_id=target.public_id,
@@ -58,8 +74,13 @@ class AcquisitionService:
             revision=revision,
         )
 
-    async def acquire(self, public_id: str) -> AcquiredOriginal:
-        target = await self._target(public_id)
+    async def acquire(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> AcquiredOriginal:
+        target = await self._target(public_id, expected_generation_id)
         stream = await self._store.open(target)
         return AcquiredOriginal(
             filename=safe_download_filename(target.title, target.original_format),

@@ -49,6 +49,10 @@ class AcquisitionCorruptError(AcquisitionError):
     """The ZIP archive or selected member is corrupt or truncated."""
 
 
+class AcquisitionSourceIOError(AcquisitionError):
+    """The source archive could not be accessed because of an operational I/O failure."""
+
+
 class AcquisitionStoreShutdownError(AcquisitionError):
     """The original store is shutting down and rejects new work."""
 
@@ -97,7 +101,12 @@ class ObservedOriginalStream(AsyncByteStream, Protocol):
 
 
 class AcquisitionRepository(Protocol):
-    async def acquisition_target(self, public_id: str) -> AcquisitionTarget | None: ...
+    async def acquisition_target(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> AcquisitionTarget | None: ...
 
 
 class OriginalStore(Protocol):
@@ -119,6 +128,16 @@ class AcquiredOriginal:
 
 
 class Acquisition(Protocol):
-    async def describe(self, public_id: str) -> OriginalDescription: ...
+    async def describe(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> OriginalDescription: ...
 
-    async def acquire(self, public_id: str) -> AcquiredOriginal: ...
+    async def acquire(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> AcquiredOriginal: ...

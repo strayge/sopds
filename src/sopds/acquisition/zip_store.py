@@ -11,15 +11,17 @@ from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import IO, Any, BinaryIO, TypeVar
+from typing import IO, Any, BinaryIO, NoReturn, TypeVar, cast
 
 from sopds.acquisition.contracts import (
     AcquisitionAmbiguousMemberError,
     AcquisitionCorruptError,
     AcquisitionDirectoryMemberError,
     AcquisitionEncryptedMemberError,
+    AcquisitionError,
     AcquisitionMemberNotFoundError,
     AcquisitionSizeMismatchError,
+    AcquisitionSourceIOError,
     AcquisitionStoreShutdownError,
     AcquisitionSymlinkMemberError,
     AcquisitionTarget,
@@ -47,9 +49,164 @@ _CORRUPT_IO_ERRORS: tuple[type[BaseException], ...] = (
     EOFError,
     RuntimeError,
     ValueError,
-    OSError,
     *_DECODER_ERRORS,
 )
+
+
+class _SourceFileIOError(Exception):
+    """Mark failures raised by the archive file rather than a member decoder."""
+
+    def __init__(self, error: OSError) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+class _SourceFile:
+    """Keep filesystem failures distinguishable after the file enters zipfile."""
+
+    def __init__(self, source: BinaryIO) -> None:
+        self._source = source
+
+    @property
+    def closed(self) -> bool:
+        return self._source.closed
+
+    def read(self, size: int = -1) -> bytes:
+        try:
+            return self._source.read(size)
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
+
+    def _seek_before_start(self, offset: int, whence: int) -> bool:
+        try:
+            if whence == os.SEEK_SET:
+                return offset < 0
+            if whence == os.SEEK_CUR:
+                return self._source.tell() + offset < 0
+            if whence == os.SEEK_END:
+                return os.fstat(self._source.fileno()).st_size + offset < 0
+            return False
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if self._seek_before_start(offset, whence):
+            return self._source.seek(offset, whence)
+        try:
+            return self._source.seek(offset, whence)
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
+
+    def tell(self) -> int:
+        try:
+            return self._source.tell()
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
+
+    def fileno(self) -> int:
+        try:
+            return self._source.fileno()
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
+
+    def readable(self) -> bool:
+        try:
+            return self._source.readable()
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
+
+    def seekable(self) -> bool:
+        try:
+            return self._source.seekable()
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
+
+    def close(self) -> None:
+        try:
+            self._source.close()
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
+
+
+def _failure_priority(error: BaseException) -> int:
+    """Keep control-flow failures, then fatal failures, ahead of disappearance."""
+    if not isinstance(error, Exception):
+        return 2
+    if isinstance(error, _SourceFileIOError):
+        error = error.error
+    if isinstance(
+        error,
+        (
+            AcquisitionUnavailableError,
+            AcquisitionMemberNotFoundError,
+            FileNotFoundError,
+            NotADirectoryError,
+        ),
+    ):
+        return 0
+    return 1
+
+
+def _preferred_failure(primary: BaseException, cleanup: BaseException) -> BaseException:
+    if _failure_priority(cleanup) > _failure_priority(primary):
+        return cleanup
+    return primary
+
+
+def _close_resources(*resources: Any) -> None:
+    failure: BaseException | None = None
+    for resource in resources:
+        if resource is None:
+            continue
+        try:
+            resource.close()
+        except BaseException as error:
+            failure = error if failure is None else _preferred_failure(failure, error)
+    if failure is not None:
+        raise failure
+
+
+def _raise_acquisition_failure(
+    error: BaseException,
+    *,
+    unavailable_message: str,
+    source_io_message: str,
+    corrupt_message: str,
+    unmarked_os_error_is_corrupt: bool = False,
+) -> NoReturn:
+    if isinstance(error, (asyncio.CancelledError, AcquisitionError)):
+        raise error
+    if isinstance(error, _SourceFileIOError):
+        if isinstance(error.error, (FileNotFoundError, NotADirectoryError)):
+            raise AcquisitionUnavailableError(unavailable_message) from error.error
+        raise AcquisitionSourceIOError(source_io_message) from error.error
+    if isinstance(error, (FileNotFoundError, NotADirectoryError)):
+        raise AcquisitionUnavailableError(unavailable_message) from error
+    if isinstance(error, OSError):
+        if unmarked_os_error_is_corrupt:
+            raise AcquisitionCorruptError(corrupt_message) from error
+        raise AcquisitionSourceIOError(source_io_message) from error
+    if isinstance(error, _CORRUPT_IO_ERRORS):
+        raise AcquisitionCorruptError(corrupt_message) from error
+    raise error
+
+
+def _close_archive_after_failure(
+    primary: BaseException,
+    archive: zipfile.ZipFile | None,
+    source: BinaryIO | None,
+) -> NoReturn:
+    try:
+        _close_archive_source(archive, source)
+    except BaseException as cleanup:
+        primary = _preferred_failure(primary, cleanup)
+    _raise_acquisition_failure(
+        primary,
+        unavailable_message="Original archive is unavailable",
+        source_io_message="Original archive cannot be accessed",
+        corrupt_message="Original archive cannot be read",
+        unmarked_os_error_is_corrupt=True,
+    )
 
 
 class _OpenedMember:
@@ -69,13 +226,7 @@ class _OpenedMember:
         return self.member.read(CHUNK_SIZE)
 
     def close(self) -> None:
-        try:
-            self.member.close()
-        finally:
-            try:
-                self.archive.close()
-            finally:
-                self.source.close()
+        _close_resources(self.member, self.archive, self.source)
 
 
 def _validate_catalog_path(value: str) -> None:
@@ -160,17 +311,14 @@ def _verify_opened_path(source: BinaryIO, expected_path: Path, resolved_root: Pa
             raise AcquisitionUnsafePathError("Unsafe catalog path")
     except AcquisitionUnsafePathError:
         raise
-    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError) as error:
+    except (FileNotFoundError, NotADirectoryError) as error:
         raise AcquisitionUnavailableError("Original archive is unavailable") from error
+    except OSError as error:
+        raise AcquisitionSourceIOError("Original archive cannot be accessed") from error
 
 
 def _close_archive_source(archive: zipfile.ZipFile | None, source: BinaryIO | None) -> None:
-    try:
-        if archive is not None:
-            archive.close()
-    finally:
-        if source is not None:
-            source.close()
+    _close_resources(archive, source)
 
 
 def _inspect_member(
@@ -182,15 +330,19 @@ def _inspect_member(
     try:
         resolved_root = root.resolve(strict=True)
         archive_path = (resolved_root / target.archive_relative_path).resolve(strict=True)
-    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError) as error:
+    except (FileNotFoundError, NotADirectoryError) as error:
         raise AcquisitionUnavailableError("Original archive is unavailable") from error
+    except OSError as error:
+        raise AcquisitionSourceIOError("Original archive cannot be accessed") from error
     if not _beneath(archive_path, resolved_root):
         raise AcquisitionUnsafePathError("Unsafe catalog path")
 
     try:
-        source = _open_binary(archive_path)
-    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError) as error:
+        source = cast(BinaryIO, _SourceFile(_open_binary(archive_path)))
+    except (FileNotFoundError, NotADirectoryError) as error:
         raise AcquisitionUnavailableError("Original archive is unavailable") from error
+    except OSError as error:
+        raise AcquisitionSourceIOError("Original archive cannot be accessed") from error
 
     archive: zipfile.ZipFile | None = None
     try:
@@ -210,44 +362,33 @@ def _inspect_member(
             raise AcquisitionEncryptedMemberError("Original member is encrypted")
         if info.file_size != target.expected_size:
             raise AcquisitionSizeMismatchError("Original size does not match catalog metadata")
-        archive_stat = os.fstat(source.fileno())
+        try:
+            archive_stat = os.fstat(source.fileno())
+        except OSError as error:
+            raise _SourceFileIOError(error) from error
         revision = SourceRevision(
             archive_size=archive_stat.st_size,
             archive_mtime_ns=archive_stat.st_mtime_ns,
             member_crc32=info.CRC,
         )
         return archive, source, info, revision
-    except (
-        AcquisitionMemberNotFoundError,
-        AcquisitionAmbiguousMemberError,
-        AcquisitionDirectoryMemberError,
-        AcquisitionSymlinkMemberError,
-        AcquisitionEncryptedMemberError,
-        AcquisitionSizeMismatchError,
-        AcquisitionUnsafePathError,
-        AcquisitionUnavailableError,
-        AcquisitionCorruptError,
-    ):
-        with suppress(*_CORRUPT_IO_ERRORS):
-            _close_archive_source(archive, source)
-        raise
-    except asyncio.CancelledError:
-        with suppress(*_CORRUPT_IO_ERRORS):
-            _close_archive_source(archive, source)
-        raise
-    except _CORRUPT_IO_ERRORS as error:
-        with suppress(*_CORRUPT_IO_ERRORS):
-            _close_archive_source(archive, source)
-        raise AcquisitionCorruptError("Original archive cannot be read") from error
+    except BaseException as error:
+        _close_archive_after_failure(error, archive, source)
 
 
 def _describe_member(root: Path, target: AcquisitionTarget) -> SourceRevision:
     archive, source, _info, revision = _inspect_member(root, target)
     try:
-        return revision
-    finally:
-        with suppress(*_CORRUPT_IO_ERRORS):
-            _close_archive_source(archive, source)
+        _close_archive_source(archive, source)
+    except BaseException as error:
+        _raise_acquisition_failure(
+            error,
+            unavailable_message="Original archive is unavailable",
+            source_io_message="Original archive cannot be accessed",
+            corrupt_message="Original archive cannot be read",
+            unmarked_os_error_is_corrupt=True,
+        )
+    return revision
 
 
 def _open_member(root: Path, target: AcquisitionTarget) -> _OpenedMember:
@@ -255,14 +396,8 @@ def _open_member(root: Path, target: AcquisitionTarget) -> _OpenedMember:
     try:
         member = archive.open(info, mode="r")
         return _OpenedMember(archive, member, source, revision)
-    except asyncio.CancelledError:
-        with suppress(*_CORRUPT_IO_ERRORS):
-            _close_archive_source(archive, source)
-        raise
-    except _CORRUPT_IO_ERRORS as error:
-        with suppress(*_CORRUPT_IO_ERRORS):
-            _close_archive_source(archive, source)
-        raise AcquisitionCorruptError("Original archive cannot be read") from error
+    except BaseException as error:
+        _close_archive_after_failure(error, archive, source)
 
 
 class ZipOriginalStore:
@@ -274,44 +409,80 @@ class ZipOriginalStore:
         self._admission = asyncio.Semaphore(MAX_OPEN_STREAMS)
         self._state_lock = asyncio.Lock()
         self._streams: set[_ZipMemberStream] = set()
-        self._opening: set[asyncio.Task[Any]] = set()
+        self._opening: set[asyncio.Future[None]] = set()
         self._closing = False
         self._shutdown_task: asyncio.Task[None] | None = None
+
+    async def _finish_worker(self, future: asyncio.Future[_T]) -> _T:
+        """Consume a worker result despite repeated cancellation of its caller."""
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        return future.result()
 
     async def _worker(self, function: Callable[[], _T]) -> _T:
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(self._executor, function)
         try:
             return await asyncio.shield(future)
-        except asyncio.CancelledError:
-            # The worker must finish before its ZIP objects can be closed by another worker.
-            try:
-                await asyncio.shield(future)
-            except asyncio.CancelledError:
-                await future
-            raise
+        except asyncio.CancelledError as cancellation:
+            # ZIP objects cannot be closed until the worker using them has finished.
+            with suppress(BaseException):
+                await self._finish_worker(future)
+            raise cancellation
 
     async def _open_target(self, target: AcquisitionTarget) -> _OpenedMember:
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(self._executor, _open_member, self._root, target)
         try:
             return await asyncio.shield(future)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancellation:
             opened: _OpenedMember | None = None
-            with suppress(Exception):
-                try:
-                    opened = await asyncio.shield(future)
-                except asyncio.CancelledError:
-                    opened = await future
+            with suppress(BaseException):
+                opened = await self._finish_worker(future)
             if opened is not None:
-                await self._worker(opened.close)
-            raise
+                with suppress(BaseException):
+                    await self._worker(opened.close)
+            raise cancellation
 
-    async def _begin_open(self, task: asyncio.Task[Any]) -> None:
+    async def _wait_for_task(self, task: asyncio.Task[_T]) -> _T:
+        """Let owned bookkeeping finish before propagating caller cancellation."""
+        caller = asyncio.current_task()
+        initial_cancellations = caller.cancelling() if caller is not None else 0
+        cancellation: asyncio.CancelledError | None = None
+        while not task.done():
+            try:
+                await asyncio.wait((task,))
+            except asyncio.CancelledError as error:
+                cancellation = error
+        was_cancelled = cancellation is not None or (
+            caller is not None and caller.cancelling() > initial_cancellations
+        )
+        if was_cancelled:
+            with suppress(BaseException):
+                task.result()
+            if cancellation is not None:
+                raise cancellation
+            raise asyncio.CancelledError
+        return task.result()
+
+    async def _begin_open(self) -> asyncio.Future[None]:
         async with self._state_lock:
             if self._closing:
                 raise AcquisitionStoreShutdownError("Original store is shutting down")
-            self._opening.add(task)
+            token = asyncio.get_running_loop().create_future()
+            self._opening.add(token)
+            return token
+
+    async def _complete_opening(self, token: asyncio.Future[None]) -> None:
+        async with self._state_lock:
+            self._opening.discard(token)
+            if not token.done():
+                token.set_result(None)
 
     async def _register_stream(self, stream: _ZipMemberStream) -> bool:
         async with self._state_lock:
@@ -321,74 +492,82 @@ class ZipOriginalStore:
             return True
 
     async def _cleanup_failed_open(
-        self, stream: _ZipMemberStream | None, opened: _OpenedMember | None
+        self,
+        token: asyncio.Future[None] | None,
+        stream: _ZipMemberStream | None,
+        opened: _OpenedMember | None,
     ) -> None:
-        registered = False
-        if stream is not None:
-            async with self._state_lock:
-                registered = stream in self._streams
-        if registered and stream is not None:
-            await stream.aclose()
-        else:
+        failure: BaseException | None = None
+        try:
+            registered = False
+            if stream is not None:
+                async with self._state_lock:
+                    registered = stream in self._streams
+            if registered and stream is not None:
+                await stream.aclose()
+            else:
+                try:
+                    if opened is not None:
+                        await self._worker(opened.close)
+                finally:
+                    self._admission.release()
+        except BaseException as error:
+            failure = error
+        if token is not None:
             try:
-                if opened is not None:
-                    await self._worker(opened.close)
-            finally:
-                self._admission.release()
+                await self._complete_opening(token)
+            except BaseException as error:
+                failure = error if failure is None else _preferred_failure(failure, error)
+        if failure is not None:
+            raise failure
+
+    async def _finish_description(self, token: asyncio.Future[None] | None) -> None:
+        self._admission.release()
+        if token is not None:
+            await self._complete_opening(token)
 
     async def describe(self, target: AcquisitionTarget) -> SourceRevision:
         async with self._state_lock:
             if self._closing:
                 raise AcquisitionStoreShutdownError("Original store is shutting down")
         await self._admission.acquire()
-        task = asyncio.current_task()
-        if task is None:
-            self._admission.release()
-            raise RuntimeError("Acquisition must run inside an asyncio task")
+        token: asyncio.Future[None] | None = None
         try:
-            await self._begin_open(task)
+            token = await self._begin_open()
             return await self._worker(lambda: _describe_member(self._root, target))
         finally:
-            async with self._state_lock:
-                self._opening.discard(task)
-            self._admission.release()
+            cleanup = asyncio.create_task(self._finish_description(token))
+            await self._wait_for_task(cleanup)
 
     async def open(self, target: AcquisitionTarget) -> ObservedOriginalStream:
         async with self._state_lock:
             if self._closing:
                 raise AcquisitionStoreShutdownError("Original store is shutting down")
         await self._admission.acquire()
-        task = asyncio.current_task()
-        if task is None:
-            self._admission.release()
-            raise RuntimeError("Acquisition must run inside an asyncio task")
-        try:
-            await self._begin_open(task)
-        except BaseException:
-            self._admission.release()
-            raise
-
+        token: asyncio.Future[None] | None = None
         opened: _OpenedMember | None = None
         stream: _ZipMemberStream | None = None
         try:
+            token = await self._begin_open()
             opened = await self._open_target(target)
             stream = _ZipMemberStream(self, opened, target.expected_size)
             if not await self._register_stream(stream):
                 raise AcquisitionStoreShutdownError("Original store is shutting down")
+            handoff = asyncio.create_task(self._complete_opening(token))
+            await self._wait_for_task(handoff)
             return stream
-        except BaseException:
-            cleanup = asyncio.create_task(self._cleanup_failed_open(stream, opened))
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    continue
-            with suppress(Exception):
-                cleanup.result()
-            raise
-        finally:
-            async with self._state_lock:
-                self._opening.discard(task)
+        except BaseException as error:
+            cleanup = asyncio.create_task(self._cleanup_failed_open(token, stream, opened))
+            try:
+                await self._wait_for_task(cleanup)
+            except BaseException as cleanup_error:
+                error = _preferred_failure(error, cleanup_error)
+            _raise_acquisition_failure(
+                error,
+                unavailable_message="Original archive is unavailable",
+                source_io_message="Original archive cannot be accessed",
+                corrupt_message="Original member cannot be read",
+            )
 
     async def _released(self, stream: _ZipMemberStream) -> None:
         async with self._state_lock:
@@ -423,6 +602,8 @@ class _ZipMemberStream:
         self._expected_size = expected_size
         self._count = 0
         self._lock = asyncio.Lock()
+        self._cleanup_task: asyncio.Task[None] | None = None
+        self._physically_closed = False
         self._closed = False
         self._iterated = False
 
@@ -437,41 +618,78 @@ class _ZipMemberStream:
         return self._iterate()
 
     async def _iterate(self) -> AsyncIterator[bytes]:
+        failure: BaseException | None = None
         try:
             while True:
                 async with self._lock:
                     if self._closed:
-                        return
+                        break
                     try:
                         chunk = await self._store._worker(self._opened.read)
-                    except asyncio.CancelledError:
-                        raise
-                    except _CORRUPT_IO_ERRORS as error:
-                        raise AcquisitionCorruptError("Original member cannot be read") from error
+                    except BaseException as error:
+                        _raise_acquisition_failure(
+                            error,
+                            unavailable_message="Original archive is unavailable",
+                            source_io_message="Original archive cannot be accessed",
+                            corrupt_message="Original member cannot be read",
+                            unmarked_os_error_is_corrupt=True,
+                        )
                 if not chunk:
                     if self._count != self._expected_size:
                         raise AcquisitionSizeMismatchError(
                             "Streamed original size does not match catalog metadata"
                         )
-                    return
+                    break
                 self._count += len(chunk)
                 if self._count > self._expected_size:
                     raise AcquisitionSizeMismatchError("Streamed original exceeds catalog metadata")
                 yield chunk
-        finally:
+        except BaseException as error:
+            failure = error
+        try:
             await self.aclose()
+        except BaseException as cleanup_error:
+            if failure is None:
+                raise
+            failure = _preferred_failure(failure, cleanup_error)
+        if failure is not None:
+            raise failure.with_traceback(failure.__traceback__)
 
-    async def aclose(self) -> None:
+    async def _cleanup(self) -> None:
+        failure: BaseException | None = None
         async with self._lock:
             if self._closed:
                 return
-            self._closed = True
-            try:
+            if not self._physically_closed:
                 try:
-                    await self._store._worker(self._opened.close)
-                except asyncio.CancelledError:
-                    raise
-                except _CORRUPT_IO_ERRORS as error:
-                    raise AcquisitionCorruptError("Original member cannot be read") from error
-            finally:
+                    try:
+                        await self._store._worker(self._opened.close)
+                    except BaseException as error:
+                        _raise_acquisition_failure(
+                            error,
+                            unavailable_message="Original archive is unavailable",
+                            source_io_message="Original archive cannot be accessed",
+                            corrupt_message="Original member cannot be read",
+                            unmarked_os_error_is_corrupt=True,
+                        )
+                except BaseException as error:
+                    failure = error
+                finally:
+                    self._physically_closed = True
+            try:
                 await self._store._released(self)
+            except BaseException as error:
+                failure = error if failure is None else _preferred_failure(failure, error)
+            else:
+                self._closed = True
+        if failure is not None:
+            raise failure
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        task = self._cleanup_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._cleanup())
+            self._cleanup_task = task
+        await self._store._wait_for_task(task)

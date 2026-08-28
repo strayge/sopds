@@ -6,6 +6,7 @@ import binascii
 import hashlib
 import hmac
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC
 
@@ -19,6 +20,7 @@ from sopds.catalog.contracts import (
     CatalogSnapshot,
     CatalogStaleCursorError,
     CatalogStatistics,
+    CatalogSummaryBatch,
     NavigationItem,
     NavigationPage,
     NavigationRequest,
@@ -135,6 +137,26 @@ class CatalogService:
 
     async def snapshot(self) -> CatalogSnapshot:
         return await self._repository.active_snapshot()
+
+    async def bulk_summaries(self, public_ids: Sequence[str]) -> CatalogSummaryBatch:
+        for public_id in public_ids:
+            if not public_id or len(public_id) > 64 or "\x00" in public_id:
+                raise CatalogInputError("Invalid public book ID")
+        for attempt in range(2):
+            snapshot = await self._repository.active_snapshot()
+            generation_id = snapshot.generation_id
+            books = (
+                ()
+                if generation_id is None
+                else tuple(
+                    await self._repository.summaries_by_public_ids(generation_id, public_ids)
+                )
+            )
+            if await self._repository.active_snapshot() == snapshot:
+                return CatalogSummaryBatch(generation_id, books)
+            if attempt == 1:
+                raise CatalogInputError("Catalog changed while loading; retry the request")
+        raise AssertionError("Catalog summary lookup retry bound was bypassed")
 
     async def statistics(self) -> CatalogStatistics:
         for attempt in range(2):

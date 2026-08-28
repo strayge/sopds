@@ -25,6 +25,7 @@ from sopds.acquisition.contracts import (
     AcquisitionMemberNotFoundError,
     AcquisitionNotFoundError,
     AcquisitionSizeMismatchError,
+    AcquisitionSourceIOError,
     AcquisitionStoreShutdownError,
     AcquisitionSymlinkMemberError,
     AcquisitionUnavailableError,
@@ -624,6 +625,12 @@ async def download_original(request: Request, public_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Original is unavailable") from error
     except AcquisitionStoreShutdownError as error:
         raise HTTPException(status_code=503, detail="Service is shutting down") from error
+    except AcquisitionSourceIOError as error:
+        _LOGGER.warning(
+            f"Original download source I/O failed surface=web phase=open "
+            f"failure_type={type(error).__name__}"
+        )
+        raise HTTPException(status_code=500, detail="Original cannot be served") from error
     except _INTERNAL_ERRORS as error:
         _LOGGER.warning(
             f"Original download integrity check failed surface=web phase=open "
