@@ -73,8 +73,13 @@ def _format_kilobytes(size: int) -> str:
     return f"{(size + 512) // 1024} KB"
 
 
+def _format_integer(value: int) -> str:
+    return f"{value:,}".replace(",", " ")
+
+
 templates.env.filters["author_name"] = _format_author_name
 templates.env.filters["kilobytes"] = _format_kilobytes
+templates.env.filters["integer"] = _format_integer
 
 
 def _catalog(request: Request) -> Catalog:
@@ -153,13 +158,6 @@ def _catalog_url(path: str, catalog_request: CatalogRequest, cursor: str | None)
 
 def _catalog_filter_state_context(catalog_request: CatalogRequest) -> dict[str, object]:
     return {
-        "advanced_filter_count": sum(
-            (
-                catalog_request.genre is not None,
-                catalog_request.include_missed,
-                catalog_request.include_hidden,
-            )
-        ),
         "criteria_active": any(
             (
                 bool(catalog_request.query),

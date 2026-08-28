@@ -2,21 +2,13 @@
 
 {% block title %}Manage catalog · SOPDS{% endblock %}
 
+{% block page_heading %}Manage catalog{% endblock %}
+{% block page_subtitle %}Catalog operations{% endblock %}
+
 {% block content %}
-  <section class="management-introduction" aria-labelledby="management-heading">
-    <p class="management-introduction__eyebrow">Library operations</p>
-    <h1 id="management-heading">Manage catalog</h1>
-    <p class="management-introduction__copy">Review the current catalog generation, import source changes, and maintain the database.</p>
-  </section>
-
-  <aside class="management-trust-notice" role="note" aria-label="Access reminder">
-    <strong>Access reminder:</strong> SOPDS does not add authorization to this page. Keep the application restricted to a trusted network or an authenticating reverse proxy.
-  </aside>
-
   <section class="management-section" aria-labelledby="statistics-heading">
     <div class="management-section__heading">
-      <h2 id="statistics-heading">Catalog overview</h2>
-      <p>Counts and storage details for the active catalog generation.</p>
+      <h2 id="statistics-heading">Statistics</h2>
     </div>
     {% if statistics_context %}
       {% with statistics=statistics_context.statistics, database_size=statistics_context.database_size %}
@@ -24,67 +16,46 @@
       {% endwith %}
     {% else %}
       <div class="management-statistics-error" role="alert">
-        <h3>Catalog overview is temporarily unavailable</h3>
-        <p>The catalog changed while its statistics were loading. <a href="/manage">Refresh this management page</a> to try again.</p>
+        <h3>Statistics unavailable</h3>
+        <a href="/manage">Refresh</a>
       </div>
     {% endif %}
   </section>
 
-  <section class="management-section" aria-labelledby="imports-heading">
+  <section class="management-section" aria-labelledby="operations-heading">
     <div class="management-section__heading">
-      <h2 id="imports-heading">Imports</h2>
-      <p>Check the configured INPX source and publish catalog changes.</p>
+      <h2 id="operations-heading">Operations</h2>
     </div>
-    <div class="management-operation management-operation--primary">
-      <div>
-        <h3>Import source changes</h3>
-        <p>Use the routine import to process only changes detected in the configured source.</p>
-      </div>
+    <div class="management-operations" role="group" aria-label="Catalog operations">
       <button
+        class="button-secondary"
         type="button"
         hx-post="/imports"
         hx-target="#operation-status"
         hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
       >Import changes</button>
-    </div>
-
-    <h3 class="management-maintenance-heading">Maintenance operations</h3>
-    <div class="management-operations">
-      <article class="management-operation">
-        <div>
-          <h3>Force import</h3>
-          <p>Reprocess the source even when its fingerprint has not changed.</p>
-        </div>
-        <button
-          class="button-secondary"
-          type="button"
-          hx-post="/imports/force"
-          hx-target="#operation-status"
-          hx-confirm="Force a full catalog import?"
-          hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-        >Force import</button>
-      </article>
-      <article class="management-operation">
-        <div>
-          <h3>VACUUM database</h3>
-          <p>Reclaim unused SQLite storage. This is skipped while catalog work is running.</p>
-        </div>
-        <button
-          class="button-secondary"
-          type="button"
-          hx-post="/database/vacuum"
-          hx-target="#operation-status"
-          hx-confirm="VACUUM the catalog database now?"
-          hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-        >VACUUM database</button>
-      </article>
+      <button
+        class="button-secondary"
+        type="button"
+        hx-post="/imports/force"
+        hx-target="#operation-status"
+        hx-confirm="Force a full catalog import?"
+        hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
+      >Force import</button>
+      <button
+        class="button-secondary"
+        type="button"
+        hx-post="/database/vacuum"
+        hx-target="#operation-status"
+        hx-confirm="VACUUM the catalog database now?"
+        hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
+      >Vacuum database</button>
     </div>
   </section>
 
   <section class="management-section" aria-labelledby="operation-status-heading">
     <div class="management-section__heading">
       <h2 id="operation-status-heading">Import status</h2>
-      <p>Current or most recently completed import activity.</p>
     </div>
     <div id="operation-status" class="operation-status surface">
       {% include "partials/import_status.html" %}

@@ -60,6 +60,14 @@ class _Catalog:
             genres=(FilterOption("sf", "Science fiction"),),
             original_formats=(FilterOption("fb2", "fb2"),),
         )
+        self.statistics_value = CatalogStatistics(
+            total_books=20,
+            hidden_books=3,
+            missed_books=5,
+            active_books=12,
+            generation_activated_at=datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
+            database_size_bytes=2 * 1024 * 1024,
+        )
 
     async def browse(self, request: CatalogRequest) -> CatalogPage:
         self.requests.append(request)
@@ -94,10 +102,12 @@ class _Catalog:
                     authors=authors,
                     series="Series",
                     series_number="1",
-                    language="en",
+                    language=None if request.query == "sparse-metadata" else "en",
                     original_format="fb2",
                     size=126_000,
-                    published_date=date(2024, 2, 3),
+                    published_date=(
+                        None if request.query == "sparse-metadata" else date(2024, 2, 3)
+                    ),
                     availability=(
                         BookAvailability.HIDDEN
                         if request.query == "hidden"
@@ -159,14 +169,7 @@ class _Catalog:
         if self.statistics_failures_remaining:
             self.statistics_failures_remaining -= 1
             raise CatalogInputError("Catalog changed while loading; retry the request")
-        return CatalogStatistics(
-            total_books=20,
-            hidden_books=3,
-            missed_books=5,
-            active_books=12,
-            generation_activated_at=datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
-            database_size_bytes=2 * 1024 * 1024,
-        )
+        return self.statistics_value
 
 
 class _Stream:
@@ -249,6 +252,10 @@ def _status(
     run_id: int = 1,
     *,
     error_summary: str | None = None,
+    records_read: int = 3,
+    records_imported: int = 2,
+    records_deleted: int = 1,
+    records_rejected: int = 0,
 ) -> ImportStatus:
     return ImportStatus(
         run_id=run_id,
@@ -257,10 +264,10 @@ def _status(
         started_at=datetime(2025, 1, 1, tzinfo=UTC),
         finished_at=None if state is ImportState.RUNNING else datetime(2025, 1, 2, tzinfo=UTC),
         attempted_fingerprint=None,
-        records_read=3,
-        records_imported=2,
-        records_deleted=1,
-        records_rejected=0,
+        records_read=records_read,
+        records_imported=records_imported,
+        records_deleted=records_deleted,
+        records_rejected=records_rejected,
         error_summary=error_summary,
         generation_id=7,
     )
@@ -335,8 +342,9 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert 'hx-post="/imports"' not in page.text
     assert 'hx-post="/imports/force"' not in page.text
     assert 'hx-post="/database/vacuum"' not in page.text
-    assert '<details class="catalog-more-filters" open>' in page.text
-    assert "1 active" in page.text
+    assert "catalog-more-filters" not in page.text
+    assert "More filters" not in page.text
+    assert 'class="catalog-filter--genre" for="catalog-genre"' in page.text
     assert '<option value="sf" selected>Science fiction</option>' in page.text
     assert 'name="cursor"' not in page.text
     assert '<option value="title" selected>Title</option>' in page.text
@@ -359,7 +367,9 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert 'hx-post="/database/vacuum"' in management.text
     assert 'hx-confirm="Force a full catalog import?"' in management.text
     assert 'hx-confirm="VACUUM the catalog database now?"' in management.text
-    assert "trusted network or an authenticating reverse proxy" in management.text
+    assert "trusted network or an authenticating reverse proxy" not in management.text
+    assert "Access reminder" not in management.text
+    assert "management-trust-notice" not in management.text
     assert management.text.count('hx-target="#operation-status"') == 3
     assert management.text.count('hx-headers=\'{"X-CSRF-Token":"') == 3
     assert management.text.index('id="operation-status"') > management.text.index(
@@ -385,11 +395,26 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert "Next page" not in full_next.text
     assert 'role="status" aria-live="polite">Showing 1 book' in page.text
     assert 'class="book-tile book-tile--1" aria-hidden="true">A</div>' in page.text
-    assert ">FB2</li>" in page.text
-    assert page.text.index(">FB2</li>") < page.text.index(">en</li>")
-    assert page.text.index(">en</li>") < page.text.index(">2024-02-03</li>")
-    assert page.text.index(">2024-02-03</li>") < page.text.index(">123 KB</li>")
-    assert ">View book</a>" in page.text
+    metadata = re.search(
+        r'<ul class="result-metadata" aria-label="Book metadata">(.*?)</ul>',
+        page.text,
+        re.S,
+    )
+    assert metadata is not None
+    assert metadata.group(1).count('class="result-metadata__line"') == 2
+    assert metadata.group(1).count('class="result-metadata__separator"') == 2
+    assert metadata.group(1).index("Format:") < metadata.group(1).index("Language:")
+    assert metadata.group(1).index("Language:") < metadata.group(1).index("Published:")
+    assert metadata.group(1).index("Published:") < metadata.group(1).index("Size:")
+    assert "FB2" in metadata.group(1)
+    assert "EN" in metadata.group(1)
+    assert "2024-02-03" in metadata.group(1)
+    assert "123 KB" in metadata.group(1)
+    download_action = '<a class="result-row__download" href="/books/public-1/download">Download</a>'
+    detail_action = '<a class="result-row__action" href="/books/public-1'
+    assert download_action in page.text
+    assert ">Open details</a>" in page.text
+    assert page.text.index(download_action) < page.text.index(detail_action)
     assert fragment.status_code == 200
     assert fragment.headers["HX-Push-Url"] == (
         "/?q=book&search_field=author&language=en&genre=sf&original_format=&cursor="
@@ -425,7 +450,7 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert "<dt>File size</dt>" in detail.text
     assert "<dd>123 KB</dd>" in detail.text
     assert "Back to catalog" in detail.text
-    assert 'class="availability-badge availability-badge--active">Active</span>' in detail.text
+    assert "availability-badge--active" not in detail.text
     assert "Download original · FB2 · 123 KB" in detail.text
     assert 'href="/books/public-1/download"' in detail.text
     assert "Published" not in detail.text
@@ -444,6 +469,83 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
         genre="sf",
         original_format="fb2",
     )
+
+
+def test_manage_page_groups_counts_localizes_times_and_preserves_action_contracts() -> None:
+    imports = _Imports(
+        _status(
+            ImportState.SUCCEEDED,
+            records_read=702_461,
+            records_imported=589_111,
+            records_deleted=113_350,
+            records_rejected=1_234,
+        )
+    )
+    app, catalog, _ = _app(imports)
+    catalog.statistics_value = CatalogStatistics(
+        total_books=702_461,
+        active_books=589_111,
+        hidden_books=113_350,
+        missed_books=1_234,
+        generation_activated_at=datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
+        database_size_bytes=2 * 1024 * 1024,
+    )
+
+    with TestClient(app) as client:
+        management = client.get("/manage")
+        status_fragment = client.get("/imports/status")
+
+    assert management.status_code == 200
+    for label, value in (
+        ("Total books", "702 461"),
+        ("Active books", "589 111"),
+        ("Hidden books", "113 350"),
+        ("Missed books", "1 234"),
+        ("Imported", "589 111"),
+        ("Deleted", "113 350"),
+        ("Rejected", "1 234"),
+        ("Read", "702 461"),
+    ):
+        assert f"<dt>{label}</dt><dd>{value}</dd>" in management.text
+
+    assert '<time class="local-datetime" datetime="2025-01-02T03:04:05+00:00">' in management.text
+    assert '<time class="local-datetime" datetime="2025-01-02T00:00:00+00:00">' in management.text
+    assert 'class="local-datetime" datetime="2025-01-02T00:00:00+00:00"' in status_fragment.text
+
+    for target, label, confirmation in (
+        ("/imports", "Import changes", None),
+        ("/imports/force", "Force import", "Force a full catalog import?"),
+        ("/database/vacuum", "Vacuum database", "VACUUM the catalog database now?"),
+    ):
+        button = re.search(
+            rf'<button\b(?=[^>]*hx-post="{re.escape(target)}")[^>]*>'
+            rf"{re.escape(label)}</button>",
+            management.text,
+            re.S,
+        )
+        assert button is not None
+        assert 'hx-target="#operation-status"' in button.group(0)
+        assert 'hx-headers=\'{"X-CSRF-Token":"' in button.group(0)
+        assert f">{label}</button>" in button.group(0)
+        if confirmation is None:
+            assert "hx-confirm=" not in button.group(0)
+        else:
+            assert f'hx-confirm="{confirmation}"' in button.group(0)
+
+    for removed_copy in (
+        "Access reminder",
+        "trusted network",
+        "Counts and storage details",
+        "The catalog changed while its statistics were loading",
+        "Check the configured INPX source",
+        "process only changes detected",
+        "Reprocess the source",
+        "Reclaim unused SQLite storage",
+        "Current or most recently completed import activity",
+    ):
+        assert removed_copy not in management.text
+    assert management.text.count('class="management-section__heading"') == 3
+    assert 'class="management-operations" role="group"' in management.text
 
 
 def test_full_page_catalog_error_uses_shared_shell() -> None:
@@ -495,8 +597,10 @@ def test_htmx_catalog_validation_error_swaps_complete_form_and_updates_history()
     assert '<option value="fb2" selected>fb2</option>' in form
     assert 'name="include_missed" value="true" checked' in form
     assert 'name="include_hidden" value="true" checked' in form
-    assert '<details class="catalog-more-filters" open>' in form
-    assert "3 active" in form
+    assert "catalog-more-filters" not in form
+    assert "More filters" not in form
+    assert "Include missing" in form
+    assert "Include hidden" in form
     assert direct_fragment.status_code == 400
     assert "HX-Push-Url" not in direct_fragment.headers
     assert 'id="catalog-search-form"' not in direct_fragment.text
@@ -606,9 +710,13 @@ def test_htmx_catalog_response_replaces_complete_current_form_out_of_band() -> N
     assert "Series: Series" in form
     assert 'name="include_missed" value="true" checked' in form
     assert 'name="include_hidden" value="true" checked' in form
-    assert '<details class="catalog-more-filters" open>' in form
-    assert "3 active" in form
-    assert 'id="catalog-clear-action" class="catalog-clear" href="/">' in form
+    assert "catalog-more-filters" not in form
+    assert "Include missing" in form
+    assert "Include hidden" in form
+    assert (
+        'id="catalog-clear-action" class="catalog-clear" href="/" '
+        'aria-label="Clear search and filters">Clear all</a>' in form
+    )
     assert 'name="cursor"' not in form
 
 
@@ -660,8 +768,9 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     assert page.status_code == 200
     assert 'name="include_missed" value="true" checked' in page.text
     assert 'name="include_hidden" value="true" checked' in page.text
-    assert '<details class="catalog-more-filters" open>' in page.text
-    assert "2 active" in page.text
+    assert "catalog-more-filters" not in page.text
+    assert "Include missing" in page.text
+    assert "Include hidden" in page.text
     assert 'class="availability-badge availability-badge--hidden">Hidden</span>' in page.text
     detail_href = _detail_href(page.text)
     detail_query = parse_qs(urlsplit(detail_href).query)
@@ -673,6 +782,8 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     ]
     assert fragment.status_code == 200
     assert 'class="availability-badge availability-badge--missed">Missed</span>' in fragment.text
+    assert 'class="result-row__download"' not in fragment.text
+    assert ">Open details</a>" in fragment.text
     assert fragment.headers["HX-Push-Url"].endswith("&include_missed=true&include_hidden=true")
     assert (
         CatalogRequest(query="hidden", include_missed=True, include_hidden=True) in catalog.requests
@@ -825,7 +936,10 @@ def test_active_scopes_are_visible_preserved_and_removable_without_cursor() -> N
         in page.text
     )
     assert 'name="cursor"' not in page.text
-    assert 'class="catalog-clear" href="/">Clear search and filters</a>' in page.text
+    assert (
+        'class="catalog-clear" href="/" aria-label="Clear search and filters">Clear all</a>'
+        in page.text
+    )
 
 
 def test_long_author_lists_use_native_overflow_disclosure() -> None:
@@ -841,11 +955,81 @@ def test_long_author_lists_use_native_overflow_disclosure() -> None:
     assert "Third Author" in page.text
     assert '<details class="author-overflow">' in page.text
     assert "<summary>+2 more</summary>" in page.text
+    assert page.text.count('class="result-row__author-token"') == 5
+    assert re.search(
+        r'class="result-row__author-token"><a [^>]+>Тестов Тест</a>'
+        r'<span aria-hidden="true">,</span></span>',
+        page.text,
+    )
+    assert re.search(
+        r'class="result-row__author-token"><a [^>]+>Fourth Author</a>'
+        r'<span aria-hidden="true">,</span></span>',
+        page.text,
+    )
     assert "Fourth Author" in page.text
     assert "Fifth Author" in page.text
 
 
-def test_inline_catalog_actions_have_touch_sized_hit_areas() -> None:
+def test_catalog_metadata_groups_two_lines_without_dangling_separators() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        page = client.get("/?q=sparse-metadata")
+
+    assert page.status_code == 200
+    metadata = re.search(
+        r'<ul class="result-metadata" aria-label="Book metadata">(.*?)</ul>',
+        page.text,
+        re.S,
+    )
+    assert metadata is not None
+    assert metadata.group(1).count('class="result-metadata__line"') == 2
+    assert "Format:" in metadata.group(1)
+    assert "Size:" in metadata.group(1)
+    assert "Language:" not in metadata.group(1)
+    assert "Published:" not in metadata.group(1)
+    assert "result-metadata__separator" not in metadata.group(1)
+
+
+def test_utility_workspace_structure_keeps_catalog_and_management_separate() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        catalog = client.get("/?q=book")
+        management = client.get("/manage")
+
+    assert catalog.status_code == 200
+    assert catalog.text.index('<aside class="app-sidebar">') < catalog.text.index(
+        '<div class="workspace">'
+    )
+    assert catalog.text.index('<header class="workspace-header">') < catalog.text.index(
+        '<main id="main-content"'
+    )
+    assert ">Search catalog</h1>" in catalog.text
+    assert "catalog-introduction" not in catalog.text
+    assert 'id="catalog-search-form"\n  class="catalog-search"' in catalog.text
+    assert 'class="catalog-filter-toolbar" role="group" aria-label="Search options"' in catalog.text
+    assert 'class="catalog-filter--genre" for="catalog-genre"' in catalog.text
+    assert 'class="catalog-availability-filters" aria-label="Availability options"' in catalog.text
+    assert "catalog-more-filters" not in catalog.text
+    toolbar_start = catalog.text.index('<div class="catalog-filter-toolbar"')
+    form_end = catalog.text.index("</form>", toolbar_start)
+    assert toolbar_start < catalog.text.index('id="catalog-loading"') < form_end
+    assert toolbar_start < catalog.text.index('id="catalog-clear-action"') < form_end
+    assert "catalog-search__footer" not in catalog.text
+    assert re.search(
+        r'class="result-row__body">.*?</div>\s*<ul class="result-metadata"',
+        catalog.text,
+        re.S,
+    )
+    assert ">Open details</a>" in catalog.text
+    assert 'id="catalog-statistics"' not in catalog.text
+
+    assert management.status_code == 200
+    assert ">Manage catalog</h1>" in management.text
+    assert 'id="catalog-statistics"' in management.text
+    assert "management-introduction" not in management.text
+
+
+def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() -> None:
     app, _, _ = _app()
     with TestClient(app) as client:
         stylesheet = client.get("/static/css/app.css")
@@ -853,10 +1037,31 @@ def test_inline_catalog_actions_have_touch_sized_hit_areas() -> None:
     assert stylesheet.status_code == 200
     assert re.search(r"\.scope-chip a \{[^}]*min-height: 2\.75rem;", stylesheet.text, re.S)
     assert re.search(
-        r"\.author-overflow summary \{[^}]*min-height: 2\.75rem;",
+        r"\.author-overflow summary \{[^}]*min-height: 1rem;",
         stylesheet.text,
         re.S,
     )
+    assert re.search(
+        r"\.result-row__action,\s*\.result-row__download \{[^}]*min-height: 2\.125rem;",
+        stylesheet.text,
+        re.S,
+    )
+    coarse_rules = re.search(
+        r"@media \(pointer: coarse\) \{(.*?)\n\}",
+        stylesheet.text,
+        re.S,
+    )
+    assert coarse_rules is not None
+    for selector in (
+        ".catalog-quick-filters label",
+        ".catalog-availability-filters .checkbox",
+        ".catalog-clear",
+        ".author-overflow summary",
+        ".result-row__action",
+        ".result-row__download",
+    ):
+        assert selector in coarse_rules.group(1)
+    assert "min-height: 2.75rem;" in coarse_rules.group(1)
 
 
 def test_original_download_headers_body_and_status_mappings(
@@ -1012,7 +1217,7 @@ def test_manage_page_polls_while_active_import_has_no_persisted_status() -> None
     assert 'role="status"' in page.text
     assert "Catalog import is starting" in pending.text
     assert 'hx-get="/imports/status"' in pending.text
-    assert "2 imported" in started.text
+    assert "<dt>Imported</dt><dd>2</dd>" in started.text
 
 
 def test_manage_page_polls_past_terminal_status_during_new_import_startup() -> None:
@@ -1026,7 +1231,7 @@ def test_manage_page_polls_past_terminal_status_during_new_import_startup() -> N
     assert "Catalog import is starting" in management.text
     assert "Waiting for the import run" in management.text
     assert 'hx-get="/imports/status?after_run_id=7"' in management.text
-    assert "2 imported" not in management.text
+    assert "<dt>Imported</dt><dd>2</dd>" not in management.text
     assert "Completed" not in management.text
 
 
@@ -1039,8 +1244,8 @@ def test_manage_statistics_race_keeps_retryable_management_shell() -> None:
     assert management.status_code == 503
     assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
     assert 'role="alert"' in management.text
-    assert "Catalog overview is temporarily unavailable" in management.text
-    assert '<a href="/manage">Refresh this management page</a>' in management.text
+    assert "Statistics unavailable" in management.text
+    assert '<a href="/manage">Refresh</a>' in management.text
     assert 'hx-post="/imports"' in management.text
     assert 'hx-post="/imports/force"' in management.text
     assert 'hx-post="/database/vacuum"' in management.text
@@ -1083,7 +1288,7 @@ def test_import_status_polls_only_while_running() -> None:
     assert 'hx-trigger="every 2s"' in running.text
     assert 'class="import-status import-status--running"' in running.text
     assert 'role="status"' in running.text
-    assert "2 imported" in running.text
+    assert "<dt>Imported</dt><dd>2</dd>" in running.text
     assert 'hx-get="/imports/status"' not in terminal.text
     assert 'class="import-status import-status--succeeded"' in terminal.text
     assert "Completed" in terminal.text
@@ -1113,10 +1318,10 @@ def test_manual_import_requires_csrf_and_reports_current_run() -> None:
     assert forced.status_code == 202
     assert "Import check is starting" in accepted.text
     assert "Force import is starting" in forced.text
-    assert "2 imported" not in accepted.text
+    assert "<dt>Imported</dt><dd>2</dd>" not in accepted.text
     assert "after_run_id=1" in accepted.text
     assert "Waiting for the import run" in pending.text
-    assert "2 imported" in started.text
+    assert "<dt>Imported</dt><dd>2</dd>" in started.text
     assert "after_run_id=1" in started.text
     assert terminal.headers["HX-Trigger"] == "catalogChanged"
     assert already_running.status_code == 200

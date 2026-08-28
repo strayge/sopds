@@ -22,12 +22,12 @@
           {% if book.authors %}
             <div class="result-row__authors">
               <span class="visually-hidden">Authors:</span>
-              {% for author in book.authors[:3] %}<a href="/?author={{ author|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span>{% endif %}{% endfor %}
+              {% for author in book.authors[:3] %}<span class="result-row__author-token"><a href="/?author={{ author|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span>{% endif %}</span>{% endfor %}
               {% if book.authors|length > 3 %}
                 <details class="author-overflow">
                   <summary>+{{ book.authors|length - 3 }} more</summary>
                   <span class="author-overflow__links">
-                    {% for author in book.authors[3:] %}<a href="/?author={{ author|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span>{% endif %}{% endfor %}
+                    {% for author in book.authors[3:] %}<span class="result-row__author-token"><a href="/?author={{ author|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span>{% endif %}</span>{% endfor %}
                   </span>
                 </details>
               {% endif %}
@@ -41,14 +41,21 @@
             </p>
           {% endif %}
 
-          <ul class="result-metadata" aria-label="Book metadata">
-            <li><span class="visually-hidden">Format: </span>{{ book.original_format|upper }}</li>
-            {% if book.language %}<li><span class="visually-hidden">Language: </span>{{ book.language }}</li>{% endif %}
-            {% if book.published_date %}<li><span class="visually-hidden">Published: </span>{{ book.published_date }}</li>{% endif %}
-            <li><span class="visually-hidden">Size: </span>{{ book.size|kilobytes }}</li>
-          </ul>
         </div>
-        <a class="result-row__action" href="/books/{{ book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">View book</a>
+        <ul class="result-metadata" aria-label="Book metadata">
+          <li class="result-metadata__line">
+            <span><span class="visually-hidden">Format: </span>{{ book.original_format|upper }}</span>
+            {% if book.language %}<span class="result-metadata__separator" aria-hidden="true">·</span><span><span class="visually-hidden">Language: </span>{{ book.language|upper }}</span>{% endif %}
+          </li>
+          <li class="result-metadata__line">
+            {% if book.published_date %}<span><span class="visually-hidden">Published: </span>{{ book.published_date }}</span><span class="result-metadata__separator" aria-hidden="true">·</span>{% endif %}
+            <span><span class="visually-hidden">Size: </span>{{ book.size|kilobytes }}</span>
+          </li>
+        </ul>
+        <div class="result-row__actions">
+          {% if book.availability.value != "missed" %}<a class="result-row__download" href="/books/{{ book.public_id|urlencode }}/download">Download</a>{% endif %}
+          <a class="result-row__action" href="/books/{{ book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">Open details</a>
+        </div>
       </article>
     {% endfor %}
   </div>

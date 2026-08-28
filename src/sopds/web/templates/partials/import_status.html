@@ -10,11 +10,19 @@
     <p class="muted">Waiting for the import run to begin…</p>
   {% elif status %}
     <dl class="import-status__details">
-      <dt>Trigger</dt><dd>{{ status.trigger.value }}</dd>
-      <dt>State</dt><dd>{{ status.state.value }}</dd>
-      <dt>Records</dt><dd>{{ status.records_imported }} imported, {{ status.records_deleted }} deleted, {{ status.records_rejected }} rejected ({{ status.records_read }} read)</dd>
-      {% if status.error_summary %}<dt>Error</dt><dd class="error">{{ status.error_summary }}</dd>{% endif %}
-      {% if status.finished_at %}<dt>Completed</dt><dd>{{ status.finished_at }}</dd>{% endif %}
+      <div class="import-status__item"><dt>Trigger</dt><dd>{{ status.trigger.value }}</dd></div>
+      <div class="import-status__item"><dt>State</dt><dd>{{ status.state.value }}</dd></div>
+      <div class="import-status__item"><dt>Imported</dt><dd>{{ status.records_imported | integer }}</dd></div>
+      <div class="import-status__item"><dt>Deleted</dt><dd>{{ status.records_deleted | integer }}</dd></div>
+      <div class="import-status__item"><dt>Rejected</dt><dd>{{ status.records_rejected | integer }}</dd></div>
+      <div class="import-status__item"><dt>Read</dt><dd>{{ status.records_read | integer }}</dd></div>
+      {% if status.error_summary %}<div class="import-status__item import-status__item--wide"><dt>Error</dt><dd class="error">{{ status.error_summary }}</dd></div>{% endif %}
+      {% if status.finished_at %}
+        <div class="import-status__item import-status__item--wide">
+          <dt>Completed</dt>
+          <dd><time class="local-datetime" datetime="{{ status.finished_at.isoformat() }}">{{ status.finished_at }} UTC</time></dd>
+        </div>
+      {% endif %}
     </dl>
   {% else %}
     <p>No import has run yet.</p>

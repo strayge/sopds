@@ -2,6 +2,10 @@
 
 {% block title %}{{ book.title }} · SOPDS{% endblock %}
 
+{% block page_heading_class %} workspace-header__title--book{% endblock %}
+{% block page_heading %}{{ book.title }}{% endblock %}
+{% block page_subtitle %}Book details and original file{% endblock %}
+
 {% block content %}
   <article class="book-detail">
     <nav class="book-detail__breadcrumb" aria-label="Breadcrumb">
@@ -11,10 +15,11 @@
     <header class="book-detail__header">
       <div class="book-tile book-detail__tile book-tile--1" aria-hidden="true">{{ (book.title|trim|first)|upper }}</div>
       <div class="book-detail__introduction">
-        <div class="book-detail__title-row">
-          <h1>{{ book.title }}</h1>
-          <span class="availability-badge availability-badge--{{ book.availability.value }}">{{ book.availability.value|capitalize }}</span>
-        </div>
+        {% if book.availability.value != "active" %}
+          <div class="book-detail__title-row">
+            <span class="availability-badge availability-badge--{{ book.availability.value }}">{{ book.availability.value|capitalize }}</span>
+          </div>
+        {% endif %}
         {% if book.authors %}
           <p class="book-detail__authors">
             <span class="visually-hidden">Authors:</span>

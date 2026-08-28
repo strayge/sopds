@@ -127,6 +127,7 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
     assert "function localizeCatalogTimes(root)" in response.text
     assert 'addEventListener("htmx:afterSwap"' in response.text
     assert "localizeCatalogTimes(event.detail.elt || event.target)" in response.text
+    assert 'hourCycle: "h23"' in response.text
     assert "/static/css/app.css" in response.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
     assert "<style>" not in response.text
@@ -140,6 +141,7 @@ def test_shared_stylesheet_and_fonts_are_served_locally(
         "/static/fonts/Literata-SemiBold.woff2",
         "/static/fonts/IBMPlexSans-Regular.woff2",
         "/static/fonts/IBMPlexSans-SemiBold.woff2",
+        "/static/fonts/NotoSerif-SemiBold.woff2",
     )
     with TestClient(create_app(migrated_app_config)) as client:
         stylesheet = client.get("/static/css/app.css")
@@ -147,8 +149,11 @@ def test_shared_stylesheet_and_fonts_are_served_locally(
 
     assert stylesheet.status_code == 200
     assert stylesheet.headers["content-type"].startswith("text/css")
-    assert stylesheet.text.count("font-display: swap") == 3
+    assert stylesheet.text.count("font-display: swap") == 4
     assert all(path.rsplit("/", 1)[-1] in stylesheet.text for path in font_paths)
+    assert '--font-result-title: "Noto Serif", Georgia, serif;' in stylesheet.text
+    assert "IBM Plex Serif" not in stylesheet.text
+    assert "font-family: var(--font-result-title);" in stylesheet.text
     assert "http://" not in stylesheet.text
     assert "https://" not in stylesheet.text
     assert all(response.status_code == 200 for response in fonts)

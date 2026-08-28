@@ -2,13 +2,10 @@
 
 {% block title %}SOPDS catalog{% endblock %}
 
-{% block content %}
-  <section class="catalog-introduction" aria-labelledby="catalog-heading">
-    <p class="catalog-introduction__eyebrow">Your private library</p>
-    <h1 id="catalog-heading">Find your next book</h1>
-    <p class="catalog-introduction__copy">Search the catalog by title, author, or series, then open a book to view its details and original file.</p>
-  </section>
+{% block page_heading %}Search catalog{% endblock %}
+{% block page_subtitle %}Find books in your private library by title, author, or series.{% endblock %}
 
+{% block content %}
   {% include "partials/catalog_search_form.html" %}
 
   <section id="catalog-results" class="catalog-results" aria-label="Catalog results">

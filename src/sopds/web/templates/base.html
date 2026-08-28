@@ -12,8 +12,8 @@
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
-    <header class="site-header">
-      <div class="shell site-header__inner">
+    <div class="app-shell">
+      <aside class="app-sidebar">
         <a class="site-brand" href="/" aria-label="SOPDS catalog home">
           <span class="site-brand__name">SOPDS</span>
           <span class="site-brand__tagline">INPX-backed catalog</span>
@@ -23,19 +23,27 @@
           <a href="{{ opds_url }}">OPDS</a>
           <a href="/manage"{% if active_navigation == "manage" %} aria-current="page"{% endif %}>Manage</a>
         </nav>
-        <p
-          id="health"
-          class="health-status"
-          hx-get="/health-fragment"
-          hx-trigger="load, every 30s"
-          hx-swap="innerHTML"
-          aria-live="polite"
-        >Checking application health…</p>
+      </aside>
+      <div class="workspace">
+        <header class="workspace-header">
+          <div class="workspace-header__heading">
+            <h1 id="page-heading" class="workspace-header__title{% block page_heading_class %}{% endblock %}">{% block page_heading %}SOPDS catalog{% endblock %}</h1>
+            <p class="workspace-header__subtitle">{% block page_subtitle %}Browse your private library.{% endblock %}</p>
+          </div>
+          <p
+            id="health"
+            class="health-status"
+            hx-get="/health-fragment"
+            hx-trigger="load, every 30s"
+            hx-swap="innerHTML"
+            aria-live="polite"
+          >Checking application health…</p>
+        </header>
+        <main id="main-content" class="page-content" tabindex="-1" aria-labelledby="page-heading">
+          {% block content %}{% endblock %}
+        </main>
       </div>
-    </header>
-    <main id="main-content" class="shell page-content" tabindex="-1">
-      {% block content %}{% endblock %}
-    </main>
+    </div>
     <script>
       function localizeCatalogTimes(root) {
         root.querySelectorAll("time.local-datetime").forEach((element) => {
@@ -43,7 +51,8 @@
           if (!Number.isNaN(value.getTime())) {
             element.textContent = new Intl.DateTimeFormat(undefined, {
               dateStyle: "medium",
-              timeStyle: "medium"
+              timeStyle: "medium",
+              hourCycle: "h23"
             }).format(value);
             element.title = element.dateTime;
           }
