@@ -86,6 +86,55 @@ collapsed until the next useful branch. Authors with series are divided into
 series, standalone books, and all books; authors without series open their book
 list directly.
 
+## Selected-book ZIP downloads
+
+Downloadable catalog rows can be selected across searches and pages. SOPDS
+stores only the ordered public book IDs in browser `localStorage`; selections
+are local to that browser profile and origin. They are not cookies, accounts,
+or server-side state and do not synchronize to another browser or origin.
+
+Open `/selected` to review the current selection. The page requests a preview
+from `/selected/preview`, then submits a normal HTML form to
+`/selected/download`. The backend is stateless: preview and download each reload
+current catalog metadata and independently recompute the manifest and archive
+names. No preview result is trusted or persisted.
+
+The three built-in layouts use the first listed author, include the normalized
+original extension, and pad purely numeric series numbers to at least two
+digits. For a book by `Ava Reader` titled `First Tide` in `Harbor Cycle` number
+`1`, the exact examples are:
+
+- **Nested:** `Ava Reader/Harbor Cycle/01 - First Tide.fb2`
+- **Flatten:** `Ava Reader/Harbor Cycle 01 - First Tide.fb2`
+- **List:** `Ava Reader. Harbor Cycle 01 - First Tide.fb2`
+
+Books without a series omit the series and number. Portable sanitization can
+make otherwise different names equal; the preview automatically highlights all
+such collisions without displaying a generated path on every row, and the ZIP
+uses deterministic numeric suffixes such as ` (2)` before the extension.
+
+Unknown IDs and books whose originals are missed or otherwise unavailable stay
+visible and removable in the preview but are silently omitted from the ZIP.
+The archive contains no omission report. If every selection is omitted, SOPDS
+returns an error instead of an empty ZIP.
+
+Each request is limited to 10,000 unique IDs, 10,000,000,000 decimal bytes of
+catalog-reported eligible originals, and an 8 MiB (8,388,608-byte) request body.
+ZIP members are acquired and written sequentially to a seekable
+`TemporaryFile` in the operating system's configured temporary directory. That
+filesystem therefore needs room for each permitted 10 GB build. There is no
+concurrent-build limit; simultaneous requests can multiply temporary-space and
+I/O use, which is an accepted operational risk.
+
+A staged file is anonymous where the operating system supports that and is
+otherwise delete-on-close. Archive construction closes it on failure or
+cancellation before response ownership transfers. After a successful build,
+the streaming response explicitly closes its file after normal completion,
+send or stream failure, client disconnect, or cancellation. Process termination
+also closes the descriptor, so operating-system crash cleanup is sufficient.
+There is no archive cache, background job, or stale-file sweeper, and this
+feature adds no configuration keys or runtime dependencies.
+
 ## Telegram
 
 Authorized chats can:
