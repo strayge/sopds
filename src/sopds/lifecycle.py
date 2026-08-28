@@ -9,6 +9,7 @@ from time import perf_counter
 
 from fastapi import FastAPI
 
+from sopds.acquisition.archive import ArchiveService
 from sopds.acquisition.service import AcquisitionService
 from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.catalog.service import CatalogService
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 repository, ZipOriginalStore(config.catalog.archive_root)
             )
             resources.push_async_callback(_observed_cleanup, "acquisition", acquisition.shutdown)
+            archive = ArchiveService(catalog, acquisition)
             registry = ConverterRegistry()
             conversion_cache = ArtifactCache(
                 config.conversion.cache_dir, config.conversion.cache_ttl_seconds
@@ -61,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.import_coordinator = coordinator
             app.state.catalog = catalog
             app.state.acquisition = acquisition
+            app.state.archive = archive
             app.state.conversion = conversion
             app.state.converter_registry = registry
             telegram: TelegramRunner | None = None

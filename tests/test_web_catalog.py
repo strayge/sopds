@@ -2,6 +2,8 @@
 
 import asyncio
 import html
+import io
+import json
 import re
 import secrets
 from collections.abc import AsyncIterator
@@ -13,10 +15,21 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 from starlette.types import Message, Scope
 
+from sopds.acquisition.archive import (
+    ArchiveEntryStatus,
+    ArchiveLimitError,
+    ArchiveManifest,
+    ArchiveMember,
+    ArchiveNoDownloadsError,
+    ArchivePreviewEntry,
+    ArchiveRequest,
+    StagedArchive,
+)
 from sopds.acquisition.contracts import (
     AcquiredOriginal,
     AcquisitionCorruptError,
@@ -211,6 +224,62 @@ class _Acquisition:
         )
 
 
+class _Archive:
+    def __init__(self) -> None:
+        self.preview_requests: list[ArchiveRequest] = []
+        self.download_requests: list[ArchiveRequest] = []
+        self.preview_error: Exception | None = None
+        self.download_error: Exception | None = None
+        self.body = b"staged archive"
+        self.last_file: io.BytesIO | None = None
+
+    async def preview(self, request: ArchiveRequest) -> ArchiveManifest:
+        self.preview_requests.append(request)
+        if self.preview_error is not None:
+            raise self.preview_error
+        if not request.ids:
+            return ArchiveManifest(request, 7, (), (), 0)
+        summary = BookSummary(
+            public_id=request.ids[0],
+            title="Selected Book",
+            authors=("Reader,One,",),
+            series=None,
+            series_number=None,
+            language="en",
+            original_format="fb2",
+            size=321,
+        )
+        member = ArchiveMember(
+            summary.public_id,
+            summary,
+            "Reader One/Selected Book.fb2",
+            "Reader One/Selected Book.fb2",
+            collision=True,
+            collision_group="reader one/selected book.fb2",
+        )
+        entries = (
+            ArchivePreviewEntry(
+                summary.public_id,
+                summary,
+                ArchiveEntryStatus.DOWNLOADABLE,
+                collision=True,
+                collision_group=member.collision_group,
+            ),
+            *(
+                ArchivePreviewEntry(public_id, None, ArchiveEntryStatus.UNKNOWN)
+                for public_id in request.ids[1:]
+            ),
+        )
+        return ArchiveManifest(request, 7, entries, (member,), summary.size)
+
+    async def download(self, request: ArchiveRequest) -> StagedArchive:
+        self.download_requests.append(request)
+        if self.download_error is not None:
+            raise self.download_error
+        self.last_file = io.BytesIO(self.body)
+        return StagedArchive(self.last_file, len(self.body))
+
+
 class _Imports:
     def __init__(self, status: ImportStatus | None = None, *, active: bool = False) -> None:
         self.status = status
@@ -287,6 +356,7 @@ def _app(imports: _Imports | None = None) -> tuple[FastAPI, _Catalog, _Imports]:
     )
     app.state.import_coordinator = import_provider
     app.state.acquisition = _Acquisition()
+    app.state.archive = _Archive()
     app.state.csrf_token = secrets.token_urlsafe(32)
     static = Path(routes.__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static), name="static")
@@ -1087,6 +1157,406 @@ def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() 
     ):
         assert selector in coarse_rules.group(1)
     assert "min-height: 2.75rem;" in coarse_rules.group(1)
+
+
+def test_selected_page_preview_and_download_use_strict_matching_requests() -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+    payload = {"ids": ["public-1", "missing", "public-1"], "preset": "nested"}
+
+    with TestClient(app) as client:
+        page = client.get("/selected")
+        preview = client.post("/selected/preview", json=payload)
+        download = client.post(
+            "/selected/download",
+            data={"ids": json.dumps(payload["ids"]), "preset": payload["preset"]},
+        )
+
+    assert page.status_code == 200
+    assert '<a href="/selected" aria-current="page">Selected</a>' in page.text
+    assert 'action="/selected/download"' in page.text
+    assert "data-selected-preview-target" in page.text
+    assert "public-1" not in page.text
+    assert preview.status_code == 200
+    assert 'data-selected-count="2"' in preview.text
+    assert 'data-downloadable-count="1"' in preview.text
+    assert 'data-total-size="321"' in preview.text
+    assert 'data-status="downloadable"' in preview.text
+    assert 'data-status="unknown"' in preview.text
+    assert 'data-collision="true"' in preview.text
+    assert "Selected Book" in preview.text
+    assert "Archive name collision" in preview.text
+    assert download.status_code == 200
+    assert download.content == archive.body
+    assert download.headers["content-type"] == "application/zip"
+    assert download.headers["content-length"] == str(len(archive.body))
+    assert download.headers["x-content-type-options"] == "nosniff"
+    assert 'filename="selected-books.zip"' in download.headers["content-disposition"]
+    assert "filename*=UTF-8''selected-books.zip" in download.headers["content-disposition"]
+    assert archive.last_file is not None and archive.last_file.closed
+    assert archive.preview_requests == [ArchiveRequest(["public-1", "missing"], "nested")]
+    assert archive.download_requests == [ArchiveRequest(["public-1", "missing"], "nested")]
+    assert archive.preview_requests[0] is not archive.download_requests[0]
+
+
+@pytest.mark.parametrize(
+    ("body", "status_code"),
+    [
+        (b'[{"ids": [], "preset": "nested"}]', 422),
+        (b'{"ids": [], "preset": "nested", "extra": true}', 422),
+        (b'{"ids": []}', 422),
+        (b'{"ids": [], "ids": [], "preset": "nested"}', 400),
+        (b'{"ids": [}', 400),
+        (b"\xff", 400),
+    ],
+)
+def test_selected_preview_rejects_non_object_extra_missing_duplicate_and_malformed_json(
+    body: bytes,
+    status_code: int,
+) -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/preview",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == status_code
+    assert (
+        "Invalid archive request" in response.text
+        or "Invalid selected-books request" in response.text
+    )
+    assert len(response.content) < 1_000
+    assert app.state.archive.preview_requests == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "ids=%5B%22public-1%22%5D&preset=nested&extra=x",
+        "ids=%5B%22public-1%22%5D&ids=%5B%5D&preset=nested",
+        "ids=%5B%22public-1%22%5D",
+        "ids=%ZZ&preset=nested",
+        "ids=not-json&preset=nested",
+    ],
+)
+def test_selected_download_rejects_extra_duplicate_missing_and_malformed_form(
+    body: str,
+) -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/download",
+            content=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    assert response.status_code == 400
+    assert "Invalid selected-books request" in response.text
+    assert len(response.content) < 3_000
+    assert app.state.archive.download_requests == []
+
+
+def test_selected_json_and_form_apply_the_same_logical_validation() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        preview = client.post(
+            "/selected/preview",
+            json={"ids": ["public-1"], "preset": "unknown"},
+        )
+        download = client.post(
+            "/selected/download",
+            data={"ids": '["public-1"]', "preset": "unknown"},
+        )
+        wrong_preview_type = client.post(
+            "/selected/preview",
+            content=b'{"ids": [], "preset": "nested"}',
+            headers={"Content-Type": "text/plain"},
+        )
+        wrong_download_type = client.post(
+            "/selected/download",
+            content=b"ids=%5B%5D&preset=nested",
+            headers={"Content-Type": "text/plain"},
+        )
+
+    assert preview.status_code == download.status_code == 422
+    assert "Invalid archive preset" in preview.text
+    assert "Invalid archive preset" in download.text
+    assert wrong_preview_type.status_code == wrong_download_type.status_code == 400
+
+
+def test_selected_routes_stop_oversized_bodies_before_decoding() -> None:
+    app, _, _ = _app()
+    oversized = b"x" * (8_388_608 + 1)
+    with TestClient(app) as client:
+        preview = client.post(
+            "/selected/preview",
+            content=oversized,
+            headers={"Content-Type": "application/json"},
+        )
+        download = client.post(
+            "/selected/download",
+            content=oversized,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    assert preview.status_code == download.status_code == 413
+    assert "Selected-books request is too large" in preview.text
+    assert "Selected-books request is too large" in download.text
+    assert app.state.archive.preview_requests == []
+    assert app.state.archive.download_requests == []
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code"),
+    [
+        (ArchiveLimitError("Too many selected books"), 413),
+        (ArchiveNoDownloadsError("No selected books are available for download"), 422),
+        (CatalogInputError("catalog detail that must not be reflected"), 422),
+        (AcquisitionStoreShutdownError(), 503),
+        (AcquisitionSourceIOError("/private/source.zip"), 500),
+        (RuntimeError("/private/unexpected.zip"), 500),
+    ],
+)
+def test_selected_download_status_mappings_are_bounded_and_path_free(
+    error: Exception,
+    status_code: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+    archive.download_error = error
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/download",
+            data={"ids": '["secret-public-id"]', "preset": "nested"},
+        )
+
+    assert response.status_code == status_code
+    assert len(response.content) < 3_000
+    assert "/private/" not in response.text
+    assert "secret-public-id" not in response.text
+    assert "/private/" not in caplog.text
+    assert "secret-public-id" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code"),
+    [
+        (ArchiveLimitError("Selected books exceed the source-size limit"), 413),
+        (CatalogInputError("catalog detail that must not be reflected"), 422),
+        (RuntimeError("/private/catalog.sqlite"), 500),
+    ],
+)
+def test_selected_preview_status_mappings_are_bounded_and_path_free(
+    error: Exception,
+    status_code: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+    archive.preview_error = error
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/preview",
+            json={"ids": ["secret-public-id"], "preset": "nested"},
+        )
+
+    assert response.status_code == status_code
+    assert len(response.content) < 1_000
+    assert "/private/" not in response.text
+    assert "secret-public-id" not in response.text
+    assert "/private/" not in caplog.text
+    assert "secret-public-id" not in caplog.text
+
+
+def _archive_response_scope(*, spec_version: str = "2.4") -> Scope:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/selected/download",
+        "raw_path": b"/selected/download",
+        "query_string": b"",
+        "headers": [],
+        "client": None,
+        "server": None,
+    }
+
+
+async def test_owned_staged_archive_response_closes_normally() -> None:
+    file = io.BytesIO(b"archive")
+    response = routes._OwnedStagedArchiveResponse(StagedArchive(file, 7), {})
+    messages: list[Message] = []
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    await response(_archive_response_scope(), receive, send)
+
+    assert file.closed
+    assert (
+        b"".join(
+            message.get("body", b"")
+            for message in messages
+            if message["type"] == "http.response.body"
+        )
+        == b"archive"
+    )
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("send failed"), asyncio.CancelledError()])
+async def test_owned_staged_archive_response_closes_on_send_failure(
+    failure: BaseException,
+) -> None:
+    file = io.BytesIO(b"archive")
+    response = routes._OwnedStagedArchiveResponse(StagedArchive(file, 7), {})
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(_message: Message) -> None:
+        raise failure
+
+    with pytest.raises(type(failure)):
+        await response(_archive_response_scope(), receive, send)
+
+    assert file.closed
+
+
+async def test_owned_staged_archive_response_preserves_cancellation_during_failure_cleanup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+
+    class DelayedCloseStagedArchive(StagedArchive):
+        @override
+        async def aclose(self) -> None:
+            cleanup_started.set()
+            await cleanup_release.wait()
+            await super().aclose()
+
+    file = io.BytesIO(b"archive")
+    staged = DelayedCloseStagedArchive(file, 7)
+    response = routes._OwnedStagedArchiveResponse(staged, {})
+    failure = RuntimeError("send failed")
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(_message: Message) -> None:
+        raise failure
+
+    sending = asyncio.create_task(response(_archive_response_scope(), receive, send))
+    await cleanup_started.wait()
+    sending.cancel()
+    await asyncio.sleep(0)
+    cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await sending
+
+    assert raised.value.__cause__ is failure
+    assert file.closed
+    assert "failure_type=RuntimeError" in caplog.text
+
+
+async def test_owned_staged_archive_response_closes_on_iteration_failure() -> None:
+    class FailingReadFile(io.BytesIO):
+        @override
+        def read(self, _size: int | None = -1) -> bytes:
+            raise RuntimeError("read failed")
+
+    file = FailingReadFile(b"archive")
+    response = routes._OwnedStagedArchiveResponse(StagedArchive(file, 7), {})
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(_message: Message) -> None:
+        return None
+
+    with pytest.raises(RuntimeError, match="read failed"):
+        await response(_archive_response_scope(), receive, send)
+
+    assert file.closed
+
+
+async def test_owned_staged_archive_response_closes_on_disconnect() -> None:
+    file = io.BytesIO(b"archive")
+    response = routes._OwnedStagedArchiveResponse(StagedArchive(file, 7), {})
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(_message: Message) -> None:
+        await asyncio.sleep(0)
+
+    await response(_archive_response_scope(spec_version="2.3"), receive, send)
+
+    assert file.closed
+
+
+async def test_owned_staged_archive_response_closes_on_cancellation() -> None:
+    file = io.BytesIO(b"archive")
+    response = routes._OwnedStagedArchiveResponse(StagedArchive(file, 7), {})
+    body_send_started = asyncio.Event()
+
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.body":
+            body_send_started.set()
+            await asyncio.Event().wait()
+
+    sending = asyncio.create_task(response(_archive_response_scope(), receive, send))
+    await body_send_started.wait()
+    sending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sending
+
+    assert file.closed
+
+
+def test_selected_download_closes_staged_archive_if_response_creation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+
+    def fail_response(_staged: StagedArchive, _headers: dict[str, str]) -> Response:
+        raise RuntimeError("response failed")
+
+    monkeypatch.setattr(routes, "_OwnedStagedArchiveResponse", fail_response)
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/download",
+            data={"ids": '["public-1"]', "preset": "nested"},
+        )
+
+    assert response.status_code == 500
+    assert archive.last_file is not None and archive.last_file.closed
+
+
+def test_book_detail_accepts_exact_selected_return_url() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        selected = client.get("/books/public-1", params={"return_to": "/selected"})
+        selected_query = client.get(
+            "/books/public-1", params={"return_to": "/selected?unexpected=true"}
+        )
+
+    assert _link_href(selected.text, "detail-back-link") == "/selected"
+    assert "Back to results" in selected.text
+    assert _link_href(selected_query.text, "detail-back-link") == "/"
 
 
 def test_original_download_headers_body_and_status_mappings(

@@ -1,19 +1,29 @@
 """Server-rendered catalog and operational status routes."""
 
 import asyncio
+import json
 import logging
 import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal, cast, override
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from starlette.requests import ClientDisconnect
 from starlette.types import Message, Receive, Scope, Send
 
+from sopds.acquisition.archive import (
+    ArchiveError,
+    ArchiveInputError,
+    ArchiveLimitError,
+    ArchiveRequest,
+    ArchiveService,
+    StagedArchive,
+)
 from sopds.acquisition.contracts import (
     AcquiredOriginal,
     Acquisition,
@@ -47,6 +57,19 @@ router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _LOGGER = logging.getLogger(__name__)
 _WEB_PAGE_SIZE = 200
+_MAX_SELECTED_BODY_BYTES = 8_388_608
+_SELECTED_ARCHIVE_FILENAME = "selected-books.zip"
+_PUBLIC_ARCHIVE_INPUT_MESSAGES = frozenset(
+    {
+        "Invalid archive preset",
+        "Invalid archive request",
+        "Invalid selected book IDs",
+        "Invalid public book ID",
+        "Too many selected books",
+        "Selected books exceed the source-size limit",
+        "No selected books are available for download",
+    }
+)
 _NOT_FOUND_ERRORS = (
     AcquisitionNotFoundError,
     AcquisitionUnavailableError,
@@ -96,10 +119,14 @@ def _acquisition(request: Request) -> Acquisition:
     return cast(Acquisition, request.app.state.acquisition)
 
 
+def _archive(request: Request) -> ArchiveService:
+    return cast(ArchiveService, request.app.state.archive)
+
+
 def _shell_context(
     request: Request,
     *,
-    active_navigation: Literal["catalog", "manage"],
+    active_navigation: Literal["catalog", "selected", "manage"],
 ) -> dict[str, object]:
     config = getattr(request.app.state, "config", None)
     opds_url = (
@@ -292,7 +319,11 @@ def _validated_return_url(value: str | None) -> str | None:
         parsed = urlsplit(value)
     except ValueError:
         return None
-    if parsed.scheme or parsed.netloc or parsed.path != "/" or parsed.fragment:
+    if parsed.scheme or parsed.netloc or parsed.fragment:
+        return None
+    if parsed.path == "/selected":
+        return value if value == "/selected" else None
+    if parsed.path != "/":
         return None
     return value
 
@@ -400,6 +431,353 @@ async def index(
                 "message": str(error),
             },
             status_code=400,
+        )
+
+
+class _SelectedBodyError(ValueError):
+    """Reject transport syntax without reflecting submitted values."""
+
+
+class _SelectedBodyTooLargeError(_SelectedBodyError):
+    """Stop consuming a selected-books request as soon as it exceeds its bound."""
+
+
+async def _read_selected_body(request: Request) -> bytes:
+    body = bytearray()
+    try:
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > _MAX_SELECTED_BODY_BYTES:
+                raise _SelectedBodyTooLargeError
+            body.extend(chunk)
+    except ClientDisconnect as error:
+        raise _SelectedBodyError from error
+    return bytes(body)
+
+
+def _media_type(request: Request) -> str:
+    return request.headers.get("content-type", "").partition(";")[0].strip().casefold()
+
+
+def _reject_json_constant(_value: str) -> object:
+    raise ValueError
+
+
+def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+
+
+async def _json_archive_request(request: Request) -> ArchiveRequest:
+    if _media_type(request) != "application/json":
+        raise _SelectedBodyError
+    body = await _read_selected_body(request)
+    try:
+        text = body.decode("utf-8", errors="strict")
+        value = json.loads(
+            text,
+            object_pairs_hook=_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
+        raise _SelectedBodyError from error
+    return ArchiveRequest.from_input(value)
+
+
+def _validate_form_percent_encoding(value: str) -> None:
+    hexadecimal = frozenset("0123456789abcdefABCDEF")
+    for index, character in enumerate(value):
+        if character == "%" and (
+            index + 2 >= len(value)
+            or value[index + 1] not in hexadecimal
+            or value[index + 2] not in hexadecimal
+        ):
+            raise _SelectedBodyError
+
+
+async def _form_archive_request(request: Request) -> ArchiveRequest:
+    if _media_type(request) != "application/x-www-form-urlencoded":
+        raise _SelectedBodyError
+    body = await _read_selected_body(request)
+    try:
+        encoded = body.decode("ascii", errors="strict")
+        _validate_form_percent_encoding(encoded)
+        pairs = parse_qsl(
+            encoded,
+            keep_blank_values=True,
+            strict_parsing=True,
+            encoding="utf-8",
+            errors="strict",
+            max_num_fields=3,
+        )
+    except (UnicodeDecodeError, ValueError) as error:
+        raise _SelectedBodyError from error
+    if len(pairs) != 2 or {name for name, _value in pairs} != {"ids", "preset"}:
+        raise _SelectedBodyError
+    fields = dict(pairs)
+    try:
+        ids = json.loads(fields["ids"], parse_constant=_reject_json_constant)
+    except (json.JSONDecodeError, ValueError, RecursionError) as error:
+        raise _SelectedBodyError from error
+    return ArchiveRequest.from_input({"ids": ids, "preset": fields["preset"]})
+
+
+def _selected_error_response(
+    request: Request,
+    *,
+    message: str,
+    status_code: int,
+    fragment: bool,
+) -> Response:
+    if fragment:
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/selected_preview.html",
+            context={"manifest": None, "message": message},
+            status_code=status_code,
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="selected_error.html",
+        context={
+            **_shell_context(request, active_navigation="selected"),
+            "message": message,
+        },
+        status_code=status_code,
+    )
+
+
+def _selected_transport_error(
+    request: Request, error: _SelectedBodyError, *, fragment: bool
+) -> Response:
+    if isinstance(error, _SelectedBodyTooLargeError):
+        return _selected_error_response(
+            request,
+            message="Selected-books request is too large",
+            status_code=413,
+            fragment=fragment,
+        )
+    return _selected_error_response(
+        request,
+        message="Invalid selected-books request",
+        status_code=400,
+        fragment=fragment,
+    )
+
+
+def _selected_input_error(
+    request: Request, error: ArchiveInputError, *, fragment: bool
+) -> Response:
+    status_code = 413 if isinstance(error, ArchiveLimitError) else 422
+    detail = str(error)
+    message = (
+        detail if detail in _PUBLIC_ARCHIVE_INPUT_MESSAGES else "Invalid selected-books request"
+    )
+    return _selected_error_response(
+        request,
+        message=message,
+        status_code=status_code,
+        fragment=fragment,
+    )
+
+
+@router.get("/selected", response_class=HTMLResponse)
+async def selected(request: Request) -> Response:
+    return templates.TemplateResponse(
+        request=request,
+        name="selected.html",
+        context=_shell_context(request, active_navigation="selected"),
+    )
+
+
+@router.post("/selected/preview", response_class=HTMLResponse)
+async def selected_preview(request: Request) -> Response:
+    try:
+        archive_request = await _json_archive_request(request)
+    except _SelectedBodyError as error:
+        return _selected_transport_error(request, error, fragment=True)
+    except ArchiveInputError as error:
+        return _selected_input_error(request, error, fragment=True)
+
+    try:
+        manifest = await _archive(request).preview(archive_request)
+    except ArchiveInputError as error:
+        return _selected_input_error(request, error, fragment=True)
+    except CatalogInputError:
+        return _selected_error_response(
+            request,
+            message="Catalog changed while loading; retry the request",
+            status_code=422,
+            fragment=True,
+        )
+    except Exception as error:
+        _LOGGER.warning(
+            f"Selected-books preview failed surface=web phase=preview "
+            f"failure_type={type(error).__name__}"
+        )
+        return _selected_error_response(
+            request,
+            message="The selected-books preview is unavailable",
+            status_code=500,
+            fragment=True,
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/selected_preview.html",
+        context={"manifest": manifest, "message": None},
+    )
+
+
+async def _close_staged_archive(staged: StagedArchive, *, response_started: bool) -> bool:
+    """Finish archive cleanup even when its response task is repeatedly cancelled."""
+    cleanup = asyncio.create_task(staged.aclose())
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        cleanup.result()
+    except BaseException as error:
+        _LOGGER.error(
+            f"Selected-books archive cleanup failed surface=web phase=cleanup "
+            f"failure_type={type(error).__name__} response_started={response_started}"
+        )
+    return cancelled
+
+
+class _OwnedStagedArchiveResponse(StreamingResponse):
+    """Own a staged archive for the complete ASGI response lifecycle."""
+
+    def __init__(self, staged: StagedArchive, headers: dict[str, str]) -> None:
+        self._staged = staged
+        super().__init__(staged, status_code=200, headers=headers)
+
+    @override
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        response_started = False
+
+        async def owned_send(message: Message) -> None:
+            nonlocal response_started
+            await send(message)
+            if message["type"] == "http.response.start":
+                response_started = True
+
+        try:
+            await super().__call__(scope, receive, owned_send)
+        except BaseException as error:
+            if not isinstance(error, asyncio.CancelledError):
+                _LOGGER.warning(
+                    f"Selected-books archive response failed surface=web phase=stream "
+                    f"failure_type={type(error).__name__} response_started={response_started}"
+                )
+            cancelled = await _close_staged_archive(
+                self._staged,
+                response_started=response_started,
+            )
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            if cancelled:
+                raise asyncio.CancelledError from error
+            raise
+        else:
+            if await _close_staged_archive(
+                self._staged,
+                response_started=response_started,
+            ):
+                raise asyncio.CancelledError
+
+
+@router.post("/selected/download")
+async def selected_download(request: Request) -> Response:
+    try:
+        archive_request = await _form_archive_request(request)
+    except _SelectedBodyError as error:
+        return _selected_transport_error(request, error, fragment=False)
+    except ArchiveInputError as error:
+        return _selected_input_error(request, error, fragment=False)
+
+    try:
+        staged = await _archive(request).download(archive_request)
+    except ArchiveInputError as error:
+        return _selected_input_error(request, error, fragment=False)
+    except CatalogInputError:
+        return _selected_error_response(
+            request,
+            message="Catalog changed while loading; retry the request",
+            status_code=422,
+            fragment=False,
+        )
+    except AcquisitionStoreShutdownError:
+        return _selected_error_response(
+            request,
+            message="Service is shutting down",
+            status_code=503,
+            fragment=False,
+        )
+    except AcquisitionError as error:
+        _LOGGER.warning(
+            f"Selected-books archive acquisition failed surface=web phase=build "
+            f"failure_type={type(error).__name__}"
+        )
+        return _selected_error_response(
+            request,
+            message="The selected books archive could not be created",
+            status_code=500,
+            fragment=False,
+        )
+    except ArchiveError as error:
+        _LOGGER.warning(
+            f"Selected-books archive build failed surface=web phase=build "
+            f"failure_type={type(error).__name__}"
+        )
+        return _selected_error_response(
+            request,
+            message="The selected books archive could not be created",
+            status_code=500,
+            fragment=False,
+        )
+    except Exception as error:
+        _LOGGER.warning(
+            f"Selected-books archive failed surface=web phase=build "
+            f"failure_type={type(error).__name__}"
+        )
+        return _selected_error_response(
+            request,
+            message="The selected books archive could not be created",
+            status_code=500,
+            fragment=False,
+        )
+
+    headers = {
+        "Content-Type": "application/zip",
+        "Content-Length": str(staged.content_length),
+        "Content-Disposition": content_disposition(_SELECTED_ARCHIVE_FILENAME),
+        "X-Content-Type-Options": "nosniff",
+    }
+    try:
+        return _OwnedStagedArchiveResponse(staged, headers)
+    except BaseException as error:
+        cancelled = await _close_staged_archive(staged, response_started=False)
+        if isinstance(error, asyncio.CancelledError):
+            raise
+        if cancelled:
+            raise asyncio.CancelledError from error
+        if not isinstance(error, Exception):
+            raise
+        _LOGGER.warning(
+            f"Selected-books archive response creation failed surface=web "
+            f"phase=response failure_type={type(error).__name__}"
+        )
+        return _selected_error_response(
+            request,
+            message="The selected books archive could not be created",
+            status_code=500,
+            fragment=False,
         )
 
 

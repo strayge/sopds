@@ -1,0 +1,41 @@
+{% if message %}
+  <div id="selected-preview-content" data-selected-preview-error role="alert">
+    <p>{{ message }}</p>
+  </div>
+{% elif manifest %}
+  <div id="selected-preview-content"
+       data-selected-count="{{ manifest.entries|length }}"
+       data-downloadable-count="{{ manifest.members|length }}"
+       data-total-size="{{ manifest.total_size }}">
+    <p data-selected-summary>
+      {{ manifest.entries|length|integer }} selected ·
+      {{ manifest.members|length|integer }} downloadable ·
+      {{ manifest.total_size|integer }} bytes
+    </p>
+    {% if manifest.entries %}
+      <div class="result-list" data-selected-entries>
+        {% for entry in manifest.entries %}
+          <article class="result-row"
+                   data-selected-entry
+                   data-status="{{ entry.status.value }}"
+                   data-collision="{{ 'true' if entry.collision else 'false' }}">
+            <div class="result-row__body">
+              {% if entry.summary %}
+                <h3 class="result-row__title">{{ entry.summary.title }}</h3>
+                {% if entry.summary.authors %}
+                  <p>{{ entry.summary.authors[0]|author_name }}</p>
+                {% endif %}
+              {% else %}
+                <h3 class="result-row__title">Unknown selection</h3>
+              {% endif %}
+              <p data-entry-status>{{ entry.status.value|capitalize }}</p>
+              {% if entry.collision %}<p data-collision-notice>Archive name collision</p>{% endif %}
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p data-selected-empty>No books are selected.</p>
+    {% endif %}
+  </div>
+{% endif %}

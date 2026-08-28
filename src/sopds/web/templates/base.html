@@ -20,6 +20,7 @@
         </a>
         <nav class="site-navigation" aria-label="Primary navigation">
           <a href="/"{% if active_navigation == "catalog" %} aria-current="page"{% endif %}>Catalog</a>
+          <a href="/selected"{% if active_navigation == "selected" %} aria-current="page"{% endif %}>Selected</a>
           <a href="{{ opds_url }}">OPDS</a>
           <a href="/manage"{% if active_navigation == "manage" %} aria-current="page"{% endif %}>Manage</a>
         </nav>

@@ -11,6 +11,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from tortoise.context import TortoiseContext
 
+from sopds.acquisition.archive import ArchiveService
 from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.app import create_app
 from sopds.catalog.service import CatalogService
@@ -288,6 +289,19 @@ def test_lifespan_initializes_and_closes_without_schema_generation(
 
     generate.assert_not_awaited()
     close.assert_awaited_once()
+
+
+def test_lifespan_wires_archive_service_from_catalog_and_acquisition(
+    migrated_app_config: AppConfig,
+) -> None:
+    app = create_app(migrated_app_config)
+    with (
+        patch("sopds.lifecycle.ArchiveService", autospec=ArchiveService) as archive_type,
+        TestClient(app) as client,
+    ):
+        assert client.get("/selected").status_code == 200
+        archive_type.assert_called_once_with(app.state.catalog, app.state.acquisition)
+        assert app.state.archive is archive_type.return_value
 
 
 def test_lifespan_shuts_down_manual_work_before_database_close(
