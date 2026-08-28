@@ -9,6 +9,30 @@ from sopds import __main__
 from sopds.config import AppConfig
 
 
+def test_cli_reload_uses_supervisor_without_starting_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    supervisor_arguments: tuple[Path, Path] | None = None
+
+    def fake_run_reload_supervisor(config: Path, package: Path) -> None:
+        nonlocal supervisor_arguments
+        supervisor_arguments = config, package
+
+    def unexpected_load_config(_path: Path) -> AppConfig:
+        pytest.fail("reload parent must not initialize the application")
+
+    monkeypatch.setattr(__main__, "run_reload_supervisor", fake_run_reload_supervisor)
+    monkeypatch.setattr(__main__, "load_config", unexpected_load_config)
+    monkeypatch.setattr(sys, "argv", ["sopds", "--config", str(config_path), "--reload"])
+
+    __main__.main()
+
+    assert supervisor_arguments is not None
+    assert supervisor_arguments[0] == config_path
+    assert supervisor_arguments[1].name == "sopds"
+
+
 def test_cli_applies_migrations_before_uvicorn(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

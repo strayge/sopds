@@ -115,7 +115,7 @@ python -m venv .venv
 python -m pip install -r requirements.dev.freeze.txt
 cp config.example.toml config.toml
 # Change container paths in config.toml to local paths.
-PYTHONPATH=src python -m sopds --config config.toml
+PYTHONPATH=src python -m sopds --config config.toml --reload
 ```
 
 Run the checks:

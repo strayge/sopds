@@ -16,6 +16,7 @@ from sopds.app import create_app
 from sopds.config import ConfigurationError, load_config
 from sopds.db.connection import DatabaseError
 from sopds.db.migrations_runner import MigrationError, apply_migrations
+from sopds.reloader import run_reload_supervisor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("config.toml"),
         help="path to the application TOML file",
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="restart the development server when Python or configuration files change",
     )
     return parser
 
@@ -48,6 +54,11 @@ def _logging_config() -> dict[str, Any]:
 def main() -> None:
     parser = build_parser()
     arguments = parser.parse_args()
+    if arguments.reload:
+        logging.config.dictConfig(_logging_config())
+        run_reload_supervisor(arguments.config, Path(__file__).resolve().parent)
+        return
+
     try:
         config = load_config(arguments.config)
     except ConfigurationError as error:
