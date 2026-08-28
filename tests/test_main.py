@@ -61,7 +61,6 @@ def test_cli_applies_migrations_before_uvicorn(
     formatters = log_config["formatters"]
     assert isinstance(formatters, dict)
     assert formatters["default"]["()"] == "uvicorn.logging.DefaultFormatter"
-    assert formatters["access"]["()"] == "sopds.access_log.QuerySafeAccessFormatter"
     loggers = log_config["loggers"]
     assert isinstance(loggers, dict)
     assert loggers["sopds"] == {
@@ -69,3 +68,4 @@ def test_cli_applies_migrations_before_uvicorn(
         "level": "INFO",
         "propagate": False,
     }
+    assert uvicorn_arguments["access_log"] is False

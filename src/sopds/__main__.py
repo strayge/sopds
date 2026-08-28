@@ -12,6 +12,7 @@ from typing import Any, cast
 import uvicorn
 from uvicorn.config import LOGGING_CONFIG
 
+from sopds.access_log import AccessLogMiddleware, configure_access_logging
 from sopds.app import create_app
 from sopds.config import ConfigurationError, load_config
 from sopds.db.connection import DatabaseError
@@ -40,8 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _logging_config() -> dict[str, Any]:
     config = deepcopy(LOGGING_CONFIG)
-    formatters = cast(dict[str, Any], config["formatters"])
-    formatters["access"]["()"] = "sopds.access_log.QuerySafeAccessFormatter"
+    configure_access_logging(config)
     loggers = cast(dict[str, Any], config["loggers"])
     loggers["sopds"] = {
         "handlers": ["default"],
@@ -80,12 +80,15 @@ def main() -> None:
     duration_ms = int((perf_counter() - migration_started) * 1000)
     _LOGGER.info(f"Database migration check completed phase=migration duration_ms={duration_ms}")
 
+    app = create_app(config)
+    asgi_app = AccessLogMiddleware(app)
     uvicorn.run(
-        create_app(config),
+        asgi_app,
         host=config.server.host,
         port=config.server.port,
         workers=1,
         log_config=logging_config,
+        access_log=False,
     )
 
 
