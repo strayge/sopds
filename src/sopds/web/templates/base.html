@@ -30,14 +30,7 @@
             <h1 id="page-heading" class="workspace-header__title{% block page_heading_class %}{% endblock %}">{% block page_heading %}SOPDS catalog{% endblock %}</h1>
             <p class="workspace-header__subtitle">{% block page_subtitle %}Browse your private library.{% endblock %}</p>
           </div>
-          <p
-            id="health"
-            class="health-status"
-            hx-get="/health-fragment"
-            hx-trigger="load, every 30s"
-            hx-swap="innerHTML"
-            aria-live="polite"
-          >Checking application health…</p>
+          <p id="health" class="health-status"><span class="status-ok">Application is healthy</span></p>
         </header>
         <main id="main-content" class="page-content" tabindex="-1" aria-labelledby="page-heading">
           {% block content %}{% endblock %}

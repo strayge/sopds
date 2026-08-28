@@ -26,30 +26,13 @@ from sopds.lifecycle import _scheduled_checks, _scheduled_conversion_cleanup
 def test_health_endpoint(migrated_app_config: AppConfig) -> None:
     with TestClient(create_app(migrated_app_config)) as client:
         response = client.get("/health")
-        fragment = client.get("/health-fragment")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-    assert fragment.status_code == 200
-    assert fragment.text == '<span class="status-ok">Application is healthy</span>'
 
 
-@pytest.mark.parametrize(
-    ("path", "expected_status", "expected_body"),
-    [
-        ("/health", 503, {"status": "unavailable"}),
-        (
-            "/health-fragment",
-            200,
-            '<span class="status-error">Application is unavailable</span>',
-        ),
-    ],
-)
-def test_health_endpoints_report_database_failure_without_logging_details(
+def test_health_endpoint_reports_database_failure_without_logging_details(
     migrated_app_config: AppConfig,
-    path: str,
-    expected_status: int,
-    expected_body: dict[str, str] | str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     error_detail = "sensitive-connection-detail"
@@ -62,13 +45,10 @@ def test_health_endpoints_report_database_failure_without_logging_details(
         ),
         TestClient(create_app(migrated_app_config)) as client,
     ):
-        response = client.get(path)
+        response = client.get("/health")
 
-    assert response.status_code == expected_status
-    if isinstance(expected_body, dict):
-        assert response.json() == expected_body
-    else:
-        assert response.text == expected_body
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
     assert "RuntimeError" in caplog.text
     assert error_detail not in caplog.text
 
@@ -122,8 +102,9 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
     assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
     assert 'id="catalog-statistics"' in management.text
     assert 'id="operation-status"' in management.text
-    assert 'hx-get="/health-fragment"' in response.text
-    assert 'hx-trigger="load, every 30s"' in response.text
+    assert "Application is healthy" in response.text
+    assert "/health-fragment" not in response.text
+    assert 'hx-trigger="load, every 30s"' not in response.text
     assert "function localizeCatalogTimes(root)" in response.text
     assert 'addEventListener("htmx:afterSwap"' in response.text
     assert "localizeCatalogTimes(event.detail.elt || event.target)" in response.text

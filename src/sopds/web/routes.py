@@ -795,10 +795,3 @@ async def health(request: Request) -> Response:
     if await _database_ready(request, "/health"):
         return JSONResponse(HealthResponse(status="ok").model_dump(), status_code=200)
     return JSONResponse(HealthResponse(status="unavailable").model_dump(), status_code=503)
-
-
-@router.get("/health-fragment", response_class=HTMLResponse)
-async def health_fragment(request: Request) -> HTMLResponse:
-    if await _database_ready(request, "/health-fragment"):
-        return HTMLResponse('<span class="status-ok">Application is healthy</span>')
-    return HTMLResponse('<span class="status-error">Application is unavailable</span>')
