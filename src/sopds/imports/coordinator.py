@@ -50,6 +50,7 @@ class ImportCoordinator:
         self._vacuum_active = False
 
     async def recover(self) -> None:
+        _LOGGER.info("Catalog recovery started phase=recovery")
         await self._repository.ensure_source(self._namespace, self._source_path)
         summary = await self._repository.recover()
         if summary.interrupted_runs or summary.failed_generations or summary.removed_generations:

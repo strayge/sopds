@@ -552,7 +552,10 @@ async def test_concurrent_request_is_not_queued(app_config: AppConfig) -> None:
     assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(1,)]
 
 
-async def test_recovery_cleans_interrupted_generation_and_fts(app_config: AppConfig) -> None:
+async def test_recovery_cleans_interrupted_generation_and_fts(
+    app_config: AppConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO", logger="sopds.imports.coordinator")
     await apply_migrations(app_config.database.path)
     context = await initialize_database(app_config.database.path)
     connection = context.db()
@@ -584,6 +587,14 @@ async def test_recovery_cleans_interrupted_generation_and_fts(app_config: AppCon
     await coordinator.recover()
     await close_database(context)
 
+    messages = [record.getMessage() for record in caplog.records]
+    started = messages.index("Catalog recovery started phase=recovery")
+    completed = next(
+        index
+        for index, message in enumerate(messages)
+        if message.startswith("Catalog recovery completed phase=recovery")
+    )
+    assert started < completed
     assert run.id is not None
     assert _query(app_config.database.path, "SELECT state FROM import_run ORDER BY id") == [
         ("interrupted",)
