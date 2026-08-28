@@ -1,11 +1,25 @@
-"""Authoritative validation and path generation for selected-book archives."""
+"""Authoritative manifest generation and staged ZIP construction."""
 
+import asyncio
+import os
+import tempfile
 import unicodedata
-from collections.abc import Mapping, Sequence
+import zipfile
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, Self
+from functools import partial
+from typing import IO, BinaryIO, Protocol, Self
 
+from sopds.acquisition.contracts import (
+    AcquiredOriginal,
+    Acquisition,
+    AcquisitionMemberNotFoundError,
+    AcquisitionNotFoundError,
+    AcquisitionSizeMismatchError,
+    AcquisitionUnavailableError,
+)
 from sopds.catalog.contracts import (
     BookAvailability,
     BookSummary,
@@ -18,6 +32,7 @@ MAX_PUBLIC_ID_CHARS = 64
 MAX_COMPONENT_BYTES = 200
 MAX_PATH_BYTES = 240
 MAX_EXTENSION_BYTES = 16
+ARCHIVE_CHUNK_SIZE = 64 * 1024
 
 _WINDOWS_ILLEGAL = frozenset('/\\:*?"<>|')
 _WINDOWS_RESERVED = frozenset(
@@ -113,15 +128,258 @@ class BulkCatalog(Protocol):
     async def bulk_summaries(self, public_ids: Sequence[str]) -> CatalogSummaryBatch: ...
 
 
-class ArchiveService:
-    """Resolve each request afresh so no selection state survives between calls."""
+class StagedArchive:
+    """Own one seekable temporary ZIP until consumed or explicitly closed."""
 
-    def __init__(self, catalog: BulkCatalog) -> None:
+    def __init__(self, file: BinaryIO, content_length: int) -> None:
+        self.content_length = content_length
+        self._file = file
+        self._iteration_started = False
+        self._closed = False
+        self._io_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        if self._iteration_started:
+            raise RuntimeError("Staged archive streams are single-use")
+        self._iteration_started = True
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[bytes]:
+        try:
+            while chunk := await self._read():
+                yield chunk
+        finally:
+            await self.aclose()
+
+    async def _read(self) -> bytes:
+        async with self._io_lock:
+            if self._closed:
+                return b""
+            return await _blocking(partial(self._file.read, ARCHIVE_CHUNK_SIZE))
+
+    async def _close(self) -> None:
+        async with self._io_lock:
+            if self._closed:
+                return
+            try:
+                await _blocking(self._file.close)
+            finally:
+                self._closed = True
+
+    async def aclose(self) -> None:
+        """Close once, waiting through cancellation before preserving it."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await _wait_owned_task(self._close_task)
+
+
+class ArchiveService:
+    """Resolve and acquire each request afresh without retaining preview state."""
+
+    def __init__(self, catalog: BulkCatalog, acquisition: Acquisition) -> None:
         self._catalog = catalog
+        self._acquisition = acquisition
 
     async def preview(self, request: ArchiveRequest) -> ArchiveManifest:
         batch = await self._catalog.bulk_summaries(request.ids)
         return build_manifest(request, batch)
+
+    async def download(self, request: ArchiveRequest) -> StagedArchive:
+        """Rebuild current metadata and transfer the completed temporary ZIP to its caller."""
+        batch = await self._catalog.bulk_summaries(request.ids)
+        manifest = build_manifest(request, batch)
+        if not manifest.members:
+            raise ArchiveNoDownloadsError("No selected books are available for download")
+
+        staged_file = await _blocking(
+            lambda: tempfile.TemporaryFile(mode="w+b"),  # noqa: SIM115
+            cancel_cleanup=lambda opened: opened.close(),
+        )
+        primary: BaseException | None = None
+        staged: StagedArchive | None = None
+        try:
+            staged = await self._build(manifest, staged_file)
+        except BaseException as error:
+            primary = error
+        cleanup = (
+            await _capture_cleanup(partial(_blocking, staged_file.close))
+            if staged is None
+            else None
+        )
+        _raise_after_cleanup(primary, cleanup)
+        if staged is None:
+            raise AssertionError("Successful archive build did not transfer ownership")
+        return staged
+
+    async def _build(self, manifest: ArchiveManifest, staged_file: BinaryIO) -> StagedArchive:
+        archive = await _blocking(
+            lambda: zipfile.ZipFile(
+                staged_file,
+                mode="w",
+                compression=zipfile.ZIP_DEFLATED,
+                allowZip64=True,
+            ),
+            cancel_cleanup=lambda opened: opened.close(),
+        )
+        primary: BaseException | None = None
+        included = 0
+        try:
+            for member in sorted(manifest.members, key=lambda candidate: candidate.path):
+                try:
+                    original = await self._acquisition.acquire(
+                        member.public_id,
+                        expected_generation_id=manifest.generation_id,
+                    )
+                except (
+                    AcquisitionNotFoundError,
+                    AcquisitionUnavailableError,
+                    AcquisitionMemberNotFoundError,
+                ):
+                    continue
+                await _add_member(archive, member, original)
+                included += 1
+            if not included:
+                raise ArchiveNoDownloadsError("No selected books are available for download")
+        except BaseException as error:
+            primary = error
+
+        cleanup = await _capture_cleanup(partial(_blocking, archive.close))
+        _raise_after_cleanup(primary, cleanup)
+        content_length = await _blocking(partial(_rewind_and_measure, staged_file))
+        return StagedArchive(staged_file, content_length)
+
+
+async def _blocking[T](
+    function: Callable[[], T],
+    *,
+    cancel_cleanup: Callable[[T], None] | None = None,
+) -> T:
+    """Drain a worker before cancellation can release an object it is using."""
+    task = asyncio.create_task(asyncio.to_thread(function))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancellation:
+        try:
+            result = await _drain_task(task)
+        except BaseException:
+            raise cancellation from None
+        if cancel_cleanup is not None:
+            cleanup = asyncio.create_task(asyncio.to_thread(cancel_cleanup, result))
+            with suppress(BaseException):
+                await _drain_task(cleanup)
+        raise cancellation
+
+
+async def _drain_task[T](task: asyncio.Task[T]) -> T:
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            break
+    return task.result()
+
+
+async def _wait_owned_task[T](task: asyncio.Task[T]) -> T:
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancellation = error
+        except BaseException:
+            break
+    if cancellation is not None:
+        if not task.cancelled():
+            task.exception()
+        raise cancellation
+    return task.result()
+
+
+async def _capture_cleanup(operation: Callable[[], Awaitable[object]]) -> BaseException | None:
+    try:
+        await operation()
+    except BaseException as error:
+        return error
+    return None
+
+
+async def _close_async(operation: Callable[[], Awaitable[None]]) -> None:
+    async def run() -> None:
+        await operation()
+
+    task = asyncio.create_task(run())
+    await _wait_owned_task(task)
+
+
+def _raise_after_cleanup(
+    primary: BaseException | None,
+    cleanup: BaseException | None,
+) -> None:
+    if isinstance(primary, asyncio.CancelledError):
+        raise primary
+    if isinstance(cleanup, asyncio.CancelledError):
+        raise cleanup
+    if primary is not None:
+        raise primary
+    if cleanup is not None:
+        raise cleanup
+
+
+async def _add_member(
+    archive: zipfile.ZipFile,
+    member: ArchiveMember,
+    original: AcquiredOriginal,
+) -> None:
+    primary: BaseException | None = None
+    try:
+        if original.content_length != member.summary.size:
+            raise AcquisitionSizeMismatchError("Original size does not match catalog metadata")
+        await _write_member(archive, member.path, original)
+    except BaseException as error:
+        primary = error
+    cleanup = await _capture_cleanup(partial(_close_async, original.stream.aclose))
+    _raise_after_cleanup(primary, cleanup)
+
+
+async def _write_member(
+    archive: zipfile.ZipFile,
+    path: str,
+    original: AcquiredOriginal,
+) -> None:
+    output = await _blocking(
+        lambda: archive.open(path, mode="w", force_zip64=True),
+        cancel_cleanup=lambda opened: opened.close(),
+    )
+    primary: BaseException | None = None
+    written_total = 0
+    try:
+        async for chunk in original.stream:
+            for offset in range(0, len(chunk), ARCHIVE_CHUNK_SIZE):
+                part = chunk[offset : offset + ARCHIVE_CHUNK_SIZE]
+                written = await _blocking(partial(output.write, part))
+                if written != len(part):
+                    raise OSError("Short archive member write")
+                written_total += written
+        if written_total != original.content_length:
+            raise AcquisitionSizeMismatchError("Original stream size does not match metadata")
+    except BaseException as error:
+        primary = error
+    cleanup = await _capture_cleanup(partial(_blocking, output.close))
+    _raise_after_cleanup(primary, cleanup)
+
+
+def _rewind_and_measure(file: IO[bytes]) -> int:
+    file.seek(0, os.SEEK_END)
+    content_length = file.tell()
+    file.seek(0)
+    return content_length
 
 
 def _validate_ids(value: object) -> tuple[str, ...]:

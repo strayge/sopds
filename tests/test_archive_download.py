@@ -1,12 +1,19 @@
 """Selected-book request, manifest, and portable archive-path tests."""
 
+import asyncio
+import io
+import tempfile
+import threading
 import unicodedata
-from collections.abc import Sequence
+import zipfile
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from typing import Literal, cast, override
 
 import pytest
 
 import sopds.acquisition.archive as archive_module
 from sopds.acquisition.archive import (
+    ARCHIVE_CHUNK_SIZE,
     MAX_COMPONENT_BYTES,
     MAX_ELIGIBLE_SIZE,
     MAX_PATH_BYTES,
@@ -15,14 +22,34 @@ from sopds.acquisition.archive import (
     ArchiveInputError,
     ArchiveLimitError,
     ArchiveManifest,
+    ArchiveNoDownloadsError,
     ArchivePreset,
     ArchiveRequest,
     ArchiveService,
+    StagedArchive,
     archive_base_path,
     build_manifest,
     normalize_extension,
     portable_path_key,
     sanitize_component,
+)
+from sopds.acquisition.contracts import (
+    AcquiredOriginal,
+    AcquisitionAmbiguousMemberError,
+    AcquisitionCorruptError,
+    AcquisitionDirectoryMemberError,
+    AcquisitionEncryptedMemberError,
+    AcquisitionError,
+    AcquisitionMemberNotFoundError,
+    AcquisitionNotFoundError,
+    AcquisitionSizeMismatchError,
+    AcquisitionSourceIOError,
+    AcquisitionStoreShutdownError,
+    AcquisitionSymlinkMemberError,
+    AcquisitionUnavailableError,
+    AcquisitionUnsafePathError,
+    OriginalDescription,
+    SourceRevision,
 )
 from sopds.catalog.contracts import (
     BookAvailability,
@@ -68,6 +95,123 @@ def _manifest(
         ArchiveRequest(ids, preset),
         CatalogSummaryBatch(generation_id, tuple(books)),
     )
+
+
+_REVISION = SourceRevision(1, 2, 3)
+
+
+class _Stream:
+    def __init__(
+        self,
+        chunks: Sequence[bytes],
+        *,
+        error: BaseException | None = None,
+        on_open: Callable[[], None] | None = None,
+        on_close: Callable[[], None] | None = None,
+        read_entered: asyncio.Event | None = None,
+        read_release: asyncio.Event | None = None,
+    ) -> None:
+        self._chunks = iter(chunks)
+        self._error = error
+        self._on_open = on_open
+        self._on_close = on_close
+        self._read_entered = read_entered
+        self._read_release = read_release
+        self.closed = False
+
+    def open(self) -> None:
+        if self._on_open is not None:
+            self._on_open()
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._read_release is not None:
+            if self._read_entered is not None:
+                self._read_entered.set()
+            release = self._read_release
+            self._read_release = None
+            await release.wait()
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            if self._error is not None:
+                raise self._error from None
+            raise StopAsyncIteration from None
+
+    async def aclose(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        if self._on_close is not None:
+            self._on_close()
+
+
+class _Catalog:
+    def __init__(self, batches: Sequence[CatalogSummaryBatch]) -> None:
+        self._batches = iter(batches)
+        self.calls: list[tuple[str, ...]] = []
+
+    async def bulk_summaries(self, public_ids: Sequence[str]) -> CatalogSummaryBatch:
+        self.calls.append(tuple(public_ids))
+        return next(self._batches)
+
+
+class _Acquisition:
+    def __init__(
+        self,
+        values: Mapping[str, bytes | BaseException | _Stream],
+        sizes: dict[str, int] | None = None,
+        *,
+        acquire_entered: asyncio.Event | None = None,
+        acquire_release: asyncio.Event | None = None,
+    ) -> None:
+        self._values = values
+        self._sizes = sizes or {}
+        self.calls: list[tuple[str, int | None]] = []
+        self.streams: list[_Stream] = []
+        self._acquire_entered = acquire_entered
+        self._acquire_release = acquire_release
+
+    async def describe(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> OriginalDescription:
+        raise AssertionError("Archive builds do not describe originals")
+
+    async def acquire(
+        self,
+        public_id: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> AcquiredOriginal:
+        self.calls.append((public_id, expected_generation_id))
+        if self._acquire_release is not None:
+            if self._acquire_entered is not None:
+                self._acquire_entered.set()
+            await self._acquire_release.wait()
+        value = self._values[public_id]
+        if isinstance(value, BaseException):
+            raise value
+        stream = value if isinstance(value, _Stream) else _Stream((value,))
+        stream.open()
+        self.streams.append(stream)
+        size = self._sizes[public_id] if isinstance(value, _Stream) else len(value)
+        return AcquiredOriginal(
+            f"{public_id}.fb2",
+            "application/octet-stream",
+            size,
+            stream,
+            "fb2",
+            _REVISION,
+        )
+
+
+async def _archive_bytes(staged: StagedArchive) -> bytes:
+    return b"".join([chunk async for chunk in staged])
 
 
 @pytest.mark.parametrize(
@@ -483,9 +627,534 @@ async def test_stateless_service_loads_current_batch_for_each_preview() -> None:
             return CatalogSummaryBatch(generation, (_book(public_ids[0]),))
 
     catalog = FakeCatalog()
-    service = ArchiveService(catalog)
+    service = ArchiveService(catalog, _Acquisition({}))
     request = ArchiveRequest(["book"], "nested")
 
     assert (await service.preview(request)).generation_id == 1
     assert (await service.preview(request)).generation_id == 2
     assert catalog.calls == [("book",), ("book",)]
+
+
+async def test_download_stages_exact_zip_paths_content_length_and_zip64(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    books = [
+        _book("a", title="First", series=None, size=5),
+        _book("b", title="Second", series=None, size=6),
+    ]
+    catalog = _Catalog((CatalogSummaryBatch(17, tuple(books)),))
+    acquisition = _Acquisition({"a": b"alpha", "b": b"second"})
+    real_zip_file = zipfile.ZipFile
+    init_options: list[tuple[int, bool]] = []
+    member_options: list[tuple[str, bool]] = []
+
+    class SpyZipFile:
+        def __init__(
+            self,
+            file: io.BytesIO,
+            *,
+            mode: Literal["w"],
+            compression: int,
+            allowZip64: bool,
+        ) -> None:
+            init_options.append((compression, allowZip64))
+            self._archive = real_zip_file(
+                file,
+                mode=mode,
+                compression=compression,
+                allowZip64=allowZip64,
+            )
+
+        def open(
+            self,
+            name: str,
+            mode: Literal["w"],
+            *,
+            force_zip64: bool,
+        ) -> object:
+            member_options.append((name, force_zip64))
+            return self._archive.open(name, mode=mode, force_zip64=force_zip64)
+
+        def close(self) -> None:
+            self._archive.close()
+
+    monkeypatch.setattr(zipfile, "ZipFile", SpyZipFile)
+
+    staged = await ArchiveService(catalog, acquisition).download(
+        ArchiveRequest(["b", "a"], ArchivePreset.FLATTEN)
+    )
+    payload = await _archive_bytes(staged)
+
+    assert staged.content_length == len(payload)
+    assert staged.closed
+    assert init_options == [(zipfile.ZIP_DEFLATED, True)]
+    assert member_options == [
+        ("Last First/First.fb2", True),
+        ("Last First/Second.fb2", True),
+    ]
+    with real_zip_file(io.BytesIO(payload)) as built:
+        assert built.namelist() == [
+            "Last First/First.fb2",
+            "Last First/Second.fb2",
+        ]
+        assert built.read("Last First/First.fb2") == b"alpha"
+        assert built.read("Last First/Second.fb2") == b"second"
+
+
+async def test_download_reloads_manifest_and_binds_acquisition_to_current_generation() -> None:
+    preview_book = _book("book", title="Preview", series=None, size=3)
+    download_book = _book("book", title="Current", series=None, size=3)
+    catalog = _Catalog(
+        (
+            CatalogSummaryBatch(4, (preview_book,)),
+            CatalogSummaryBatch(5, (download_book,)),
+        )
+    )
+    acquisition = _Acquisition({"book": b"new"})
+    service = ArchiveService(catalog, acquisition)
+    request = ArchiveRequest(["book"], "nested")
+
+    assert (await service.preview(request)).members[0].path.endswith("Preview.fb2")
+    payload = await _archive_bytes(await service.download(request))
+
+    assert catalog.calls == [("book",), ("book",)]
+    assert acquisition.calls == [("book", 5)]
+    with zipfile.ZipFile(io.BytesIO(payload)) as built:
+        assert built.namelist() == ["Last First/Current.fb2"]
+
+
+async def test_download_acquires_and_closes_originals_sequentially() -> None:
+    active = 0
+    maximum = 0
+
+    def opened() -> None:
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+
+    def closed() -> None:
+        nonlocal active
+        active -= 1
+
+    streams = {
+        public_id: _Stream((public_id.encode(),), on_open=opened, on_close=closed)
+        for public_id in ("c", "a", "b")
+    }
+    books = tuple(_book(public_id, title=public_id, series=None, size=1) for public_id in streams)
+    service = ArchiveService(
+        _Catalog((CatalogSummaryBatch(8, books),)),
+        _Acquisition(streams, {public_id: 1 for public_id in streams}),
+    )
+
+    staged = await service.download(ArchiveRequest(["c", "a", "b"], "nested"))
+
+    assert maximum == 1
+    assert active == 0
+    await staged.aclose()
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        AcquisitionNotFoundError,
+        AcquisitionUnavailableError,
+        AcquisitionMemberNotFoundError,
+    ],
+)
+async def test_acquire_time_unavailable_members_are_silently_omitted(
+    error_type: type[AcquisitionError],
+) -> None:
+    books = (
+        _book("gone", title="Gone", series=None, size=4),
+        _book("kept", title="Kept", series=None, size=4),
+    )
+    acquisition = _Acquisition(
+        {"gone": error_type("gone"), "kept": b"kept"},
+    )
+    staged = await ArchiveService(
+        _Catalog((CatalogSummaryBatch(11, books),)), acquisition
+    ).download(ArchiveRequest(["gone", "kept"], "nested"))
+    payload = await _archive_bytes(staged)
+
+    with zipfile.ZipFile(io.BytesIO(payload)) as built:
+        assert built.namelist() == ["Last First/Kept.fb2"]
+        assert built.read(built.namelist()[0]) == b"kept"
+
+
+async def test_all_acquire_time_omissions_raise_no_download_and_close_temp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temporary = _TrackedTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    books = (_book("gone", size=4),)
+    service = ArchiveService(
+        _Catalog((CatalogSummaryBatch(12, books),)),
+        _Acquisition({"gone": AcquisitionUnavailableError("gone")}),
+    )
+
+    with pytest.raises(ArchiveNoDownloadsError):
+        await service.download(ArchiveRequest(["gone"], "nested"))
+
+    assert temporary.closed
+
+
+class _TrackedTemporary(io.BytesIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_calls = 0
+
+    @override
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+async def _assert_cancelled[T](task: asyncio.Task[T]) -> None:
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_download_applies_size_limit_from_its_own_catalog_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = _Catalog(
+        (
+            CatalogSummaryBatch(1, (_book("book", size=1),)),
+            CatalogSummaryBatch(2, (_book("book", size=MAX_ELIGIBLE_SIZE + 1),)),
+        )
+    )
+    service = ArchiveService(catalog, _Acquisition({"book": b"x"}))
+    await service.preview(ArchiveRequest(["book"], "nested"))
+    monkeypatch.setattr(
+        tempfile,
+        "TemporaryFile",
+        lambda **_kwargs: pytest.fail("limit failure must precede temporary-file creation"),
+    )
+
+    with pytest.raises(ArchiveLimitError):
+        await service.download(ArchiveRequest(["book"], "nested"))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AcquisitionUnsafePathError("unsafe"),
+        AcquisitionAmbiguousMemberError("ambiguous"),
+        AcquisitionEncryptedMemberError("encrypted"),
+        AcquisitionDirectoryMemberError("directory"),
+        AcquisitionSymlinkMemberError("symlink"),
+        AcquisitionSizeMismatchError("size"),
+        AcquisitionCorruptError("corrupt"),
+        AcquisitionSourceIOError("source"),
+        AcquisitionStoreShutdownError("shutdown"),
+        AcquisitionError("generic acquisition"),
+        OSError("generic I/O"),
+        zipfile.BadZipFile("generic ZIP"),
+    ],
+)
+async def test_fatal_acquire_errors_abort_and_close_temp(
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+) -> None:
+    temporary = _TrackedTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    service = ArchiveService(
+        _Catalog((CatalogSummaryBatch(3, (_book("book", size=1),)),)),
+        _Acquisition({"book": error}),
+    )
+
+    with pytest.raises(type(error)):
+        await service.download(ArchiveRequest(["book"], "nested"))
+
+    assert temporary.closed
+
+
+async def test_unavailable_after_acquisition_is_fatal_and_closes_stream_and_temp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temporary = _TrackedTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    stream = _Stream((b"part",), error=AcquisitionUnavailableError("disappeared"))
+    service = ArchiveService(
+        _Catalog((CatalogSummaryBatch(3, (_book("book", size=4),)),)),
+        _Acquisition({"book": stream}, {"book": 4}),
+    )
+
+    with pytest.raises(AcquisitionUnavailableError):
+        await service.download(ArchiveRequest(["book"], "nested"))
+
+    assert stream.closed
+    assert temporary.closed
+
+
+async def test_member_writes_are_bounded_even_when_source_yields_a_large_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = b"x" * (ARCHIVE_CHUNK_SIZE * 3 + 17)
+    write_sizes: list[int] = []
+    real_zip_file = zipfile.ZipFile
+
+    class TrackingMember:
+        def __init__(self, member: object) -> None:
+            self._member = member
+
+        def write(self, value: bytes) -> int:
+            write_sizes.append(len(value))
+            return self._member.write(value)  # type: ignore[attr-defined,no-any-return]
+
+        def close(self) -> None:
+            self._member.close()  # type: ignore[attr-defined]
+
+    class TrackingZipFile:
+        def __init__(
+            self,
+            file: io.BytesIO,
+            *,
+            mode: Literal["w"],
+            compression: int,
+            allowZip64: bool,
+        ) -> None:
+            self._archive = real_zip_file(
+                file, mode=mode, compression=compression, allowZip64=allowZip64
+            )
+
+        def open(self, name: str, mode: Literal["w"], *, force_zip64: bool) -> TrackingMember:
+            return TrackingMember(self._archive.open(name, mode=mode, force_zip64=force_zip64))
+
+        def close(self) -> None:
+            self._archive.close()
+
+    monkeypatch.setattr(zipfile, "ZipFile", TrackingZipFile)
+    staged = await ArchiveService(
+        _Catalog((CatalogSummaryBatch(9, (_book("book", size=len(data)),)),)),
+        _Acquisition({"book": data}),
+    ).download(ArchiveRequest(["book"], "nested"))
+
+    assert write_sizes == [ARCHIVE_CHUNK_SIZE] * 3 + [17]
+    await staged.aclose()
+
+
+@pytest.mark.parametrize("failure_phase", ["write", "member-close", "archive-close"])
+async def test_zip_write_and_close_failures_close_original_and_temp(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_phase: str,
+) -> None:
+    temporary = _TrackedTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    stream = _Stream((b"data",))
+    real_zip_file = zipfile.ZipFile
+
+    class FailingMember:
+        def __init__(self, member: object) -> None:
+            self._member = member
+
+        def write(self, value: bytes) -> int:
+            if failure_phase == "write":
+                raise OSError("write failed")
+            return self._member.write(value)  # type: ignore[attr-defined,no-any-return]
+
+        def close(self) -> None:
+            self._member.close()  # type: ignore[attr-defined]
+            if failure_phase == "member-close":
+                raise OSError("member close failed")
+
+    class FailingZipFile:
+        def __init__(
+            self,
+            file: io.BytesIO,
+            *,
+            mode: Literal["w"],
+            compression: int,
+            allowZip64: bool,
+        ) -> None:
+            self._archive = real_zip_file(
+                file, mode=mode, compression=compression, allowZip64=allowZip64
+            )
+
+        def open(self, name: str, mode: Literal["w"], *, force_zip64: bool) -> FailingMember:
+            return FailingMember(self._archive.open(name, mode=mode, force_zip64=force_zip64))
+
+        def close(self) -> None:
+            self._archive.close()
+            if failure_phase == "archive-close":
+                raise OSError("archive close failed")
+
+    monkeypatch.setattr(zipfile, "ZipFile", FailingZipFile)
+    service = ArchiveService(
+        _Catalog((CatalogSummaryBatch(3, (_book("book", size=4),)),)),
+        _Acquisition({"book": stream}, {"book": 4}),
+    )
+
+    with pytest.raises(OSError):
+        await service.download(ArchiveRequest(["book"], "nested"))
+
+    assert stream.closed
+    assert temporary.closed
+
+
+async def test_cancellation_during_acquire_closes_temp(monkeypatch: pytest.MonkeyPatch) -> None:
+    temporary = _TrackedTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    acquisition = _Acquisition(
+        {"book": b"data"},
+        acquire_entered=entered,
+        acquire_release=release,
+    )
+    task = asyncio.create_task(
+        ArchiveService(
+            _Catalog((CatalogSummaryBatch(3, (_book("book", size=4),)),)), acquisition
+        ).download(ArchiveRequest(["book"], "nested"))
+    )
+    await entered.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert temporary.closed
+    assert not acquisition.streams
+
+
+async def test_cancellation_during_source_iteration_closes_original_and_temp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temporary = _TrackedTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    stream = _Stream((b"data",), read_entered=entered, read_release=release)
+    task = asyncio.create_task(
+        ArchiveService(
+            _Catalog((CatalogSummaryBatch(3, (_book("book", size=4),)),)),
+            _Acquisition({"book": stream}, {"book": 4}),
+        ).download(ArchiveRequest(["book"], "nested"))
+    )
+    await entered.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert stream.closed
+    assert temporary.closed
+
+
+async def test_cancellation_waits_for_blocking_write_before_closing_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temporary = _TrackedTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    write_entered = threading.Event()
+    write_release = threading.Event()
+    real_zip_file = zipfile.ZipFile
+    stream = _Stream((b"data",))
+    member_closed = threading.Event()
+
+    class BlockingMember:
+        def __init__(self, member: object) -> None:
+            self._member = member
+
+        def write(self, value: bytes) -> int:
+            write_entered.set()
+            write_release.wait()
+            return self._member.write(value)  # type: ignore[attr-defined,no-any-return]
+
+        def close(self) -> None:
+            self._member.close()  # type: ignore[attr-defined]
+            member_closed.set()
+
+    class BlockingZipFile:
+        def __init__(
+            self,
+            file: io.BytesIO,
+            *,
+            mode: Literal["w"],
+            compression: int,
+            allowZip64: bool,
+        ) -> None:
+            self._archive = real_zip_file(
+                file, mode=mode, compression=compression, allowZip64=allowZip64
+            )
+
+        def open(self, name: str, mode: Literal["w"], *, force_zip64: bool) -> BlockingMember:
+            return BlockingMember(self._archive.open(name, mode=mode, force_zip64=force_zip64))
+
+        def close(self) -> None:
+            self._archive.close()
+
+    monkeypatch.setattr(zipfile, "ZipFile", BlockingZipFile)
+    task = asyncio.create_task(
+        ArchiveService(
+            _Catalog((CatalogSummaryBatch(3, (_book("book", size=4),)),)),
+            _Acquisition({"book": stream}, {"book": 4}),
+        ).download(ArchiveRequest(["book"], "nested"))
+    )
+    assert await asyncio.to_thread(write_entered.wait, 2)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not temporary.closed
+    assert not member_closed.is_set()
+
+    write_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert member_closed.is_set()
+    assert stream.closed
+    assert temporary.closed
+
+
+async def test_staged_archive_is_single_use_and_explicit_close_is_idempotent() -> None:
+    staged = await ArchiveService(
+        _Catalog((CatalogSummaryBatch(3, (_book("book", size=4),)),)),
+        _Acquisition({"book": b"data"}),
+    ).download(ArchiveRequest(["book"], "nested"))
+    iterator = cast(AsyncGenerator[bytes], staged.__aiter__())
+    assert await anext(iterator)
+
+    await iterator.aclose()
+    assert staged.closed
+    await staged.aclose()
+    await staged.aclose()
+    with pytest.raises(RuntimeError, match="single-use"):
+        staged.__aiter__()
+
+
+async def test_staged_close_waits_through_cancellation_and_can_be_repeated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_entered = threading.Event()
+    close_release = threading.Event()
+
+    class BlockingCloseTemporary(_TrackedTemporary):
+        @override
+        def close(self) -> None:
+            if not self.closed:
+                close_entered.set()
+                close_release.wait()
+            super().close()
+
+    temporary = BlockingCloseTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    staged = await ArchiveService(
+        _Catalog((CatalogSummaryBatch(3, (_book("book", size=4),)),)),
+        _Acquisition({"book": b"data"}),
+    ).download(ArchiveRequest(["book"], "nested"))
+    close_task = asyncio.create_task(staged.aclose())
+    assert await asyncio.to_thread(close_entered.wait, 2)
+
+    close_task.cancel()
+    await asyncio.sleep(0)
+    assert not close_task.done()
+    assert temporary.close_calls == 0
+
+    close_release.set()
+    await _assert_cancelled(close_task)
+    assert temporary.closed
+    assert staged.closed
+
+    await staged.aclose()
+    assert temporary.close_calls == 1
