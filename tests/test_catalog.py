@@ -305,6 +305,9 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         first = await catalog.browse(CatalogRequest())
         assert len(first.books) == 50
         assert first.next_cursor is not None
+        largest_page = await catalog.browse(CatalogRequest(page_size=200))
+        assert len(largest_page.books) == 55
+        assert largest_page.next_cursor is None
         ten = await catalog.browse(CatalogRequest(page_size=10))
         assert len(ten.books) == 10
         assert ten.next_cursor is not None

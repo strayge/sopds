@@ -45,6 +45,7 @@ from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _LOGGER = logging.getLogger(__name__)
+_WEB_PAGE_SIZE = 200
 _NOT_FOUND_ERRORS = (
     AcquisitionNotFoundError,
     AcquisitionUnavailableError,
@@ -133,6 +134,7 @@ def _catalog_request(
         include_missed=include_missed,
         include_hidden=include_hidden,
         cursor=cursor or None,
+        page_size=_WEB_PAGE_SIZE,
     )
 
 

@@ -430,6 +430,7 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
             genre="sf",
             original_format="fb2",
             cursor="next-token",
+            page_size=200,
         )
         in catalog.requests
     )
@@ -460,14 +461,15 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert missing.status_code == 404
     assert author_page.status_code == 200
     assert series_page.status_code == 200
-    assert CatalogRequest(author="Тестов,Тест,") in catalog.requests
-    assert CatalogRequest(series="Series") in catalog.requests
+    assert CatalogRequest(author="Тестов,Тест,", page_size=200) in catalog.requests
+    assert CatalogRequest(series="Series", page_size=200) in catalog.requests
     assert catalog.requests[0] == CatalogRequest(
         query="book",
         search_field=SearchField.TITLE,
         language="en",
         genre="sf",
         original_format="fb2",
+        page_size=200,
     )
 
 
@@ -786,10 +788,12 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     assert ">Open details</a>" in fragment.text
     assert fragment.headers["HX-Push-Url"].endswith("&include_missed=true&include_hidden=true")
     assert (
-        CatalogRequest(query="hidden", include_missed=True, include_hidden=True) in catalog.requests
+        CatalogRequest(query="hidden", include_missed=True, include_hidden=True, page_size=200)
+        in catalog.requests
     )
     assert (
-        CatalogRequest(query="missed", include_missed=True, include_hidden=True) in catalog.requests
+        CatalogRequest(query="missed", include_missed=True, include_hidden=True, page_size=200)
+        in catalog.requests
     )
 
 
