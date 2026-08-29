@@ -66,9 +66,10 @@ afterward. The web interface remains available while an import runs. If the
 INPX file is missing or invalid, SOPDS keeps the previous catalog, or starts
 with an empty catalog when none exists.
 
-Use **Import now** in the web interface to force an import. A new catalog is
-built separately and activated atomically. A failure before activation leaves
-the previous catalog active.
+Use **Import changes** to check the source immediately or **Force import** to
+rebuild the catalog. A failed import leaves the previous catalog available. If
+the management page reports that it has expired, reload it and retry the
+operation.
 
 Books whose ZIP archives are missing are marked as missed. INPX records marked as
 deleted are hidden. Both categories are excluded from catalog search by default;
@@ -93,11 +94,10 @@ stores only the ordered public book IDs in browser `localStorage`; selections
 are local to that browser profile and origin. They are not cookies, accounts,
 or server-side state and do not synchronize to another browser or origin.
 
-Open `/selected` to review the current selection. The page requests a preview
-from `/selected/preview`, then submits a normal HTML form to
-`/selected/download`. The backend is stateless: preview and download each reload
-current catalog metadata and independently recompute the manifest and archive
-names. No preview result is trusted or persisted.
+Open `/selected` to review the current selection, exclude books, choose a ZIP
+layout, and download the available originals. Unchecked books remain visible
+until the page is reloaded. If the page reports that it has expired, reload it
+and retry the download.
 
 The three built-in layouts use the first listed author, include the normalized
 original extension, and pad purely numeric series numbers to at least two
@@ -118,22 +118,9 @@ visible and removable in the preview but are silently omitted from the ZIP.
 The archive contains no omission report. If every selection is omitted, SOPDS
 returns an error instead of an empty ZIP.
 
-Each request is limited to 10,000 unique IDs, 10,000,000,000 decimal bytes of
-catalog-reported eligible originals, and an 8 MiB (8,388,608-byte) request body.
-ZIP members are acquired and written sequentially to a seekable
-`TemporaryFile` in the operating system's configured temporary directory. That
-filesystem therefore needs room for each permitted 10 GB build. There is no
-concurrent-build limit; simultaneous requests can multiply temporary-space and
-I/O use, which is an accepted operational risk.
-
-A staged file is anonymous where the operating system supports that and is
-otherwise delete-on-close. Archive construction closes it on failure or
-cancellation before response ownership transfers. After a successful build,
-the streaming response explicitly closes its file after normal completion,
-send or stream failure, client disconnect, or cancellation. Process termination
-also closes the descriptor, so operating-system crash cleanup is sufficient.
-There is no archive cache, background job, or stale-file sweeper, and this
-feature adds no configuration keys or runtime dependencies.
+A download is limited to 10,000 books and 10 GB of eligible originals. Allow up
+to 10 GB of temporary disk space for each simultaneous download. Interrupted
+or failed downloads are cleaned up automatically.
 
 ## Telegram
 
