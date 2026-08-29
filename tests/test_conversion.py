@@ -7,25 +7,32 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import BinaryIO, cast, override
 
 import pytest
 
 from sopds.acquisition.contracts import (
     AcquiredOriginal,
+    AcquisitionCorruptError,
+    AcquisitionMemberNotFoundError,
     AsyncByteStream,
     OriginalDescription,
     SourceRevision,
 )
+from sopds.conversion import service as conversion_service
 from sopds.conversion.cache import CACHE_CHUNK_SIZE, ArtifactCache, cache_digest
 from sopds.conversion.contracts import (
     ConversionCapability,
     ConversionShutdownError,
+    ConversionSourceError,
     ConversionSourceKey,
     ConverterIdentity,
     InvalidConversionOutputError,
     SourceChangedError,
+    SourceUnavailableError,
     UnsupportedConversionError,
 )
+from sopds.conversion.policy import OUTPUT_POLICY, OutputDecision
 from sopds.conversion.registry import ConverterRegistry
 from sopds.conversion.service import ConversionService
 
@@ -50,6 +57,23 @@ class _BytesStream:
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class _CloseFailingFile:
+    """Release a staging descriptor while simulating a close-time I/O failure."""
+
+    def __init__(self, file: BinaryIO) -> None:
+        self._file = file
+
+    def write(self, data: bytes) -> int:
+        return self._file.write(data)
+
+    def flush(self) -> None:
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
+        raise OSError("private staging path")
 
 
 class _Converter:
@@ -87,6 +111,8 @@ class _Acquisition:
         self.observed_revision = revision
         self.body = body
         self.streams: list[_BytesStream] = []
+        self.describe_generations: list[int | None] = []
+        self.acquire_generations: list[int | None] = []
 
     async def describe(
         self,
@@ -94,7 +120,7 @@ class _Acquisition:
         *,
         expected_generation_id: int | None = None,
     ) -> OriginalDescription:
-        del expected_generation_id
+        self.describe_generations.append(expected_generation_id)
         return OriginalDescription(
             public_id, "Unsafe / title", "FB2", len(self.body), self.revision
         )
@@ -105,7 +131,8 @@ class _Acquisition:
         *,
         expected_generation_id: int | None = None,
     ) -> AcquiredOriginal:
-        del public_id, expected_generation_id
+        del public_id
+        self.acquire_generations.append(expected_generation_id)
         stream = _BytesStream(self.body)
         self.streams.append(stream)
         return AcquiredOriginal(
@@ -126,6 +153,25 @@ async def _read(stream: AsyncByteStream) -> bytes:
     return b"".join([chunk async for chunk in stream])
 
 
+def test_output_policy_represents_canonical_choices_and_decision_table() -> None:
+    assert tuple(choice.key for choice in OUTPUT_POLICY.choices()) == ("original", "epub", "azw3")
+    assert OUTPUT_POLICY.choice("EPUB").label == "EPUB"
+    assert OUTPUT_POLICY.choice("azw3").media_type == "application/vnd.amazon.ebook"
+    assert OUTPUT_POLICY.decision("fb2", "original") is OutputDecision.ORIGINAL
+    assert OUTPUT_POLICY.decision("fb2", "epub") is OutputDecision.CONVERT
+    assert OUTPUT_POLICY.decision("fb2", "azw3") is OutputDecision.CONVERT
+    assert OUTPUT_POLICY.decision("epub", "epub") is OutputDecision.PASSTHROUGH
+    assert OUTPUT_POLICY.decision("epub", "azw3") is OutputDecision.CONVERT
+    assert OUTPUT_POLICY.decision("azw3", "azw3") is OutputDecision.PASSTHROUGH
+    assert OUTPUT_POLICY.decision("azw3", "epub") is OutputDecision.UNSUPPORTED
+    assert OUTPUT_POLICY.decision("pdf", "epub") is OutputDecision.UNSUPPORTED
+    assert tuple(choice.key for choice in OUTPUT_POLICY.targets_for("epub")) == (
+        "original",
+        "epub",
+        "azw3",
+    )
+
+
 def test_registry_is_empty_and_normalizes_without_execution() -> None:
     converter = _Converter()
     empty = ConverterRegistry()
@@ -142,6 +188,13 @@ def test_registry_is_empty_and_normalizes_without_execution() -> None:
         registry.resolve("../fb2", "epub")
     with pytest.raises(ValueError):
         ConverterRegistry([converter, _Converter()])
+
+    pass_through = _Converter()
+    pass_through._capabilities = (
+        ConversionCapability("epub", "epub", "application/epub+zip", "epub"),
+    )
+    with pytest.raises(ValueError, match="canonical output policy"):
+        ConverterRegistry([pass_through])
 
 
 def test_cache_digest_is_deterministic_and_path_free() -> None:
@@ -309,6 +362,116 @@ async def test_service_spools_and_closes_source_and_sanitizes_name(tmp_path: Pat
     await service.shutdown()
 
 
+@pytest.mark.parametrize("stage", ["create", "open", "close"])
+async def test_source_staging_io_failures_remain_path_free_source_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    acquisition = _Acquisition()
+    converter = _Converter()
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    service = ConversionService(acquisition, ConverterRegistry([converter]), cache)
+
+    if stage == "create":
+        real_close = os.close
+
+        def fail_descriptor_close(descriptor: int) -> None:
+            real_close(descriptor)
+            raise OSError("private staging path")
+
+        monkeypatch.setattr(os, "close", fail_descriptor_close)
+    else:
+        real_open = Path.open
+
+        def staging_open(self: Path, mode: str = "r") -> BinaryIO:
+            if self.suffix == ".source" and stage == "open":
+                raise OSError("private staging path")
+            opened = cast(BinaryIO, real_open(self, mode))
+            if self.suffix == ".source":
+                return cast(BinaryIO, _CloseFailingFile(opened))
+            return opened
+
+        monkeypatch.setattr(Path, "open", staging_open)
+
+    with pytest.raises(ConversionSourceError) as raised:
+        await service.convert("public", "epub")
+
+    assert "private staging path" not in str(raised.value)
+    assert converter.calls == 0
+    assert acquisition.streams[0].closed
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.tmp")))
+    await service.shutdown()
+
+
+async def test_source_staging_close_failure_does_not_replace_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class HangingStream:
+        """Keep source staging active until cache shutdown cancels its producer."""
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.closed = False
+
+        def __aiter__(self) -> AsyncIterator[bytes]:
+            return self._iterate()
+
+        async def _iterate(self) -> AsyncIterator[bytes]:
+            self.started.set()
+            await asyncio.Event().wait()
+            yield b"unreachable"
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class HangingAcquisition(_Acquisition):
+        def __init__(self) -> None:
+            super().__init__()
+            self.hanging_stream = HangingStream()
+
+        @override
+        async def acquire(
+            self, public_id: str, *, expected_generation_id: int | None = None
+        ) -> AcquiredOriginal:
+            del public_id, expected_generation_id
+            return AcquiredOriginal(
+                "book.fb2",
+                "application/x-fictionbook+xml",
+                len(self.body),
+                self.hanging_stream,
+                "fb2",
+                self.observed_revision,
+            )
+
+    real_open = Path.open
+
+    def staging_open(self: Path, mode: str = "r") -> BinaryIO:
+        opened = cast(BinaryIO, real_open(self, mode))
+        if self.suffix == ".source":
+            return cast(BinaryIO, _CloseFailingFile(opened))
+        return opened
+
+    monkeypatch.setattr(Path, "open", staging_open)
+    acquisition = HangingAcquisition()
+    converter = _Converter()
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    service = ConversionService(acquisition, ConverterRegistry([converter]), cache)
+    request = asyncio.create_task(service.convert("public", "epub"))
+    await acquisition.hanging_stream.started.wait()
+
+    await service.shutdown()
+
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert acquisition.hanging_stream.closed
+    assert converter.calls == 0
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+
+
 async def test_service_rejects_revision_race_before_converter(tmp_path: Path) -> None:
     acquisition = _Acquisition()
     acquisition.observed_revision = SourceRevision(101, 200, 300)
@@ -471,6 +634,210 @@ async def test_service_shutdown_cancels_gated_converter_and_removes_source(tmp_p
         await request
     assert acquisition.streams[0].closed
     assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+
+
+async def test_service_passes_expected_generation_to_describe_and_acquire(
+    tmp_path: Path,
+) -> None:
+    acquisition = _Acquisition()
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    service = ConversionService(acquisition, ConverterRegistry([_Converter()]), cache)
+
+    result = await service.convert("public", "epub", expected_generation_id=47)
+    await result.stream.aclose()
+
+    assert acquisition.describe_generations == [47]
+    assert acquisition.acquire_generations == [47]
+    await service.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (AcquisitionMemberNotFoundError("private"), SourceUnavailableError),
+        (AcquisitionCorruptError("private"), ConversionSourceError),
+    ],
+)
+@pytest.mark.parametrize("stage", ["describe", "acquire"])
+async def test_service_distinguishes_unavailable_from_source_integrity_failures(
+    tmp_path: Path,
+    error: Exception,
+    expected: type[Exception],
+    stage: str,
+) -> None:
+    class FailingAcquisition(_Acquisition):
+        @override
+        async def describe(
+            self, public_id: str, *, expected_generation_id: int | None = None
+        ) -> OriginalDescription:
+            if stage == "describe":
+                raise error
+            return await super().describe(public_id, expected_generation_id=expected_generation_id)
+
+        @override
+        async def acquire(
+            self, public_id: str, *, expected_generation_id: int | None = None
+        ) -> AcquiredOriginal:
+            if stage == "acquire":
+                raise error
+            return await super().acquire(public_id, expected_generation_id=expected_generation_id)
+
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    service = ConversionService(FailingAcquisition(), ConverterRegistry([_Converter()]), cache)
+
+    with pytest.raises(expected) as raised:
+        await service.convert("public", "epub")
+
+    assert "private" not in str(raised.value)
+    await service.shutdown()
+
+
+async def test_service_limits_distinct_cache_misses_to_two_converter_jobs(
+    tmp_path: Path,
+) -> None:
+    class CountingConverter(_Converter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = 0
+            self.maximum_active = 0
+            self.two_started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        @override
+        async def convert(self, source_path: Path, target_format: str, output_path: Path) -> None:
+            del source_path, target_format
+            self.calls += 1
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+            if self.active == 2:
+                self.two_started.set()
+            try:
+                await self.release.wait()
+                await asyncio.to_thread(output_path.write_bytes, b"converted")
+            finally:
+                self.active -= 1
+
+    acquisition = _Acquisition()
+    converter = CountingConverter()
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    service = ConversionService(acquisition, ConverterRegistry([converter]), cache)
+    converter.release.set()
+    cached = await service.convert("cached", "epub")
+    await cached.stream.aclose()
+    converter.release.clear()
+    requests = [
+        asyncio.create_task(service.convert(f"public-{index}", "epub")) for index in range(3)
+    ]
+
+    await asyncio.wait_for(converter.two_started.wait(), 2)
+    await asyncio.sleep(0)
+    assert converter.calls == 3
+    cache_hit = await asyncio.wait_for(service.convert("cached", "epub"), 0.5)
+    await cache_hit.stream.aclose()
+    assert converter.calls == 3
+    converter.release.set()
+    results = await asyncio.gather(*requests)
+
+    assert converter.calls == 4
+    assert converter.maximum_active == 2
+    await asyncio.gather(*(result.stream.aclose() for result in results))
+    await service.shutdown()
+
+
+async def test_process_wide_limit_does_not_leak_cancelled_waiter() -> None:
+    release = asyncio.Event()
+    two_started = asyncio.Event()
+    active = 0
+
+    async def hold_slot() -> None:
+        nonlocal active
+        async with conversion_service._CONVERSION_SLOTS.slot():
+            active += 1
+            if active == 2:
+                two_started.set()
+            try:
+                await release.wait()
+            finally:
+                active -= 1
+
+    holders = [asyncio.create_task(hold_slot()) for _ in range(2)]
+    await asyncio.wait_for(two_started.wait(), 2)
+    waiter = asyncio.create_task(hold_slot())
+    await asyncio.sleep(0.05)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    release.set()
+    await asyncio.gather(*holders)
+
+    reacquired = 0
+    both_reacquired = asyncio.Event()
+    release_reacquired = asyncio.Event()
+
+    async def reacquire_slot() -> None:
+        nonlocal reacquired
+        async with conversion_service._CONVERSION_SLOTS.slot():
+            reacquired += 1
+            if reacquired == 2:
+                both_reacquired.set()
+            await release_reacquired.wait()
+
+    replacements = [asyncio.create_task(reacquire_slot()) for _ in range(2)]
+    await asyncio.wait_for(both_reacquired.wait(), 0.5)
+    release_reacquired.set()
+    await asyncio.gather(*replacements)
+
+
+def test_service_limit_survives_sequential_event_loop_lifecycles(tmp_path: Path) -> None:
+    async def exercise(cache_path: Path) -> None:
+        class GatedConverter(_Converter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.active = 0
+                self.maximum_active = 0
+                self.two_started = asyncio.Event()
+                self.release = asyncio.Event()
+
+            @override
+            async def convert(
+                self, source_path: Path, target_format: str, output_path: Path
+            ) -> None:
+                del source_path, target_format
+                self.calls += 1
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+                if self.active == 2:
+                    self.two_started.set()
+                try:
+                    await self.release.wait()
+                    await asyncio.to_thread(output_path.write_bytes, b"converted")
+                finally:
+                    self.active -= 1
+
+        converter = GatedConverter()
+        cache = ArtifactCache(cache_path, 60)
+        await cache.startup()
+        service = ConversionService(_Acquisition(), ConverterRegistry([converter]), cache)
+        requests = [
+            asyncio.create_task(service.convert(f"lifecycle-{index}", "epub")) for index in range(3)
+        ]
+
+        await asyncio.wait_for(converter.two_started.wait(), 2)
+        await asyncio.sleep(0.05)
+        assert converter.calls == 2
+        converter.release.set()
+        results = await asyncio.gather(*requests)
+
+        assert converter.maximum_active == 2
+        await asyncio.gather(*(result.stream.aclose() for result in results))
+        await service.shutdown()
+
+    asyncio.run(exercise(tmp_path / "first"))
+    asyncio.run(exercise(tmp_path / "second"))
 
 
 async def test_converter_directory_output_preserves_invalid_output_error(tmp_path: Path) -> None:

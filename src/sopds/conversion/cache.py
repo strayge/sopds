@@ -316,8 +316,13 @@ class ArtifactCache:
             descriptor, raw_path = tempfile.mkstemp(
                 prefix=f"{digest}.", suffix=".source", dir=self._dir
             )
-            os.close(descriptor)
-            return Path(raw_path)
+            path = Path(raw_path)
+            try:
+                os.close(descriptor)
+            except BaseException:
+                _safe_remove(path)
+                raise
+            return path
 
         async with self._lock:
             if self._closing:

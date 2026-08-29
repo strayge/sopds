@@ -28,6 +28,10 @@ class SourceUnavailableError(ConversionError):
     """The original cannot currently be acquired."""
 
 
+class ConversionSourceError(ConversionError):
+    """The source failed safety, integrity, or I/O checks during conversion."""
+
+
 class ConverterExecutionError(ConversionError):
     """A converter failed while processing a source."""
 

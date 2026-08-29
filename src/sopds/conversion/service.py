@@ -1,18 +1,27 @@
 """Conversion orchestration across acquisition, registry, and artifact cache."""
 
 import asyncio
-from collections.abc import Callable
-from contextlib import suppress
+import threading
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from functools import partial
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Never
 
-from sopds.acquisition.contracts import Acquisition, AcquisitionError, AsyncByteStream
+from sopds.acquisition.contracts import (
+    Acquisition,
+    AcquisitionError,
+    AcquisitionMemberNotFoundError,
+    AcquisitionNotFoundError,
+    AcquisitionUnavailableError,
+    AsyncByteStream,
+)
 from sopds.acquisition.service import safe_download_filename
 from sopds.conversion.cache import CACHE_CHUNK_SIZE, ArtifactCache, cache_digest
 from sopds.conversion.contracts import (
     ConversionError,
     ConversionResult,
+    ConversionSourceError,
     ConversionSourceKey,
     ConversionTimeoutError,
     ConverterExecutionError,
@@ -22,6 +31,36 @@ from sopds.conversion.contracts import (
     normalize_format,
 )
 from sopds.conversion.registry import ConverterRegistry, RegisteredCapability
+
+
+class _ProcessWideConversionLimiter:
+    """Share permits across event loops without binding admission state to any loop."""
+
+    def __init__(self, capacity: int) -> None:
+        self._semaphore = threading.BoundedSemaphore(capacity)
+
+    @asynccontextmanager
+    async def slot(self) -> AsyncIterator[None]:
+        while not self._semaphore.acquire(blocking=False):  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        try:
+            yield
+        finally:
+            self._semaphore.release()
+
+
+_CONVERSION_SLOTS = _ProcessWideConversionLimiter(2)
+_UNAVAILABLE_ERRORS = (
+    AcquisitionNotFoundError,
+    AcquisitionUnavailableError,
+    AcquisitionMemberNotFoundError,
+)
+
+
+def _raise_source_error(error: AcquisitionError) -> Never:
+    if isinstance(error, _UNAVAILABLE_ERRORS):
+        raise SourceUnavailableError("Conversion source is unavailable") from error
+    raise ConversionSourceError("Conversion source failed integrity checks") from error
 
 
 async def _blocking[T](
@@ -41,7 +80,8 @@ async def _blocking[T](
                 break
         exception = task.exception()
         if exception is None and cancel_cleanup is not None:
-            cancel_cleanup(task.result())
+            with suppress(BaseException):
+                cancel_cleanup(task.result())
         raise
 
 
@@ -58,11 +98,19 @@ class ConversionService:
         self._registry = registry
         self._cache = cache
 
-    async def convert(self, public_id: str, target_format: str) -> ConversionResult:
+    async def convert(
+        self,
+        public_id: str,
+        target_format: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> ConversionResult:
         try:
-            description = await self._acquisition.describe(public_id)
+            description = await self._acquisition.describe(
+                public_id, expected_generation_id=expected_generation_id
+            )
         except AcquisitionError as error:
-            raise SourceUnavailableError("Conversion source is unavailable") from error
+            _raise_source_error(error)
         try:
             registration = self._registry.resolve(description.source_format, target_format)
         except ValueError:
@@ -77,7 +125,12 @@ class ConversionService:
         )
 
         async def produce(output_path: Path) -> None:
-            await self._produce(key, registration, output_path)
+            await self._produce(
+                key,
+                registration,
+                output_path,
+                expected_generation_id=expected_generation_id,
+            )
 
         artifact = await self._cache.get_or_create(key, produce)
         return ConversionResult(
@@ -94,11 +147,15 @@ class ConversionService:
         key: ConversionSourceKey,
         registration: RegisteredCapability,
         output_path: Path,
+        *,
+        expected_generation_id: int | None,
     ) -> None:
         try:
-            original = await self._acquisition.acquire(key.public_id)
+            original = await self._acquisition.acquire(
+                key.public_id, expected_generation_id=expected_generation_id
+            )
         except AcquisitionError as error:
-            raise SourceUnavailableError("Conversion source is unavailable") from error
+            _raise_source_error(error)
         try:
             try:
                 observed_format = normalize_format(original.source_format)
@@ -107,16 +164,20 @@ class ConversionService:
             if original.source_revision != key.revision or observed_format != key.source_format:
                 raise SourceChangedError("Conversion source changed during acquisition")
 
-            source_path = await self._cache.create_source_path(cache_digest(key))
+            try:
+                source_path = await self._cache.create_source_path(cache_digest(key))
+            except OSError as error:
+                raise ConversionSourceError("Conversion source failed integrity checks") from error
             try:
                 try:
                     await self._spool(original.stream, source_path)
                 except AcquisitionError as error:
-                    raise SourceUnavailableError("Conversion source is unavailable") from error
+                    _raise_source_error(error)
                 try:
-                    await registration.converter.convert(
-                        source_path, registration.capability.target_format, output_path
-                    )
+                    async with _CONVERSION_SLOTS.slot():
+                        await registration.converter.convert(
+                            source_path, registration.capability.target_format, output_path
+                        )
                 except TimeoutError as error:
                     raise ConversionTimeoutError("Converter timed out") from error
                 except ConversionError, asyncio.CancelledError:
@@ -130,9 +191,14 @@ class ConversionService:
                 await original.stream.aclose()
 
     async def _spool(self, stream: AsyncByteStream, path: Path) -> None:
-        file: BinaryIO = await _blocking(
-            lambda: path.open("wb"), cancel_cleanup=lambda opened: opened.close()
-        )
+        try:
+            file: BinaryIO = await _blocking(
+                lambda: path.open("wb"), cancel_cleanup=lambda opened: opened.close()
+            )
+        except OSError as error:
+            raise ConversionSourceError("Conversion source failed integrity checks") from error
+
+        body_error: BaseException | None = None
         try:
             async for chunk in stream:
                 for offset in range(0, len(chunk), CACHE_CHUNK_SIZE):
@@ -142,9 +208,19 @@ class ConversionService:
                         raise OSError("short temporary source write")
             await _blocking(file.flush)
         except OSError as error:
-            raise SourceUnavailableError("Conversion source is unavailable") from error
+            body_error = error
+            raise ConversionSourceError("Conversion source failed integrity checks") from error
+        except BaseException as error:
+            body_error = error
+            raise
         finally:
-            await _blocking(file.close)
+            try:
+                await _blocking(file.close)
+            except OSError as error:
+                if body_error is None:
+                    raise ConversionSourceError(
+                        "Conversion source failed integrity checks"
+                    ) from error
 
     async def shutdown(self) -> None:
         await self._cache.shutdown()

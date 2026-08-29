@@ -9,6 +9,7 @@ from sopds.conversion.contracts import (
     UnsupportedConversionError,
     normalize_format,
 )
+from sopds.conversion.policy import OUTPUT_POLICY, OutputDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,15 @@ class ConverterRegistry:
         for converter in converters:
             for capability in converter.capabilities:
                 key = (capability.source_format, capability.target_format)
+                output = OUTPUT_POLICY.choice(capability.target_format)
+                if (
+                    OUTPUT_POLICY.decision(*key) is not OutputDecision.CONVERT
+                    or capability.target_media_type != output.media_type
+                    or capability.target_extension != output.extension
+                ):
+                    raise ValueError(
+                        "Converter capability does not match the canonical output policy"
+                    )
                 if key in registrations:
                     raise ValueError(
                         "Duplicate converter capability "
