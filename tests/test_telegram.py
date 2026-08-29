@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import cast, override
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiogram import Bot, Dispatcher
@@ -36,6 +36,15 @@ from sopds.catalog.contracts import (
     CatalogRequest,
 )
 from sopds.config import TelegramConfig
+from sopds.conversion.contracts import (
+    ConversionResult,
+    ConversionSourceError,
+    ConversionTimeoutError,
+    SourceUnavailableError,
+    UnsupportedConversionError,
+)
+from sopds.conversion.policy import OUTPUT_POLICY
+from sopds.conversion.service import ConversionService
 from sopds.telegram.formatting import (
     button_label,
     results_text,
@@ -46,7 +55,7 @@ from sopds.telegram.formatting import (
 from sopds.telegram.handlers import TelegramHandlers
 from sopds.telegram.middleware import ActiveUpdateTracker, AllowlistMiddleware
 from sopds.telegram.runner import TelegramRunner
-from sopds.telegram.state import CallbackStateStore, PageState
+from sopds.telegram.state import CallbackStateStore, DownloadState, PageState
 from sopds.telegram.upload import StreamingInputFile
 
 
@@ -106,6 +115,20 @@ async def test_callback_state_ttl_lru_binding_opacity_and_concurrency() -> None:
     assert len(set(tokens)) == 20
     now = 111.0
     assert await store.get(tokens[-1], 4) is None
+
+
+async def test_download_callback_state_is_typed_chat_bound_expiring_and_compact() -> None:
+    now = 10.0
+    store = CallbackStateStore(ttl_seconds=5, clock=lambda: now)
+    token = await store.put_download(10, DownloadState("x" * 62, "azw3"))
+
+    assert len(f"c:{token}".encode()) <= 64
+    assert await store.get(token, 10) is None
+    assert await store.get_download(token, 11) is None
+    assert await store.get_download(token, 10) == DownloadState("x" * 62, "azw3")
+
+    now = 15.0
+    assert await store.get_download(token, 10) is None
 
 
 def test_plain_text_formatting_normalizes_controls_and_bounds_output() -> None:
@@ -344,7 +367,7 @@ def _summary(index: int) -> BookSummary:
     )
 
 
-def _detail() -> BookDetail:
+def _detail(source_format: str = "fb2") -> BookDetail:
     return BookDetail(
         public_id="book-0",
         title="Book 0",
@@ -356,10 +379,44 @@ def _detail() -> BookDetail:
         libid=None,
         published_date=date(2020, 1, 1),
         language="en",
-        original_format="fb2",
+        original_format=source_format,
         rating=None,
         keywords=None,
     )
+
+
+class _FakeConversion:
+    def __init__(
+        self,
+        *,
+        supported: set[tuple[str, str]] | None = None,
+        content_length: int = 9,
+        error: Exception | None = None,
+    ) -> None:
+        self.supported = supported or {("fb2", "epub"), ("fb2", "azw3")}
+        self.content_length = content_length
+        self.error = error
+        self.calls: list[tuple[str, str]] = []
+        self.stream = _Stream()
+
+    def supports(self, source_format: str, target_format: str) -> bool:
+        source = source_format.strip().removeprefix(".").casefold()
+        return (source, target_format.casefold()) in self.supported
+
+    async def convert(self, public_id: str, target_format: str) -> ConversionResult:
+        self.calls.append((public_id, target_format))
+        if self.error is not None:
+            raise self.error
+        return ConversionResult(
+            filename=f"Converted.{target_format}",
+            media_type=(
+                "application/epub+zip"
+                if target_format == "epub"
+                else "application/vnd.amazon.ebook"
+            ),
+            content_length=self.content_length,
+            stream=cast(AsyncByteStream, self.stream),
+        )
 
 
 async def test_handlers_start_plain_text_search_detail_and_pagination() -> None:
@@ -395,6 +452,7 @@ async def test_handlers_start_plain_text_search_detail_and_pagination() -> None:
     detail_markup = detail_message.answers[0][1]
     assert detail_markup is not None
     assert len(detail_markup.inline_keyboard) == 1  # type: ignore[attr-defined]
+    assert detail_markup.inline_keyboard[0][0].text == "FB2"  # type: ignore[attr-defined]
 
     page_data = keyboard[-1][0].callback_data
     page_message = _FakeMessage()
@@ -459,7 +517,7 @@ async def test_cancelled_send_closes_stream_before_propagating() -> None:
     assert acquisition.stream.closed == 1
 
 
-async def test_send_failure_closes_stream_and_reports_unavailable() -> None:
+async def test_send_failure_closes_stream_and_reports_upload_failure() -> None:
     acquisition = _FakeAcquisition(1)
     handlers = TelegramHandlers(
         cast(Catalog, _FakeCatalog([])),
@@ -469,7 +527,7 @@ async def test_send_failure_closes_stream_and_reports_unavailable() -> None:
     message = _FakeMessage(fail_document=True)
     await handlers.on_callback(cast(CallbackQuery, _FakeCallback("x:book-0", message)))
     assert acquisition.stream.closed == 1
-    assert message.answers[-1][0] == "The original file is currently unavailable."
+    assert message.answers[-1][0] == "Telegram could not send this file."
 
 
 class _UnavailableAcquisition:
@@ -505,6 +563,155 @@ async def test_download_rechecks_size_after_open_and_closes() -> None:
     assert acquisition.acquire_calls == 1
     assert acquisition.stream.closed == 1
     assert message.documents == []
+
+
+@pytest.mark.parametrize(
+    ("source_format", "expected_labels"),
+    [
+        (".FB2", ["FB2", "EPUB", "AZW3"]),
+        ("epub", ["EPUB", "AZW3"]),
+        ("azw3", ["AZW3"]),
+        ("pdf", ["PDF"]),
+    ],
+)
+async def test_detail_keyboard_uses_source_label_and_registered_nonduplicate_formats(
+    source_format: str, expected_labels: list[str]
+) -> None:
+    conversion = _FakeConversion(supported={("fb2", "epub"), ("fb2", "azw3"), ("epub", "azw3")})
+    handlers = TelegramHandlers(
+        cast(Catalog, _FakeCatalog([], _detail(source_format))),
+        cast(Acquisition, _FakeAcquisition(1)),
+        CallbackStateStore(),
+        cast(ConversionService, conversion),
+        OUTPUT_POLICY,
+    )
+    message = _FakeMessage()
+
+    await handlers.on_callback(cast(CallbackQuery, _FakeCallback("d:book-0", message)))
+
+    markup = message.answers[0][1]
+    assert markup is not None
+    buttons = markup.inline_keyboard[0]  # type: ignore[attr-defined]
+    assert [button.text for button in buttons] == expected_labels
+    assert all(len((button.callback_data or "").encode()) <= 64 for button in buttons)
+    assert conversion.calls == []
+
+
+async def test_converted_callback_uploads_result_without_source_size_preflight() -> None:
+    state = CallbackStateStore()
+    token = await state.put_download(10, DownloadState("book-0", "epub"))
+    acquisition = _FakeAcquisition(100 * 1024 * 1024)
+    conversion = _FakeConversion()
+    handlers = TelegramHandlers(
+        cast(Catalog, _FakeCatalog([], _detail())),
+        cast(Acquisition, acquisition),
+        state,
+        cast(ConversionService, conversion),
+    )
+    message = _FakeMessage()
+
+    await handlers.on_callback(cast(CallbackQuery, _FakeCallback(f"c:{token}", message)))
+
+    assert conversion.calls == [("book-0", "epub")]
+    assert acquisition.describe_calls == acquisition.acquire_calls == 0
+    assert len(message.documents) == 1
+    document, caption = message.documents[0]
+    assert document.filename == "Converted.epub"
+    assert caption == "Book 0"
+    assert conversion.stream.closed == 1
+
+
+async def test_converted_output_limit_uses_artifact_size_and_closes_immediately() -> None:
+    state = CallbackStateStore()
+    token = await state.put_download(10, DownloadState("book-0", "azw3"))
+    conversion = _FakeConversion(content_length=50 * 1024 * 1024 + 1)
+    handlers = TelegramHandlers(
+        cast(Catalog, _FakeCatalog([], _detail())),
+        cast(Acquisition, _FakeAcquisition(1)),
+        state,
+        cast(ConversionService, conversion),
+    )
+    message = _FakeMessage()
+
+    await handlers.on_callback(cast(CallbackQuery, _FakeCallback(f"c:{token}", message)))
+
+    assert conversion.stream.closed == 1
+    assert message.documents == []
+    assert message.answers == [("This file is too large to send through Telegram.", None)]
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (SourceUnavailableError(), "The source file is currently unavailable."),
+        (UnsupportedConversionError(), "This format is unavailable."),
+        (ConversionTimeoutError(), "Conversion timed out."),
+        (ConversionSourceError(), "Conversion failed."),
+    ],
+)
+async def test_converted_failures_have_distinct_safe_messages(
+    error: Exception, message: str
+) -> None:
+    state = CallbackStateStore()
+    token = await state.put_download(10, DownloadState("book-0", "epub"))
+    conversion = _FakeConversion(error=error)
+    handlers = TelegramHandlers(
+        cast(Catalog, _FakeCatalog([], _detail())),
+        cast(Acquisition, _FakeAcquisition(1)),
+        state,
+        cast(ConversionService, conversion),
+    )
+    telegram_message = _FakeMessage()
+
+    await handlers.on_callback(cast(CallbackQuery, _FakeCallback(f"c:{token}", telegram_message)))
+
+    assert telegram_message.answers == [(message, None)]
+    assert telegram_message.documents == []
+
+
+async def test_expired_or_cross_chat_conversion_token_is_rejected() -> None:
+    state = CallbackStateStore()
+    token = await state.put_download(11, DownloadState("book-0", "epub"))
+    handlers = TelegramHandlers(
+        cast(Catalog, _FakeCatalog([], _detail())),
+        cast(Acquisition, _FakeAcquisition(1)),
+        state,
+        cast(ConversionService, _FakeConversion()),
+    )
+    callback = _FakeCallback(f"c:{token}", _FakeMessage(chat_id=10))
+
+    await handlers.on_callback(cast(CallbackQuery, callback))
+
+    assert callback.answers == [("This format choice is unavailable or expired.", True)]
+
+
+async def test_converted_upload_failure_and_cancellation_close_artifacts() -> None:
+    async def run(message: _FakeMessage) -> tuple[_FakeConversion, asyncio.Task[None]]:
+        state = CallbackStateStore()
+        token = await state.put_download(10, DownloadState("book-0", "epub"))
+        conversion = _FakeConversion()
+        handlers = TelegramHandlers(
+            cast(Catalog, _FakeCatalog([], _detail())),
+            cast(Acquisition, _FakeAcquisition(1)),
+            state,
+            cast(ConversionService, conversion),
+        )
+        task = asyncio.create_task(
+            handlers.on_callback(cast(CallbackQuery, _FakeCallback(f"c:{token}", message)))
+        )
+        return conversion, task
+
+    failed_conversion, failed_task = await run(_FakeMessage(fail_document=True))
+    await failed_task
+    assert failed_conversion.stream.closed == 1
+
+    blocked_message = _FakeMessage(block_document=True)
+    cancelled_conversion, cancelled_task = await run(blocked_message)
+    await blocked_message.document_started.wait()
+    cancelled_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_task
+    assert cancelled_conversion.stream.closed == 1
 
 
 async def test_command_filter_rejects_mentions_for_another_bot() -> None:
@@ -705,6 +912,37 @@ class _FakeDispatcher:
 
     async def stop_polling(self) -> None:
         self.polling_stopped.set()
+
+
+async def test_runner_wires_conversion_and_output_policy_into_handlers() -> None:
+    bot = _FakeBot()
+    dispatcher = _FakeDispatcher()
+    config = TelegramConfig.model_validate(
+        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
+    )
+    catalog = cast(Catalog, _FakeCatalog([]))
+    acquisition = cast(Acquisition, _FakeAcquisition(1))
+    conversion = cast(ConversionService, _FakeConversion())
+
+    with patch("sopds.telegram.runner.TelegramHandlers") as handlers_type:
+        runner = TelegramRunner(
+            config,
+            catalog,
+            acquisition,
+            conversion,
+            OUTPUT_POLICY,
+            bot=cast(Bot, bot),
+            dispatcher=cast(Dispatcher, dispatcher),
+        )
+
+    handlers_type.assert_called_once_with(
+        catalog,
+        acquisition,
+        runner.state,
+        conversion,
+        OUTPUT_POLICY,
+    )
+    await runner.shutdown()
 
 
 async def test_runner_drops_pending_once_and_uses_bounded_polling() -> None:

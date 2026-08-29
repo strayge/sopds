@@ -1,4 +1,4 @@
-"""Short-lived, chat-bound state for Telegram pagination callbacks."""
+"""Short-lived, chat-bound state for Telegram callbacks."""
 
 import asyncio
 import secrets
@@ -15,14 +15,20 @@ class PageState:
 
 
 @dataclass(frozen=True, slots=True)
+class DownloadState:
+    public_id: str
+    target_format: str
+
+
+@dataclass(frozen=True, slots=True)
 class _Entry:
     chat_id: int
-    state: PageState
+    state: PageState | DownloadState
     expires_at: float
 
 
 class CallbackStateStore:
-    """Keep catalog cursors out of callback data and bound to their originating chat."""
+    """Keep bounded callback data opaque and bound to its originating chat."""
 
     def __init__(
         self,
@@ -40,6 +46,20 @@ class CallbackStateStore:
         self._lock = asyncio.Lock()
 
     async def put(self, chat_id: int, state: PageState) -> str:
+        return await self._put(chat_id, state)
+
+    async def get(self, token: str, chat_id: int) -> PageState | None:
+        state = await self._get(token, chat_id)
+        return state if isinstance(state, PageState) else None
+
+    async def put_download(self, chat_id: int, state: DownloadState) -> str:
+        return await self._put(chat_id, state)
+
+    async def get_download(self, token: str, chat_id: int) -> DownloadState | None:
+        state = await self._get(token, chat_id)
+        return state if isinstance(state, DownloadState) else None
+
+    async def _put(self, chat_id: int, state: PageState | DownloadState) -> str:
         async with self._lock:
             now = self._clock()
             self._expire(now)
@@ -51,7 +71,7 @@ class CallbackStateStore:
                 self._entries.popitem(last=False)
             return token
 
-    async def get(self, token: str, chat_id: int) -> PageState | None:
+    async def _get(self, token: str, chat_id: int) -> PageState | DownloadState | None:
         async with self._lock:
             self._expire(self._clock())
             entry = self._entries.get(token)

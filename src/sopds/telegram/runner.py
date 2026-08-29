@@ -10,6 +10,8 @@ from aiogram import Bot, Dispatcher
 from sopds.acquisition.contracts import Acquisition
 from sopds.catalog.contracts import Catalog
 from sopds.config import TelegramConfig
+from sopds.conversion.policy import OUTPUT_POLICY, OutputPolicy
+from sopds.conversion.service import ConversionService
 from sopds.telegram.handlers import TelegramHandlers
 from sopds.telegram.middleware import ActiveUpdateTracker, AllowlistMiddleware
 from sopds.telegram.state import CallbackStateStore
@@ -44,6 +46,8 @@ class TelegramRunner:
         config: TelegramConfig,
         catalog: Catalog,
         acquisition: Acquisition,
+        conversion: ConversionService | None = None,
+        output_policy: OutputPolicy = OUTPUT_POLICY,
         *,
         bot: Bot | None = None,
         dispatcher: Dispatcher | None = None,
@@ -58,7 +62,15 @@ class TelegramRunner:
         self.tracker = ActiveUpdateTracker()
         self.dispatcher.update.outer_middleware(AllowlistMiddleware(config.allowed_chat_ids))
         self.dispatcher.update.outer_middleware(self.tracker)
-        self.dispatcher.include_router(TelegramHandlers(catalog, acquisition, self.state).router())
+        self.dispatcher.include_router(
+            TelegramHandlers(
+                catalog,
+                acquisition,
+                self.state,
+                conversion,
+                output_policy,
+            ).router()
+        )
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None

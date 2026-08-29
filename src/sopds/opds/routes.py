@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 
 from sopds.catalog.contracts import (
+    BookSummary,
     Catalog,
     CatalogInputError,
     CatalogRequest,
@@ -14,6 +15,9 @@ from sopds.catalog.contracts import (
     NavigationRequest,
 )
 from sopds.config import AppConfig
+from sopds.conversion.contracts import UnsupportedConversionError
+from sopds.conversion.policy import OUTPUT_POLICY, OutputDecision
+from sopds.conversion.registry import ConverterRegistry
 from sopds.opds.render import (
     ACQUISITION_TYPE,
     NAVIGATION_TYPE,
@@ -39,6 +43,38 @@ def _base_path(request: Request) -> str:
     """Keep links on the client's origin while preserving a configured proxy prefix."""
     config = cast(AppConfig, request.app.state.config)
     return (config.server.base_url.path or "").rstrip("/")
+
+
+def _conversion_links(
+    request: Request, base_path: str, books: tuple[BookSummary, ...]
+) -> tuple[tuple[tuple[str, str], ...], ...]:
+    """Advertise only registered conversions without opening or converting a source."""
+    registry = cast(
+        ConverterRegistry | None, getattr(request.app.state, "converter_registry", None)
+    )
+    all_links: list[tuple[tuple[str, str], ...]] = []
+    for book in books:
+        links: list[tuple[str, str]] = []
+        if book.downloadable and registry is not None:
+            public_id = quote(book.public_id, safe="")
+            for choice in OUTPUT_POLICY.choices():
+                if (
+                    OUTPUT_POLICY.decision(book.original_format, choice.key)
+                    is not OutputDecision.CONVERT
+                ):
+                    continue
+                try:
+                    registration = registry.resolve(book.original_format, choice.key)
+                except UnsupportedConversionError, ValueError:
+                    continue
+                links.append(
+                    (
+                        f"{base_path}/books/{public_id}/download/{choice.key}",
+                        registration.capability.target_media_type,
+                    )
+                )
+        all_links.append(tuple(links))
+    return tuple(all_links)
 
 
 def _xml(body: bytes, media_type: str) -> Response:
@@ -201,6 +237,7 @@ async def books(
         download_urls=tuple(
             f"{base_path}/books/{quote(book.public_id, safe='')}/download" for book in page.books
         ),
+        conversion_links=_conversion_links(request, base_path, page.books),
     )
     return _xml(body, ACQUISITION_TYPE)
 
@@ -296,6 +333,7 @@ async def _navigation(
                 f"{base_path}/books/{quote(book.public_id, safe='')}/download"
                 for book in page.books
             ),
+            conversion_links=_conversion_links(request, base_path, page.books),
         )
         return _xml(body, ACQUISITION_TYPE)
 

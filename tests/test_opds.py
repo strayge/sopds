@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI
@@ -19,6 +20,12 @@ from sopds.catalog.contracts import (
     NavigationRequest,
 )
 from sopds.config import AppConfig
+from sopds.conversion.adapters import (
+    EpubToAzw3Converter,
+    Fb2ToAzw3Converter,
+    Fb2ToEpubConverter,
+)
+from sopds.conversion.registry import ConverterRegistry
 from sopds.opds.render import (
     ACQUISITION_REL,
     ACQUISITION_TYPE,
@@ -269,6 +276,90 @@ def test_acquisition_feed_has_complete_inline_original_metadata_and_safe_xml() -
     request = catalog.requests[0]
     assert request.author == "A & B"
     assert request.series == "S"
+
+
+def test_opds_acquisitions_follow_registered_source_matrix_without_conversion() -> None:
+    app, catalog = _app()
+    converter_runner = AsyncMock()
+    app.state.converter_registry = ConverterRegistry(
+        (
+            Fb2ToEpubConverter(runner=converter_runner),
+            Fb2ToAzw3Converter(runner=converter_runner),
+            EpubToAzw3Converter(runner=converter_runner),
+        )
+    )
+    matrix = (
+        ("fb2-book", "fb2", True),
+        ("epub-book", "epub", True),
+        ("azw3-book", "azw3", True),
+        ("pdf-book", "pdf", True),
+        ("missed-book", "fb2", False),
+    )
+
+    async def browse(request: CatalogRequest) -> CatalogPage:
+        catalog.requests.append(request)
+        return CatalogPage(
+            tuple(
+                BookSummary(
+                    public_id=public_id,
+                    title=public_id,
+                    authors=("Author",),
+                    series=None,
+                    series_number=None,
+                    language="en",
+                    original_format=source_format,
+                    size=10,
+                    downloadable=downloadable,
+                    updated_at=_UPDATED,
+                )
+                for public_id, source_format, downloadable in matrix
+            ),
+            None,
+            _UPDATED,
+        )
+
+    catalog.browse = browse  # type: ignore[method-assign]
+    with TestClient(app) as client:
+        response = client.get("/opds/books/")
+
+    root = ET.fromstring(response.content)  # noqa: S314
+    entries = root.findall("atom:entry", {"atom": ATOM})
+    acquisitions = {
+        entry.findtext("atom:title", namespaces={"atom": ATOM}): [
+            (link.get("href"), link.get("type"), link.get("length"))
+            for link in entry.findall(f"atom:link[@rel='{ACQUISITION_REL}']", {"atom": ATOM})
+        ]
+        for entry in entries
+    }
+    assert acquisitions == {
+        "fb2-book": [
+            ("/base/books/fb2-book/download", "application/x-fictionbook+xml", "10"),
+            ("/base/books/fb2-book/download/epub", "application/epub+zip", None),
+            (
+                "/base/books/fb2-book/download/azw3",
+                "application/vnd.amazon.ebook",
+                None,
+            ),
+        ],
+        "epub-book": [
+            ("/base/books/epub-book/download", "application/epub+zip", "10"),
+            (
+                "/base/books/epub-book/download/azw3",
+                "application/vnd.amazon.ebook",
+                None,
+            ),
+        ],
+        "azw3-book": [
+            (
+                "/base/books/azw3-book/download",
+                "application/vnd.amazon.ebook",
+                "10",
+            )
+        ],
+        "pdf-book": [("/base/books/pdf-book/download", "application/pdf", "10")],
+        "missed-book": [],
+    }
+    converter_runner.assert_not_awaited()
 
 
 def test_grouped_navigation_links_to_child_prefix_and_meaningful_parent() -> None:

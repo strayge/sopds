@@ -190,6 +190,7 @@ def acquisition_feed(
     books: tuple[BookSummary, ...],
     book_urls: tuple[str, ...],
     download_urls: tuple[str, ...],
+    conversion_links: tuple[tuple[tuple[str, str], ...], ...],
 ) -> bytes:
     root = _feed(
         feed_id=feed_id,
@@ -202,7 +203,9 @@ def acquisition_feed(
         search_url=search_url,
         next_url=next_url,
     )
-    for book, alternate_url, download_url in zip(books, book_urls, download_urls, strict=True):
+    for book, alternate_url, download_url, converted in zip(
+        books, book_urls, download_urls, conversion_links, strict=True
+    ):
         entry = _element(root, "entry")
         _element(entry, "id", stable_id("book", book.public_id))
         _element(entry, "title", book.title)
@@ -243,14 +246,17 @@ def acquisition_feed(
         summary.append(f'<p class="book">{"<br/>".join(description)}</p>')
         _element(entry, "content", "".join(summary), type="html")
         _link(entry, "alternate", alternate_url, "text/html")
-        _element(
-            entry,
-            "link",
-            rel=ACQUISITION_REL,
-            href=download_url,
-            type=media_type_for(book.original_format),
-            length=str(book.size),
-        )
+        if book.downloadable:
+            _element(
+                entry,
+                "link",
+                rel=ACQUISITION_REL,
+                href=download_url,
+                type=media_type_for(book.original_format),
+                length=str(book.size),
+            )
+            for href, media_type in converted:
+                _link(entry, ACQUISITION_REL, href, media_type)
     return cast(bytes, ET.tostring(root, encoding="utf-8", xml_declaration=True))
 
 

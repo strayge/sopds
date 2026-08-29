@@ -3,6 +3,7 @@
 import unicodedata
 
 from sopds.catalog.contracts import BookDetail, BookSummary
+from sopds.conversion.contracts import normalize_format
 
 TELEGRAM_TEXT_LIMIT = 4_096
 BUTTON_LABEL_LIMIT = 64
@@ -44,6 +45,13 @@ def truncate(value: str, limit: int) -> str:
 
 def button_label(value: str) -> str:
     return truncate(sanitize(value), BUTTON_LABEL_LIMIT) or "Untitled"
+
+
+def source_format_label(value: str) -> str:
+    try:
+        return normalize_format(value).upper()
+    except ValueError:
+        return "FILE"
 
 
 def results_text(books: tuple[BookSummary, ...]) -> str:

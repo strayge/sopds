@@ -259,6 +259,7 @@ def test_telegram_starts_only_after_cache_startup_and_recovery(
     migrated_app_config: AppConfig,
 ) -> None:
     events: list[str] = []
+    runner_args: tuple[object, ...] = ()
     telegram_config = TelegramConfig.model_validate(
         {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
     )
@@ -271,7 +272,9 @@ def test_telegram_starts_only_after_cache_startup_and_recovery(
         events.append("recover")
 
     class FakeRunner:
-        def __init__(self, *_args: object) -> None:
+        def __init__(self, *args: object) -> None:
+            nonlocal runner_args
+            runner_args = args
             events.append("constructed")
 
         def start(self) -> None:
@@ -281,13 +284,21 @@ def test_telegram_starts_only_after_cache_startup_and_recovery(
         async def shutdown(self) -> None:
             events.append("closed")
 
+    app = create_app(config)
     with (
         patch.object(ArtifactCache, "startup", autospec=True, side_effect=cache_startup),
         patch.object(ImportCoordinator, "recover", autospec=True, side_effect=recover),
         patch("sopds.lifecycle.TelegramRunner", FakeRunner),
-        TestClient(create_app(config)),
+        TestClient(app),
     ):
         assert events == ["constructed", "cache", "recover", "started"]
+        assert runner_args == (
+            telegram_config,
+            app.state.catalog,
+            app.state.acquisition,
+            app.state.conversion,
+            OUTPUT_POLICY,
+        )
 
     assert events[-1] == "closed"
 

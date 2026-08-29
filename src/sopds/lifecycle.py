@@ -81,7 +81,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             telegram: TelegramRunner | None = None
             if config.telegram.enabled:
                 try:
-                    telegram = TelegramRunner(config.telegram, catalog, acquisition)
+                    telegram = TelegramRunner(
+                        config.telegram,
+                        catalog,
+                        acquisition,
+                        conversion,
+                        OUTPUT_POLICY,
+                    )
                     resources.push_async_callback(_observed_cleanup, "telegram", telegram.shutdown)
                 except Exception as error:
                     _LOGGER.warning(
