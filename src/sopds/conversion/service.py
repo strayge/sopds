@@ -173,7 +173,9 @@ class ConversionService:
                 raise SourceChangedError("Conversion source changed during acquisition")
 
             try:
-                source_path = await self._cache.create_source_path(cache_digest(key))
+                source_path = await self._cache.create_source_path(
+                    cache_digest(key), key.source_format
+                )
             except OSError as error:
                 raise ConversionSourceError("Conversion source failed integrity checks") from error
             try:

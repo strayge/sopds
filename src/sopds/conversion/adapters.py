@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from itertools import pairwise
 from pathlib import Path
+from typing import BinaryIO
 from xml.etree import ElementTree
 
 from sopds.conversion.contracts import (
@@ -30,16 +31,41 @@ def _invalid_output() -> InvalidConversionOutputError:
     return InvalidConversionOutputError("Converter produced invalid output")
 
 
+def _open_regular_artifact(path: Path) -> tuple[BinaryIO, int]:
+    """Bind validation to one nonblocking descriptor without following substitutions."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise _invalid_output()
+    flags = os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise _invalid_output() from error
+    try:
+        result = os.fstat(descriptor)
+        if not stat.S_ISREG(result.st_mode) or result.st_size <= 0:
+            raise _invalid_output()
+        artifact = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        return artifact, result.st_size
+    finally:
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
+
+
 def validate_epub(path: Path) -> None:
     """Reject EPUBs that cannot satisfy the required ZIP and package-root invariants."""
     try:
-        with zipfile.ZipFile(path) as archive:
+        artifact, _size = _open_regular_artifact(path)
+        with artifact, zipfile.ZipFile(artifact) as archive:
             entries = archive.infolist()
             if not entries:
                 raise _invalid_output()
             first = entries[0]
             if (
                 first.filename != "mimetype"
+                or first.header_offset != 0
                 or first.compress_type != zipfile.ZIP_STORED
                 or archive.read(first) != b"application/epub+zip"
             ):
@@ -64,8 +90,8 @@ def validate_epub(path: Path) -> None:
 def validate_azw3(path: Path) -> None:
     """Reject truncated or marker-free PalmDB/MOBI output before cache publication."""
     try:
-        size = path.stat().st_size
-        with path.open("rb") as artifact:
+        artifact, size = _open_regular_artifact(path)
+        with artifact:
             header = artifact.read(78)
             if len(header) != 78 or header[60:68] != b"BOOKMOBI":
                 raise _invalid_output()
@@ -84,6 +110,9 @@ def validate_azw3(path: Path) -> None:
                 or any(left >= right for left, right in pairwise(offsets))
                 or any(offset >= size for offset in offsets)
             ):
+                raise _invalid_output()
+            first_record_end = offsets[1] if len(offsets) > 1 else size
+            if offsets[0] + 20 > first_record_end:
                 raise _invalid_output()
             artifact.seek(offsets[0] + 16)
             if artifact.read(4) != b"MOBI":

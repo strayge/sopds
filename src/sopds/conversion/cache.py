@@ -24,6 +24,7 @@ from sopds.conversion.contracts import (
     ConversionShutdownError,
     ConversionSourceKey,
     InvalidConversionOutputError,
+    normalize_format,
 )
 
 CACHE_CHUNK_SIZE = 64 * 1024
@@ -371,10 +372,12 @@ class ArtifactCache:
                 self._operations.pop(digest, None)
             operation.retired.set()
 
-    async def create_source_path(self, digest: str) -> Path:
+    async def create_source_path(self, digest: str, source_format: str) -> Path:
+        canonical_format = normalize_format(source_format)
+
         def create() -> Path:
             descriptor, raw_path = tempfile.mkstemp(
-                prefix=f"{digest}.", suffix=".source", dir=self._dir
+                prefix=f"{digest}.", suffix=f".source.{canonical_format}", dir=self._dir
             )
             path = Path(raw_path)
             try:
@@ -433,7 +436,7 @@ class ArtifactCache:
                     if path in self._working_paths:
                         continue
                     name = path.name
-                    if name.endswith((".tmp", ".source")):
+                    if name.endswith(".tmp") or name.endswith(".source") or ".source." in name:
                         account(_safe_remove(path))
                         continue
                     if not name.endswith(".artifact"):
@@ -463,11 +466,14 @@ class ArtifactCache:
     async def _run_shutdown(self) -> None:
         async with self._lock:
             operations = tuple(self._operations.values())
+            to_cancel: list[asyncio.Task[Path]] = []
             for operation in operations:
-                operation.accepting = False
+                if operation.accepting:
+                    operation.accepting = False
+                    to_cancel.append(operation.task)
             admitted = tuple(self._admitted)
-        for operation in operations:
-            operation.task.cancel()
+        for task in to_cancel:
+            task.cancel()
         if operations:
             await asyncio.gather(
                 *(operation.task for operation in operations), return_exceptions=True

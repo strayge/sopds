@@ -1,6 +1,7 @@
 """Concrete conversion adapter command, identity, validation, and cleanup tests."""
 
 import asyncio
+import os
 import struct
 import tempfile
 import threading
@@ -163,6 +164,68 @@ def test_structural_validators_reject_truncated_output(
 
     with pytest.raises(InvalidConversionOutputError):
         validator(artifact)
+
+
+@pytest.mark.parametrize("validator", [validate_epub, validate_azw3])
+@pytest.mark.parametrize("replacement", ["fifo", "symlink"])
+def test_structural_validators_reject_special_files_promptly(
+    tmp_path: Path, validator: Callable[[Path], None], replacement: str
+) -> None:
+    artifact = tmp_path / "artifact"
+    if replacement == "fifo":
+        os.mkfifo(artifact)
+    else:
+        target = tmp_path / "target"
+        target.write_bytes(b"not an artifact")
+        artifact.symlink_to(target)
+
+    with pytest.raises(InvalidConversionOutputError):
+        validator(artifact)
+
+
+@pytest.mark.parametrize("validator", [validate_epub, validate_azw3])
+def test_structural_validators_fail_safe_without_nofollow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    validator: Callable[[Path], None],
+) -> None:
+    artifact = tmp_path / "valid-artifact"
+    if validator is validate_epub:
+        _write_epub(artifact)
+    else:
+        _write_azw3(artifact)
+    monkeypatch.delattr(os, "O_NOFOLLOW")
+
+    with pytest.raises(InvalidConversionOutputError):
+        validator(artifact)
+
+
+def test_epub_validator_rejects_prefixed_archive(tmp_path: Path) -> None:
+    artifact = tmp_path / "prefixed.epub"
+    _write_epub(artifact)
+    artifact.write_bytes(b"untrusted-prefix" + artifact.read_bytes())
+
+    with pytest.raises(InvalidConversionOutputError):
+        validate_epub(artifact)
+
+
+def test_azw3_validator_rejects_mobi_marker_outside_first_record(tmp_path: Path) -> None:
+    artifact = tmp_path / "marker-in-record-one.azw3"
+    header = bytearray(78)
+    header[60:68] = b"BOOKMOBI"
+    header[76:78] = struct.pack(">H", 2)
+    first_offset = 96
+    second_offset = first_offset + 16
+    body = bytearray(second_offset + 32)
+    body[:78] = header
+    body[78:86] = struct.pack(">I", first_offset) + b"\x00\x00\x00\x01"
+    body[86:94] = struct.pack(">I", second_offset) + b"\x00\x00\x00\x02"
+    body[94:96] = b"\x00\x00"
+    body[second_offset : second_offset + 4] = b"MOBI"
+    artifact.write_bytes(body)
+
+    with pytest.raises(InvalidConversionOutputError):
+        validate_azw3(artifact)
 
 
 def test_azw3_validator_rejects_record_start_before_required_gap(tmp_path: Path) -> None:

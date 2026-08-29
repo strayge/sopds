@@ -20,12 +20,14 @@ from sopds.acquisition.contracts import (
     SourceRevision,
 )
 from sopds.conversion import service as conversion_service
+from sopds.conversion.adapters import EpubToAzw3Converter, Fb2ToEpubConverter
 from sopds.conversion.cache import CACHE_CHUNK_SIZE, ArtifactCache, cache_digest
 from sopds.conversion.contracts import (
     ConversionCapability,
     ConversionShutdownError,
     ConversionSourceError,
     ConversionSourceKey,
+    ConverterExecutionError,
     ConverterIdentity,
     InvalidConversionOutputError,
     SourceChangedError,
@@ -33,6 +35,7 @@ from sopds.conversion.contracts import (
     UnsupportedConversionError,
 )
 from sopds.conversion.policy import OUTPUT_POLICY, OutputDecision
+from sopds.conversion.process import ProcessResult
 from sopds.conversion.registry import ConverterRegistry
 from sopds.conversion.service import ConversionService
 
@@ -106,10 +109,16 @@ class _Converter:
 
 
 class _Acquisition:
-    def __init__(self, revision: SourceRevision = _REVISION, body: bytes = b"source") -> None:
+    def __init__(
+        self,
+        revision: SourceRevision = _REVISION,
+        body: bytes = b"source",
+        source_format: str = "fb2",
+    ) -> None:
         self.revision = revision
         self.observed_revision = revision
         self.body = body
+        self.source_format = source_format
         self.streams: list[_BytesStream] = []
         self.describe_generations: list[int | None] = []
         self.acquire_generations: list[int | None] = []
@@ -122,7 +131,7 @@ class _Acquisition:
     ) -> OriginalDescription:
         self.describe_generations.append(expected_generation_id)
         return OriginalDescription(
-            public_id, "Unsafe / title", "FB2", len(self.body), self.revision
+            public_id, "Unsafe / title", self.source_format, len(self.body), self.revision
         )
 
     async def acquire(
@@ -140,7 +149,7 @@ class _Acquisition:
             "application/x-fictionbook+xml",
             len(self.body),
             stream,
-            "fb2",
+            self.source_format,
             self.observed_revision,
         )
 
@@ -276,12 +285,15 @@ async def test_cache_single_flight_survives_requester_cancellation(tmp_path: Pat
 
 async def test_cache_hard_ttl_and_startup_temp_recovery(tmp_path: Path) -> None:
     stale_source = tmp_path / f"{cache_digest(_key())}.dead.source"
+    stale_canonical_source = tmp_path / f"{cache_digest(_key())}.dead.source.fb2"
     stale_output = tmp_path / f"{cache_digest(_key())}.dead.tmp"
     stale_source.write_bytes(b"x")
+    stale_canonical_source.write_bytes(b"x")
     stale_output.write_bytes(b"x")
     cache = ArtifactCache(tmp_path, 1)
     await cache.startup()
     assert not stale_source.exists()
+    assert not stale_canonical_source.exists()
     assert not stale_output.exists()
     calls = 0
 
@@ -358,7 +370,40 @@ async def test_service_spools_and_closes_source_and_sanitizes_name(tmp_path: Pat
     assert await _read(result.stream) == b"converted"
     assert converter.source_sizes == [len(body)]
     assert acquisition.streams[0].closed
-    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
+    await service.shutdown()
+
+
+@pytest.mark.parametrize(("source_format", "target_format"), [("fb2", "epub"), ("epub", "azw3")])
+async def test_service_stages_source_with_canonical_adapter_extension(
+    tmp_path: Path, source_format: str, target_format: str
+) -> None:
+    source_name = ""
+
+    async def extension_sensitive_runner(argv: tuple[str, ...]) -> ProcessResult:
+        nonlocal source_name
+        source = Path(argv[-1] if source_format == "fb2" else argv[2])
+        assert source.suffix == f".{source_format}"
+        source_name = source.name
+        raise ConverterExecutionError("Converter execution failed")
+
+    converter = (
+        Fb2ToEpubConverter(runner=extension_sensitive_runner)
+        if source_format == "fb2"
+        else EpubToAzw3Converter(runner=extension_sensitive_runner)
+    )
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    service = ConversionService(
+        _Acquisition(source_format=source_format), ConverterRegistry([converter]), cache
+    )
+
+    with pytest.raises(ConverterExecutionError):
+        await service.convert("public", target_format)
+
+    assert "public" not in source_name
+    assert "book" not in source_name
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
     await service.shutdown()
 
 
@@ -386,10 +431,10 @@ async def test_source_staging_io_failures_remain_path_free_source_errors(
         real_open = Path.open
 
         def staging_open(self: Path, mode: str = "r") -> BinaryIO:
-            if self.suffix == ".source" and stage == "open":
+            if ".source." in self.name and stage == "open":
                 raise OSError("private staging path")
             opened = cast(BinaryIO, real_open(self, mode))
-            if self.suffix == ".source":
+            if ".source." in self.name:
                 return cast(BinaryIO, _CloseFailingFile(opened))
             return opened
 
@@ -401,7 +446,7 @@ async def test_source_staging_io_failures_remain_path_free_source_errors(
     assert "private staging path" not in str(raised.value)
     assert converter.calls == 0
     assert acquisition.streams[0].closed
-    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
     assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.tmp")))
     await service.shutdown()
 
@@ -450,7 +495,7 @@ async def test_source_staging_close_failure_does_not_replace_cancellation(
 
     def staging_open(self: Path, mode: str = "r") -> BinaryIO:
         opened = cast(BinaryIO, real_open(self, mode))
-        if self.suffix == ".source":
+        if ".source." in self.name:
             return cast(BinaryIO, _CloseFailingFile(opened))
         return opened
 
@@ -469,7 +514,7 @@ async def test_source_staging_close_failure_does_not_replace_cancellation(
         await request
     assert acquisition.hanging_stream.closed
     assert converter.calls == 0
-    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
 
 
 async def test_service_rejects_revision_race_before_converter(tmp_path: Path) -> None:
@@ -485,7 +530,7 @@ async def test_service_rejects_revision_race_before_converter(tmp_path: Path) ->
 
     assert converter.calls == 0
     assert acquisition.streams[0].closed
-    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
     await service.shutdown()
 
 
@@ -505,7 +550,7 @@ async def test_cleanup_is_atomic_with_producer_and_source_registration(tmp_path:
     await cache.cleanup()
     assert await asyncio.to_thread(lambda: list(tmp_path.glob("*.tmp")))
 
-    source = await cache.create_source_path(cache_digest(_key()))
+    source = await cache.create_source_path(cache_digest(_key()), "fb2")
     await cache.cleanup()
     assert source.exists()
     await cache.remove_source_path(source)
@@ -535,13 +580,13 @@ async def test_source_creation_cancellation_cleans_completed_mkstemp(
         return real_mkstemp(prefix=prefix, suffix=suffix, dir=dir)
 
     monkeypatch.setattr(tempfile, "mkstemp", gated_mkstemp)
-    creation = asyncio.create_task(cache.create_source_path(cache_digest(_key())))
+    creation = asyncio.create_task(cache.create_source_path(cache_digest(_key()), "fb2"))
     assert await asyncio.to_thread(entered.wait, 5)
     creation.cancel()
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await creation
-    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
     await cache.shutdown()
 
 
@@ -619,6 +664,45 @@ async def test_shutdown_cancels_hung_producer_and_cleans_temps(tmp_path: Path) -
     await cache.shutdown()
 
 
+async def test_shutdown_does_not_recancel_final_waiter_retirement(tmp_path: Path) -> None:
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    repeated_cancellation = asyncio.Event()
+
+    async def produce(output: Path) -> None:
+        await asyncio.to_thread(output.write_bytes, b"partial")
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            try:
+                await cleanup_release.wait()
+            except asyncio.CancelledError:
+                repeated_cancellation.set()
+                raise
+
+    request = asyncio.create_task(cache.get_or_create(_key(), produce))
+    await started.wait()
+    request.cancel()
+    await cleanup_started.wait()
+    shutdown = asyncio.create_task(cache.shutdown())
+    await asyncio.sleep(0)
+
+    assert not shutdown.done()
+    assert not repeated_cancellation.is_set()
+    cleanup_release.set()
+    await asyncio.wait_for(shutdown, 2)
+
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert not repeated_cancellation.is_set()
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.tmp")))
+
+
 async def test_service_shutdown_cancels_gated_converter_and_removes_source(tmp_path: Path) -> None:
     acquisition = _Acquisition()
     converter = _Converter(gate=asyncio.Event())
@@ -633,7 +717,7 @@ async def test_service_shutdown_cancels_gated_converter_and_removes_source(tmp_p
     with pytest.raises(asyncio.CancelledError):
         await request
     assert acquisition.streams[0].closed
-    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
 
 
 async def test_service_sole_waiter_cancellation_stops_converter_and_cleans_working_files(
@@ -678,7 +762,7 @@ async def test_service_sole_waiter_cancellation_stops_converter_and_cleans_worki
         await asyncio.wait_for(request, 2)
     assert converter.cancelled.is_set()
     assert acquisition.streams[0].closed
-    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
     assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.tmp")))
     assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.artifact")))
     await service.shutdown()
@@ -708,7 +792,7 @@ async def test_service_cancelled_waiter_preserves_same_key_producer_for_survivor
     assert converter.calls == 1
     assert await _read(result.stream) == b"converted"
     assert acquisition.streams[0].closed
-    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source*")))
     await service.shutdown()
 
 
