@@ -10,8 +10,9 @@
     <p>{{ message }}</p>
   </div>
 {% elif manifest %}
-  {% set counts = namespace(unavailable=0, unknown=0, collisions=0) %}
+  {% set counts = namespace(unsupported=0, unavailable=0, unknown=0, collisions=0) %}
   {% for entry in manifest.entries %}
+    {% if entry.status.value == "unsupported" %}{% set counts.unsupported = counts.unsupported + 1 %}{% endif %}
     {% if entry.status.value == "unavailable" %}{% set counts.unavailable = counts.unavailable + 1 %}{% endif %}
     {% if entry.status.value == "unknown" %}{% set counts.unknown = counts.unknown + 1 %}{% endif %}
     {% if entry.collision %}{% set counts.collisions = counts.collisions + 1 %}{% endif %}
@@ -20,13 +21,15 @@
        data-selected-count="{{ manifest.entries|length }}"
        data-downloadable-count="{{ manifest.members|length }}"
        data-total-size="{{ manifest.total_size }}"
+       data-archive-format="{{ manifest.request.format }}"
        data-catalog-generation="{{ manifest.generation_id if manifest.generation_id is not none else '' }}">
     <div class="selected-preview-summary" data-selected-summary tabindex="-1">
-      <p><strong>{{ manifest.entries|length|integer }}</strong> selected · <strong>{{ manifest.members|length|integer }}</strong> downloadable · {{ manifest.total_size|filesize }}</p>
+      <p><strong>{{ manifest.entries|length|integer }}</strong> selected · <strong>{{ manifest.members|length|integer }}</strong> downloadable · {% if manifest.request.format != "original" %}source size {% endif %}{{ manifest.total_size|filesize }}</p>
     </div>
 
-    {% if counts.unavailable or counts.unknown or counts.collisions %}
+    {% if counts.unsupported or counts.unavailable or counts.unknown or counts.collisions %}
       <div class="selected-notices" aria-label="Selection notices">
+        {% if counts.unsupported %}<p class="selected-notice selected-notice--unsupported">{{ counts.unsupported|integer }} {% if counts.unsupported == 1 %}book cannot{% else %}books cannot{% endif %} produce {{ manifest.request.format|upper }} and {% if counts.unsupported == 1 %}is{% else %}are{% endif %} excluded from the ZIP.</p>{% endif %}
         {% if counts.unavailable %}<p class="selected-notice selected-notice--unavailable">{{ counts.unavailable|integer }} unavailable {% if counts.unavailable == 1 %}book is{% else %}books are{% endif %} excluded from the ZIP.</p>{% endif %}
         {% if counts.unknown %}<p class="selected-notice selected-notice--unknown">{{ counts.unknown|integer }} unknown {% if counts.unknown == 1 %}selection is{% else %}selections are{% endif %} excluded from the ZIP.</p>{% endif %}
         {% if counts.collisions %}<p class="selected-notice selected-notice--collision">Archive name collisions affect {{ counts.collisions|integer }} {% if counts.collisions == 1 %}book{% else %}books{% endif %}; their ZIP names will be made unique.</p>{% endif %}

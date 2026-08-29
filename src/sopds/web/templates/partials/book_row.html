@@ -1,6 +1,6 @@
 {# Required context: row_mode, row_book, row_index. Selected mode also requires row_entry. #}
 <article class="result-row{% if row_mode == 'catalog' %} result-row--catalog{% endif %}{% if row_mode == 'selected' %} result-row--selected result-row--{{ row_entry.status.value }}{% if row_entry.collision %} result-row--collision{% endif %}{% endif %}"
-         {% if row_mode == "selected" %}data-selected-entry data-public-id="{{ row_entry.public_id }}" data-status="{{ row_entry.status.value }}" data-collision="{{ 'true' if row_entry.collision else 'false' }}"{% endif %}>
+         {% if row_mode == "selected" %}data-selected-entry data-public-id="{{ row_entry.public_id }}" data-status="{{ row_entry.status.value }}" data-collision="{{ 'true' if row_entry.collision else 'false' }}" data-source-downloadable="{{ 'true' if row_entry.status.value in ('downloadable', 'unsupported') else 'false' }}" data-source-format="{{ row_book.original_format|source_format_label }}" data-output-formats="{{ row_entry.supported_formats|join(',') }}"{% endif %}>
   {% if (row_mode == "catalog" and row_book.downloadable and row_book.availability.value != "missed") or row_mode == "selected" %}
     <label class="selection-control" data-selection-control hidden>
       <input type="checkbox" data-selection-checkbox data-public-id="{{ row_book.public_id }}">
@@ -20,7 +20,9 @@
       {% if row_book.availability.value != "active" %}
         <span class="availability-badge availability-badge--{{ row_book.availability.value }}">{{ row_book.availability.value|capitalize }}</span>
       {% endif %}
-      {% if row_mode == "selected" and row_entry.status.value == "unavailable" and row_book.availability.value != "missed" %}
+      {% if row_mode == "selected" and row_entry.status.value == "unsupported" %}
+        <span class="availability-badge availability-badge--unsupported">Unsupported</span>
+      {% elif row_mode == "selected" and row_entry.status.value == "unavailable" and row_book.availability.value != "missed" %}
         <span class="availability-badge availability-badge--unavailable">Unavailable</span>
       {% endif %}
     </div>
@@ -49,6 +51,8 @@
 
     {% if row_mode == "selected" and row_entry.collision %}
       <p class="selected-entry-note selected-entry-note--collision" data-collision-notice>Archive name conflicts; ZIP names will be made unique.</p>
+    {% elif row_mode == "selected" and row_entry.status.value == "unsupported" %}
+      <p class="selected-entry-note">Excluded because its source format cannot produce the selected ZIP format.</p>
     {% elif row_mode == "selected" and row_entry.status.value == "unavailable" %}
       <p class="selected-entry-note">Excluded because its original file is unavailable.</p>
     {% endif %}

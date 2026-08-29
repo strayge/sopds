@@ -4,12 +4,17 @@
   const STORAGE_KEY = "sopds.selected-books.v1";
   const MAX_SELECTED = 10_000;
   const INVALID_ID = /[\u0000\uD800-\uDFFF]/;
+  const CONVERTED_FORMATS = [
+    {value: "epub", label: "EPUB"},
+    {value: "azw3", label: "AZW3"},
+  ];
 
   let selectedIds = [];
   let storageReady = false;
   let previewController = null;
   let previewGeneration = 0;
   let pendingPreviewFocus = null;
+  let authoritativePreviewIds = null;
 
   function isValidId(value) {
     return typeof value === "string" && value.length > 0 && value.length <= 64 && !INVALID_ID.test(value);
@@ -108,6 +113,70 @@
     });
   }
 
+  function hasAuthoritativePreviewRows(page) {
+    if (selectedIds.length === 0) {
+      return true;
+    }
+    if (!authoritativePreviewIds) {
+      return false;
+    }
+    const displayedIds = new Set();
+    page.querySelectorAll("[data-selected-entry]").forEach((entry) => {
+      displayedIds.add(entry.dataset.publicId);
+    });
+    return selectedIds.every(
+      (publicId) => authoritativePreviewIds.has(publicId) && displayedIds.has(publicId),
+    );
+  }
+
+  function syncFormatSelector(page) {
+    const selector = page.querySelector("[data-selected-format]");
+    if (!selector || !hasAuthoritativePreviewRows(page)) {
+      return false;
+    }
+    const selectedValue = selector.value;
+    const sourceFormats = new Set();
+    const availableTargets = new Set();
+    page
+      .querySelectorAll(
+        '[data-selected-entry][data-included="true"][data-source-downloadable="true"]',
+      )
+      .forEach((entry) => {
+        if (entry.dataset.sourceFormat) {
+          sourceFormats.add(entry.dataset.sourceFormat);
+        }
+        (entry.dataset.outputFormats || "")
+          .split(",")
+          .filter(Boolean)
+          .forEach((target) => {
+            availableTargets.add(target);
+          });
+      });
+
+    const original = selector.querySelector('option[value="original"]');
+    if (original) {
+      original.textContent = sourceFormats.size === 1 ? [...sourceFormats][0] : "Original";
+    }
+    CONVERTED_FORMATS.forEach(({value}) => {
+      selector.querySelector(`option[value="${value}"]`)?.remove();
+    });
+    CONVERTED_FORMATS.forEach(({value, label}) => {
+      if (!availableTargets.has(value)) {
+        return;
+      }
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      selector.append(option);
+    });
+    if (selector.querySelector(`option[value="${selectedValue}"]`)) {
+      selector.value = selectedValue;
+      return false;
+    }
+    selector.value = "original";
+    return selectedValue !== "original";
+  }
+
   function syncSelectedPageForm() {
     const page = document.querySelector("[data-selection-page]");
     if (!page) {
@@ -121,6 +190,7 @@
     if (clearButton) {
       clearButton.disabled = !storageReady || selectedIds.length === 0;
     }
+    syncFormatSelector(page);
   }
 
   function syncInterface(root = document) {
@@ -237,6 +307,10 @@
     page.querySelectorAll("[data-selected-total-size]").forEach((element) => {
       element.textContent = "0 bytes";
     });
+    const selectedFormat = page.querySelector("[data-selected-format]")?.value || "original";
+    page.querySelectorAll("[data-selected-total-label]").forEach((element) => {
+      element.textContent = selectedFormat === "original" ? "Size" : "Source size";
+    });
     const download = page.querySelector("[data-selected-download]");
     if (download) {
       download.disabled = true;
@@ -252,6 +326,9 @@
     });
     page.querySelectorAll("[data-selected-total-size]").forEach((element) => {
       element.textContent = formatSize(totalSize);
+    });
+    page.querySelectorAll("[data-selected-total-label]").forEach((element) => {
+      element.textContent = content.dataset.archiveFormat === "original" ? "Size" : "Source size";
     });
     const download = page.querySelector("[data-selected-download]");
     if (download) {
@@ -325,6 +402,9 @@
     entry.className = incoming.className;
     entry.dataset.status = incoming.dataset.status;
     entry.dataset.collision = incoming.dataset.collision;
+    entry.dataset.sourceDownloadable = incoming.dataset.sourceDownloadable;
+    entry.dataset.sourceFormat = incoming.dataset.sourceFormat;
+    entry.dataset.outputFormats = incoming.dataset.outputFormats;
     for (const child of [...entry.children]) {
       if (child !== control) {
         child.remove();
@@ -378,11 +458,10 @@
       return false;
     }
 
-    const generationChanged =
-      currentContent.dataset.catalogGeneration !== incomingContent.dataset.catalogGeneration;
     currentContent.dataset.selectedCount = incomingContent.dataset.selectedCount || "0";
     currentContent.dataset.downloadableCount = incomingContent.dataset.downloadableCount || "0";
     currentContent.dataset.totalSize = incomingContent.dataset.totalSize || "0";
+    currentContent.dataset.archiveFormat = incomingContent.dataset.archiveFormat || "original";
     currentContent.dataset.catalogGeneration = incomingContent.dataset.catalogGeneration || "";
     replacePreviewHeader(currentContent, currentEntries, incomingContent);
 
@@ -398,17 +477,7 @@
       if (!includedIds.has(publicId) || !incoming) {
         return;
       }
-      if (generationChanged) {
-        updateSelectedEntry(entry, incoming);
-      } else if (incoming.dataset.collision === "true") {
-        entry.dataset.collision = "true";
-        entry.classList.add("result-row--collision");
-        const collisionNotice = incoming.querySelector("[data-collision-notice]");
-        const body = entry.querySelector(".result-row__body");
-        if (collisionNotice && body) {
-          body.append(collisionNotice.cloneNode(true));
-        }
-      }
+      updateSelectedEntry(entry, incoming);
       incomingEntries.delete(publicId);
     });
     incomingEntries.forEach((entry, publicId) => {
@@ -438,7 +507,8 @@
     syncSelectedPageForm();
     const target = page.querySelector("[data-selected-preview-target]");
     const preset = page.querySelector("[data-selected-preset]");
-    if (!target || !preset) {
+    const selectedFormat = page.querySelector("[data-selected-format]");
+    if (!target || !preset || !selectedFormat) {
       return;
     }
 
@@ -461,7 +531,11 @@
       const response = await window.fetch("/selected/preview", {
         method: "POST",
         headers: {"Content-Type": "application/json", "Accept": "text/html"},
-        body: JSON.stringify({ids: requestIds, preset: preset.value}),
+        body: JSON.stringify({
+          ids: requestIds,
+          preset: preset.value,
+          format: selectedFormat.value,
+        }),
         signal: previewController.signal,
       });
       const markup = await response.text();
@@ -498,7 +572,12 @@
         content = target.querySelector("#selected-preview-content");
         syncCheckboxes(target);
       }
+      authoritativePreviewIds = new Set(requestIds);
       applySuccessfulPreviewState(page, content);
+      if (syncFormatSelector(page)) {
+        refreshSelectedPreview({preserveEntries: hasExcludedDisplayedEntries()});
+        return;
+      }
       setPreviewStatus(page, "");
       restorePreviewFocus(target, requestIds);
     } catch (error) {
@@ -572,6 +651,12 @@
     const preset = document.querySelector("[data-selected-preset]");
     if (preset) {
       preset.addEventListener("change", () => {
+        refreshSelectedPreview({preserveEntries: hasExcludedDisplayedEntries()});
+      });
+    }
+    const selectedFormat = document.querySelector("[data-selected-format]");
+    if (selectedFormat) {
+      selectedFormat.addEventListener("change", () => {
         refreshSelectedPreview({preserveEntries: hasExcludedDisplayedEntries()});
       });
     }

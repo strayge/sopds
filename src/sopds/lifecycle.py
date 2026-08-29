@@ -20,6 +20,7 @@ from sopds.conversion.adapters import (
     Fb2ToEpubConverter,
 )
 from sopds.conversion.cache import ArtifactCache
+from sopds.conversion.policy import OUTPUT_POLICY
 from sopds.conversion.registry import ConverterRegistry
 from sopds.conversion.service import ConversionService
 from sopds.db.connection import close_database, initialize_database
@@ -57,7 +58,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 repository, ZipOriginalStore(config.catalog.archive_root)
             )
             resources.push_async_callback(_observed_cleanup, "acquisition", acquisition.shutdown)
-            archive = ArchiveService(catalog, acquisition)
             registry = ConverterRegistry(
                 (
                     Fb2ToEpubConverter("/usr/local/bin/fbc"),
@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             conversion = ConversionService(acquisition, registry, conversion_cache)
             resources.push_async_callback(_observed_cleanup, "conversion", conversion.shutdown)
+            archive = ArchiveService(catalog, acquisition, conversion, OUTPUT_POLICY)
             resources.push_async_callback(_observed_cleanup, "imports", coordinator.shutdown)
             app.state.import_coordinator = coordinator
             app.state.catalog = catalog

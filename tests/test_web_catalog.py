@@ -312,6 +312,7 @@ class _Archive:
                 ArchiveEntryStatus.DOWNLOADABLE,
                 collision=True,
                 collision_group=member.collision_group,
+                supported_formats=("epub", "azw3"),
             ),
             *(
                 ArchivePreviewEntry(public_id, None, ArchiveEntryStatus.UNKNOWN)
@@ -420,8 +421,13 @@ def _csrf_token(app: FastAPI) -> str:
     return issue_csrf_token(app.state.csrf_key)
 
 
-def _download_form(app: FastAPI, ids: str, preset: str) -> dict[str, str]:
-    return {"ids": ids, "preset": preset, "csrf_token": _csrf_token(app)}
+def _download_form(
+    app: FastAPI, ids: str, preset: str, target_format: str | None = None
+) -> dict[str, str]:
+    fields = {"ids": ids, "preset": preset, "csrf_token": _csrf_token(app)}
+    if target_format is not None:
+        fields["format"] = target_format
+    return fields
 
 
 def _csrf_form_suffix(app: FastAPI) -> str:
@@ -1316,6 +1322,38 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert archive.preview_requests == [ArchiveRequest(["public-1", "missing"], "nested")]
     assert archive.download_requests == [ArchiveRequest(["public-1", "missing"], "nested")]
     assert archive.preview_requests[0] is not archive.download_requests[0]
+    assert archive.preview_requests[0].format == "original"
+    assert archive.download_requests[0].format == "original"
+
+
+def test_selected_format_requests_and_download_filenames_are_canonical() -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+
+    with TestClient(app) as client:
+        epub_preview = client.post(
+            "/selected/preview",
+            json={"ids": ["public-1"], "preset": "nested", "format": "epub"},
+        )
+        epub_download = client.post(
+            "/selected/download",
+            data=_download_form(app, '["public-1"]', "nested", "epub"),
+        )
+        azw3_download = client.post(
+            "/selected/download",
+            data=_download_form(app, '["public-1"]', "nested", "azw3"),
+        )
+
+    assert epub_preview.status_code == 200
+    assert 'data-archive-format="epub"' in epub_preview.text
+    assert "source size 321 bytes" in epub_preview.text
+    assert 'filename="selected-books-epub.zip"' in epub_download.headers["content-disposition"]
+    assert 'filename="selected-books-azw3.zip"' in azw3_download.headers["content-disposition"]
+    assert archive.preview_requests == [ArchiveRequest(["public-1"], "nested", "epub")]
+    assert archive.download_requests == [
+        ArchiveRequest(["public-1"], "nested", "epub"),
+        ArchiveRequest(["public-1"], "nested", "azw3"),
+    ]
 
 
 def test_catalog_selection_hooks_only_render_for_downloadable_non_missed_books() -> None:
@@ -1421,6 +1459,52 @@ def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_path
     assert 'href="/books/missed-1?return_to=%2Fselected&amp;include_missed=true"' in preview.text
 
 
+def test_selected_preview_distinguishes_unsupported_rows_and_capabilities() -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+    unsupported = BookSummary(
+        public_id="azw3-1",
+        title="Kindle Book",
+        authors=("Writer,One,",),
+        series=None,
+        series_number=None,
+        language="en",
+        original_format="azw3",
+        size=456,
+    )
+    request = ArchiveRequest([unsupported.public_id], "nested", "epub")
+    archive.preview_value = ArchiveManifest(
+        request,
+        9,
+        (
+            ArchivePreviewEntry(
+                unsupported.public_id,
+                unsupported,
+                ArchiveEntryStatus.UNSUPPORTED,
+                supported_formats=("azw3",),
+            ),
+        ),
+        (),
+        0,
+    )
+
+    with TestClient(app) as client:
+        preview = client.post(
+            "/selected/preview",
+            json={"ids": [unsupported.public_id], "preset": "nested", "format": "epub"},
+        )
+
+    assert preview.status_code == 200
+    assert 'data-status="unsupported"' in preview.text
+    assert 'data-source-downloadable="true"' in preview.text
+    assert 'data-source-format="AZW3"' in preview.text
+    assert 'data-output-formats="azw3"' in preview.text
+    assert "1 book cannot produce EPUB and is excluded" in preview.text
+    assert "cannot produce the selected ZIP format" in preview.text
+    assert "Unsupported</span>" in preview.text
+    assert "unavailable" not in preview.text.casefold()
+
+
 def test_selected_preview_empty_state_provides_focus_fallback() -> None:
     app, _, _ = _app()
 
@@ -1468,6 +1552,18 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         "hasExcludedDisplayedEntries()",
         "refreshSelectedPreview({preserveEntries})",
         'response.ok && !incomingContent.hasAttribute("data-selected-preview-error")',
+        "syncFormatSelector(page)",
+        "hasAuthoritativePreviewRows(page)",
+        "authoritativePreviewIds = new Set(requestIds)",
+        "authoritativePreviewIds.has(publicId) && displayedIds.has(publicId)",
+        "updateSelectedEntry(entry, incoming)",
+        'data-included="true"][data-source-downloadable="true"]',
+        'sourceFormats.size === 1 ? [...sourceFormats][0] : "Original"',
+        "availableTargets.has(value)",
+        'selector.value = "original"',
+        "format: selectedFormat.value",
+        'selectedFormat.addEventListener("change"',
+        'content.dataset.archiveFormat === "original" ? "Size" : "Source size"',
         "button.dataset.publicId === preferredId",
         'window.fetch("/selected/preview"',
         '"Content-Type": "application/json"',
@@ -1512,6 +1608,10 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
     assert 'method="post" action="/selected/download"' in page.text
     assert 'type="hidden" name="ids"' in page.text
     assert 'type="hidden" name="csrf_token"' in page.text
+    assert 'id="selected-format" name="format" data-selected-format' in page.text
+    assert '<option value="original" selected>Original</option>' in page.text
+    assert '<option value="epub"' not in page.text
+    assert '<option value="azw3"' not in page.text
     assert '<option value="nested" selected>' in page.text
     assert '<option value="flatten">' in page.text
     assert '<option value="list">' in page.text
@@ -1522,8 +1622,10 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
     [
         (b'[{"ids": [], "preset": "nested"}]', 422),
         (b'{"ids": [], "preset": "nested", "extra": true}', 422),
+        (b'{"ids": [], "preset": "nested", "format": "EPUB"}', 422),
         (b'{"ids": []}', 422),
         (b'{"ids": [], "ids": [], "preset": "nested"}', 400),
+        (b'{"ids": [], "preset": "nested", "format": "epub", "format": "azw3"}', 400),
         (b'{"ids": [}', 400),
         (b"\xff", 400),
     ],
@@ -1543,6 +1645,7 @@ def test_selected_preview_rejects_non_object_extra_missing_duplicate_and_malform
     assert response.status_code == status_code
     assert (
         "Invalid archive request" in response.text
+        or "Invalid archive format" in response.text
         or "Invalid selected-books request" in response.text
     )
     assert len(response.content) < 1_000
@@ -1553,6 +1656,7 @@ def test_selected_preview_rejects_non_object_extra_missing_duplicate_and_malform
     "body",
     [
         "ids=%5B%22public-1%22%5D&preset=nested&extra=x",
+        "ids=%5B%22public-1%22%5D&preset=nested&format=epub&format=azw3",
         "ids=%5B%22public-1%22%5D&ids=%5B%5D&preset=nested",
         "ids=%5B%22public-1%22%5D&preset=nested&csrf_token=duplicate",
         "ids=%5B%22public-1%22%5D",

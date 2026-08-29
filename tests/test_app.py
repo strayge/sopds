@@ -18,6 +18,7 @@ from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig, TelegramConfig
 from sopds.conversion.cache import ArtifactCache
 from sopds.conversion.contracts import CacheCleanupSummary
+from sopds.conversion.policy import OUTPUT_POLICY
 from sopds.conversion.service import ConversionService
 from sopds.db.connection import close_database
 from sopds.imports.coordinator import ImportCoordinator
@@ -318,7 +319,12 @@ def test_lifespan_wires_archive_service_from_catalog_and_acquisition(
         TestClient(app) as client,
     ):
         assert client.get("/selected").status_code == 200
-        archive_type.assert_called_once_with(app.state.catalog, app.state.acquisition)
+        archive_type.assert_called_once_with(
+            app.state.catalog,
+            app.state.acquisition,
+            app.state.conversion,
+            OUTPUT_POLICY,
+        )
         assert app.state.archive is archive_type.return_value
 
 

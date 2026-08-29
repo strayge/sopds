@@ -56,6 +56,12 @@ from sopds.catalog.contracts import (
     BookSummary,
     CatalogSummaryBatch,
 )
+from sopds.conversion.contracts import (
+    ConversionResult,
+    ConverterExecutionError,
+    SourceUnavailableError,
+)
+from sopds.conversion.policy import OutputDecision
 
 
 def _book(
@@ -146,6 +152,41 @@ class _Stream:
         self.closed = True
         if self._on_close is not None:
             self._on_close()
+
+
+class _Conversion:
+    def __init__(
+        self,
+        values: Mapping[str, bytes | BaseException],
+        supported: set[tuple[str, str]],
+    ) -> None:
+        self._values = values
+        self._supported = supported
+        self.calls: list[tuple[str, str, int | None]] = []
+        self.streams: list[_Stream] = []
+
+    def supports(self, source_format: str, target_format: str) -> bool:
+        return (source_format.casefold(), target_format) in self._supported
+
+    async def convert(
+        self,
+        public_id: str,
+        target_format: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> ConversionResult:
+        self.calls.append((public_id, target_format, expected_generation_id))
+        value = self._values[public_id]
+        if isinstance(value, BaseException):
+            raise value
+        stream = _Stream((value,))
+        self.streams.append(stream)
+        return ConversionResult(
+            f"{public_id}.{target_format}",
+            "application/epub+zip",
+            len(value),
+            stream,
+        )
 
 
 class _Catalog:
@@ -302,13 +343,24 @@ def test_request_validation_accepts_unicode_scalar_ids() -> None:
     assert ArchiveRequest(["book-\U0001f600"], "nested").ids == ("book-\U0001f600",)
 
 
-def test_request_mapping_rejects_unknown_or_missing_fields() -> None:
-    with pytest.raises(ArchiveInputError):
-        ArchiveRequest.from_input({"ids": [], "preset": "nested", "extra": True})
-    with pytest.raises(ArchiveInputError):
-        ArchiveRequest.from_input({"ids": []})
-    with pytest.raises(ArchiveInputError):
-        ArchiveRequest.from_input([])
+def test_request_mapping_accepts_only_exact_legacy_or_format_aware_shapes() -> None:
+    legacy = ArchiveRequest.from_input({"ids": ["book"], "preset": "nested"})
+    current = ArchiveRequest.from_input({"ids": ["book"], "preset": "nested", "format": "epub"})
+
+    assert legacy.format == "original"
+    assert current.format == "epub"
+    invalid_values: tuple[object, ...] = (
+        {"ids": [], "preset": "nested", "extra": True},
+        {"ids": []},
+        {"ids": [], "preset": "nested", "format": "EPUB"},
+        {"ids": [], "preset": "nested", "format": ".epub"},
+        {"ids": [], "preset": "nested", "format": "mobi"},
+        {"ids": [], "preset": "nested", "format": None},
+        [],
+    )
+    for value in invalid_values:
+        with pytest.raises(ArchiveInputError):
+            ArchiveRequest.from_input(value)
 
 
 def test_unique_id_limit_is_inclusive_and_applies_after_deduplication() -> None:
@@ -603,6 +655,76 @@ def test_manifest_preserves_unknown_and_unavailable_entries() -> None:
     assert manifest.total_size == 12
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_statuses", "expected_extensions", "expected_decisions"),
+    [
+        (
+            "original",
+            ["downloadable"] * 4,
+            [".fb2", ".epub", ".azw3", ".pdf"],
+            [OutputDecision.ORIGINAL] * 4,
+        ),
+        (
+            "epub",
+            ["downloadable", "downloadable", "unsupported", "unsupported"],
+            [".epub", ".epub"],
+            [OutputDecision.CONVERT, OutputDecision.PASSTHROUGH],
+        ),
+        (
+            "azw3",
+            ["downloadable", "downloadable", "downloadable", "unsupported"],
+            [".azw3", ".azw3", ".azw3"],
+            [OutputDecision.CONVERT, OutputDecision.CONVERT, OutputDecision.PASSTHROUGH],
+        ),
+    ],
+)
+def test_manifest_applies_every_source_target_decision_before_path_allocation(
+    target: str,
+    expected_statuses: list[str],
+    expected_extensions: list[str],
+    expected_decisions: list[OutputDecision],
+) -> None:
+    books = tuple(
+        _book(source, original_format=source, size=index + 1, series=None)
+        for index, source in enumerate(("fb2", "epub", "azw3", "pdf"))
+    )
+    conversions = {("fb2", "epub"), ("fb2", "azw3"), ("epub", "azw3")}
+    manifest = build_manifest(
+        ArchiveRequest([book.public_id for book in books], "nested", target),
+        CatalogSummaryBatch(12, books),
+        supports_conversion=lambda source, output: (source, output) in conversions,
+    )
+
+    assert [entry.status.value for entry in manifest.entries] == expected_statuses
+    assert [f".{member.path.rsplit('.', 1)[-1]}" for member in manifest.members] == (
+        expected_extensions
+    )
+    assert [member.decision for member in manifest.members] == expected_decisions
+    assert manifest.total_size == sum(member.summary.size for member in manifest.members)
+    assert manifest.entries[0].supported_formats == ("epub", "azw3")
+    assert manifest.entries[1].supported_formats == ("epub", "azw3")
+    assert manifest.entries[2].supported_formats == ("azw3",)
+    assert manifest.entries[3].supported_formats == ()
+
+
+def test_converted_extension_collisions_are_allocated_as_one_target_family() -> None:
+    books = (
+        _book("fb2", original_format="fb2", title="Same", series=None),
+        _book("epub", original_format="epub", title="Same", series=None),
+    )
+    manifest = build_manifest(
+        ArchiveRequest(["fb2", "epub"], "nested", "azw3"),
+        CatalogSummaryBatch(3, books),
+        supports_conversion=lambda _source, _target: True,
+    )
+
+    assert {member.public_id: member.path for member in manifest.members} == {
+        "epub": "Last First/Same.azw3",
+        "fb2": "Last First/Same (2).azw3",
+    }
+    assert all(member.collision for member in manifest.members)
+
+
 def test_decimal_source_size_limit_is_inclusive_and_ignores_omissions() -> None:
     allowed = _book("allowed", size=MAX_ELIGIBLE_SIZE)
     unavailable = _book("unavailable", size=MAX_ELIGIBLE_SIZE, downloadable=False)
@@ -613,6 +735,13 @@ def test_decimal_source_size_limit_is_inclusive_and_ignores_omissions() -> None:
         _manifest(
             ["allowed", "extra"],
             [allowed, _book("extra", size=1)],
+        )
+
+    with pytest.raises(ArchiveLimitError):
+        build_manifest(
+            ArchiveRequest(["allowed", "extra"], "nested", "epub"),
+            CatalogSummaryBatch(1, (allowed, _book("extra", size=1))),
+            supports_conversion=lambda _source, _target: True,
         )
 
 
@@ -699,6 +828,91 @@ async def test_download_stages_exact_zip_paths_content_length_and_zip64(
         ]
         assert built.read("Last First/First.fb2") == b"alpha"
         assert built.read("Last First/Second.fb2") == b"second"
+
+
+async def test_converted_download_uses_target_bytes_extension_and_manifest_generation() -> None:
+    book = _book("book", original_format="fb2", size=4, series=None)
+    conversion = _Conversion({"book": b"converted"}, {("fb2", "epub")})
+    acquisition = _Acquisition({})
+    service = ArchiveService(
+        _Catalog((CatalogSummaryBatch(23, (book,)),)),
+        acquisition,
+        conversion,
+    )
+
+    payload = await _archive_bytes(
+        await service.download(ArchiveRequest(["book"], "nested", "epub"))
+    )
+
+    assert conversion.calls == [("book", "epub", 23)]
+    assert acquisition.calls == []
+    assert conversion.streams[0].closed
+    with zipfile.ZipFile(io.BytesIO(payload)) as built:
+        assert built.namelist() == ["Last First/Title.epub"]
+        assert built.read("Last First/Title.epub") == b"converted"
+
+
+@pytest.mark.parametrize(("source_format", "target"), [("epub", "epub"), ("azw3", "azw3")])
+async def test_same_format_target_passes_original_bytes_with_generation_and_size_integrity(
+    source_format: str, target: str
+) -> None:
+    body = b"unchanged"
+    book = _book("book", original_format=source_format, size=len(body), series=None)
+    acquisition = _Acquisition({"book": body})
+    conversion = _Conversion({}, set())
+    staged = await ArchiveService(
+        _Catalog((CatalogSummaryBatch(31, (book,)),)), acquisition, conversion
+    ).download(ArchiveRequest(["book"], "nested", target))
+    payload = await _archive_bytes(staged)
+
+    assert acquisition.calls == [("book", 31)]
+    assert conversion.calls == []
+    with zipfile.ZipFile(io.BytesIO(payload)) as built:
+        assert built.namelist() == [f"Last First/Title.{target}"]
+        assert built.read(built.namelist()[0]) == body
+
+
+async def test_conversion_failure_aborts_and_cleans_the_whole_staged_zip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temporary = _TrackedTemporary()
+    monkeypatch.setattr(tempfile, "TemporaryFile", lambda **_kwargs: temporary)
+    books = (
+        _book("first", original_format="fb2", size=1, series=None, title="A"),
+        _book("failed", original_format="fb2", size=1, series=None, title="Z"),
+    )
+    conversion = _Conversion(
+        {"first": b"converted", "failed": ConverterExecutionError("failed")},
+        {("fb2", "epub")},
+    )
+    service = ArchiveService(
+        _Catalog((CatalogSummaryBatch(7, books),)), _Acquisition({}), conversion
+    )
+
+    with pytest.raises(ConverterExecutionError):
+        await service.download(ArchiveRequest(["first", "failed"], "nested", "epub"))
+
+    assert temporary.closed
+    assert conversion.streams[0].closed
+
+
+async def test_conversion_source_disappearance_is_the_only_converted_omission() -> None:
+    books = (
+        _book("gone", original_format="fb2", size=4, series=None),
+        _book("kept", original_format="fb2", size=4, series=None),
+    )
+    conversion = _Conversion(
+        {"gone": SourceUnavailableError("gone"), "kept": b"kept"},
+        {("fb2", "epub")},
+    )
+    staged = await ArchiveService(
+        _Catalog((CatalogSummaryBatch(19, books),)), _Acquisition({}), conversion
+    ).download(ArchiveRequest(["gone", "kept"], "nested", "epub"))
+    payload = await _archive_bytes(staged)
+
+    with zipfile.ZipFile(io.BytesIO(payload)) as built:
+        assert built.namelist() == ["Last First/Title (2).epub"]
+        assert built.read(built.namelist()[0]) == b"kept"
 
 
 async def test_download_reloads_manifest_and_binds_acquisition_to_current_generation() -> None:

@@ -78,6 +78,7 @@ _CSRF_ERROR_MESSAGE = "This page has expired. Reload it and try again."
 _PUBLIC_ARCHIVE_INPUT_MESSAGES = frozenset(
     {
         "Invalid archive preset",
+        "Invalid archive format",
         "Invalid archive request",
         "Invalid selected book IDs",
         "Invalid public book ID",
@@ -585,17 +586,28 @@ async def _form_archive_request(request: Request) -> ArchiveRequest:
     except (UnicodeDecodeError, ValueError) as error:
         raise _SelectedBodyError from error
     names = [name for name, _value in pairs]
-    if len(names) != len(set(names)) or not set(names) <= {"ids", "preset", "csrf_token"}:
+    if len(names) != len(set(names)) or not set(names) <= {
+        "ids",
+        "preset",
+        "format",
+        "csrf_token",
+    }:
         raise _SelectedBodyError
     fields = dict(pairs)
     _validate_csrf(request, fields.get("csrf_token", ""))
-    if set(fields) != {"ids", "preset", "csrf_token"}:
+    if set(fields) not in (
+        {"ids", "preset", "csrf_token"},
+        {"ids", "preset", "format", "csrf_token"},
+    ):
         raise _SelectedBodyError
     try:
         ids = json.loads(fields["ids"], parse_constant=_reject_json_constant)
     except (json.JSONDecodeError, ValueError, RecursionError) as error:
         raise _SelectedBodyError from error
-    return ArchiveRequest.from_input({"ids": ids, "preset": fields["preset"]})
+    archive_fields = {"ids": ids, "preset": fields["preset"]}
+    if "format" in fields:
+        archive_fields["format"] = fields["format"]
+    return ArchiveRequest.from_input(archive_fields)
 
 
 def _selected_error_response(
@@ -921,10 +933,15 @@ async def selected_download(request: Request) -> Response:
     if staged is None:
         return _ClientDisconnectedResponse()
 
+    archive_filename = (
+        _SELECTED_ARCHIVE_FILENAME
+        if archive_request.format == "original"
+        else f"selected-books-{archive_request.format}.zip"
+    )
     headers = {
         "Content-Type": "application/zip",
         "Content-Length": str(staged.content_length),
-        "Content-Disposition": content_disposition(_SELECTED_ARCHIVE_FILENAME),
+        "Content-Disposition": content_disposition(archive_filename),
         "X-Content-Type-Options": "nosniff",
     }
     try:

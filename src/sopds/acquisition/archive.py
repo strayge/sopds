@@ -13,18 +13,20 @@ from functools import partial
 from typing import IO, BinaryIO, Protocol, Self
 
 from sopds.acquisition.contracts import (
-    AcquiredOriginal,
     Acquisition,
     AcquisitionMemberNotFoundError,
     AcquisitionNotFoundError,
     AcquisitionSizeMismatchError,
     AcquisitionUnavailableError,
+    AsyncByteStream,
 )
 from sopds.catalog.contracts import (
     BookAvailability,
     BookSummary,
     CatalogSummaryBatch,
 )
+from sopds.conversion.contracts import ConversionResult, SourceUnavailableError
+from sopds.conversion.policy import OUTPUT_POLICY, OutputDecision, OutputPolicy
 
 MAX_SELECTED_BOOKS = 10_000
 MAX_ELIGIBLE_SIZE = 10_000_000_000
@@ -69,6 +71,7 @@ class ArchivePreset(StrEnum):
 
 class ArchiveEntryStatus(StrEnum):
     DOWNLOADABLE = "downloadable"
+    UNSUPPORTED = "unsupported"
     UNAVAILABLE = "unavailable"
     UNKNOWN = "unknown"
 
@@ -77,8 +80,9 @@ class ArchiveEntryStatus(StrEnum):
 class ArchiveRequest:
     ids: tuple[str, ...]
     preset: ArchivePreset
+    format: str
 
-    def __init__(self, ids: object, preset: object) -> None:
+    def __init__(self, ids: object, preset: object, format: object = "original") -> None:  # noqa: A002
         normalized_ids = _validate_ids(ids)
         if not isinstance(preset, (str, ArchivePreset)):
             raise ArchiveInputError("Invalid archive preset")
@@ -86,14 +90,26 @@ class ArchiveRequest:
             normalized_preset = ArchivePreset(preset)
         except ValueError as error:
             raise ArchiveInputError("Invalid archive preset") from error
+        if not isinstance(format, str):
+            raise ArchiveInputError("Invalid archive format")
+        try:
+            normalized_format = OUTPUT_POLICY.choice(format).key
+        except ValueError as error:
+            raise ArchiveInputError("Invalid archive format") from error
+        if format != normalized_format:
+            raise ArchiveInputError("Invalid archive format")
         object.__setattr__(self, "ids", normalized_ids)
         object.__setattr__(self, "preset", normalized_preset)
+        object.__setattr__(self, "format", normalized_format)
 
     @classmethod
     def from_input(cls, value: object) -> Self:
-        if not isinstance(value, Mapping) or set(value) != {"ids", "preset"}:
+        if not isinstance(value, Mapping) or set(value) not in (
+            {"ids", "preset"},
+            {"ids", "preset", "format"},
+        ):
             raise ArchiveInputError("Invalid archive request")
-        return cls(value["ids"], value["preset"])
+        return cls(value["ids"], value["preset"], value.get("format", "original"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +119,7 @@ class ArchivePreviewEntry:
     status: ArchiveEntryStatus
     collision: bool = False
     collision_group: str | None = None
+    supported_formats: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +130,7 @@ class ArchiveMember:
     path: str
     collision: bool = False
     collision_group: str | None = None
+    decision: OutputDecision = OutputDecision.ORIGINAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +144,26 @@ class ArchiveManifest:
 
 class BulkCatalog(Protocol):
     async def bulk_summaries(self, public_ids: Sequence[str]) -> CatalogSummaryBatch: ...
+
+
+class FormatConversion(Protocol):
+    def supports(self, source_format: str, target_format: str) -> bool: ...
+
+    async def convert(
+        self,
+        public_id: str,
+        target_format: str,
+        *,
+        expected_generation_id: int | None = None,
+    ) -> ConversionResult: ...
+
+
+class _OwnedArchiveInput(Protocol):
+    @property
+    def content_length(self) -> int: ...
+
+    @property
+    def stream(self) -> AsyncByteStream: ...
 
 
 class StagedArchive:
@@ -181,18 +219,36 @@ class StagedArchive:
 class ArchiveService:
     """Resolve and acquire each request afresh without retaining preview state."""
 
-    def __init__(self, catalog: BulkCatalog, acquisition: Acquisition) -> None:
+    def __init__(
+        self,
+        catalog: BulkCatalog,
+        acquisition: Acquisition,
+        conversion: FormatConversion | None = None,
+        output_policy: OutputPolicy = OUTPUT_POLICY,
+    ) -> None:
         self._catalog = catalog
         self._acquisition = acquisition
+        self._conversion = conversion
+        self._output_policy = output_policy
+
+    def _manifest(self, request: ArchiveRequest, batch: CatalogSummaryBatch) -> ArchiveManifest:
+        return build_manifest(
+            request,
+            batch,
+            output_policy=self._output_policy,
+            supports_conversion=(
+                self._conversion.supports if self._conversion is not None else None
+            ),
+        )
 
     async def preview(self, request: ArchiveRequest) -> ArchiveManifest:
         batch = await self._catalog.bulk_summaries(request.ids)
-        return build_manifest(request, batch)
+        return self._manifest(request, batch)
 
     async def download(self, request: ArchiveRequest) -> StagedArchive:
         """Rebuild current metadata and transfer the completed temporary ZIP to its caller."""
         batch = await self._catalog.bulk_summaries(request.ids)
-        manifest = build_manifest(request, batch)
+        manifest = self._manifest(request, batch)
         if not manifest.members:
             raise ArchiveNoDownloadsError("No selected books are available for download")
 
@@ -231,17 +287,24 @@ class ArchiveService:
         try:
             for member in sorted(manifest.members, key=lambda candidate: candidate.path):
                 try:
-                    original = await self._acquisition.acquire(
-                        member.public_id,
-                        expected_generation_id=manifest.generation_id,
-                    )
+                    source = await self._acquire_member(manifest, member)
                 except (
                     AcquisitionNotFoundError,
                     AcquisitionUnavailableError,
                     AcquisitionMemberNotFoundError,
+                    SourceUnavailableError,
                 ):
                     continue
-                await _add_member(archive, member, original)
+                await _add_member(
+                    archive,
+                    member,
+                    source,
+                    expected_source_size=(
+                        member.summary.size
+                        if member.decision in {OutputDecision.ORIGINAL, OutputDecision.PASSTHROUGH}
+                        else None
+                    ),
+                )
                 included += 1
             if not included:
                 raise ArchiveNoDownloadsError("No selected books are available for download")
@@ -252,6 +315,22 @@ class ArchiveService:
         _raise_after_cleanup(primary, cleanup)
         content_length = await _blocking(partial(_rewind_and_measure, staged_file))
         return StagedArchive(staged_file, content_length)
+
+    async def _acquire_member(
+        self, manifest: ArchiveManifest, member: ArchiveMember
+    ) -> _OwnedArchiveInput:
+        if member.decision in {OutputDecision.ORIGINAL, OutputDecision.PASSTHROUGH}:
+            return await self._acquisition.acquire(
+                member.public_id,
+                expected_generation_id=manifest.generation_id,
+            )
+        if member.decision is OutputDecision.CONVERT and self._conversion is not None:
+            return await self._conversion.convert(
+                member.public_id,
+                manifest.request.format,
+                expected_generation_id=manifest.generation_id,
+            )
+        raise AssertionError("Archive manifest contains an unsupported output member")
 
 
 async def _blocking[T](
@@ -335,23 +414,25 @@ def _raise_after_cleanup(
 async def _add_member(
     archive: zipfile.ZipFile,
     member: ArchiveMember,
-    original: AcquiredOriginal,
+    source: _OwnedArchiveInput,
+    *,
+    expected_source_size: int | None,
 ) -> None:
     primary: BaseException | None = None
     try:
-        if original.content_length != member.summary.size:
+        if expected_source_size is not None and source.content_length != expected_source_size:
             raise AcquisitionSizeMismatchError("Original size does not match catalog metadata")
-        await _write_member(archive, member.path, original)
+        await _write_member(archive, member.path, source)
     except BaseException as error:
         primary = error
-    cleanup = await _capture_cleanup(partial(_close_async, original.stream.aclose))
+    cleanup = await _capture_cleanup(partial(_close_async, source.stream.aclose))
     _raise_after_cleanup(primary, cleanup)
 
 
 async def _write_member(
     archive: zipfile.ZipFile,
     path: str,
-    original: AcquiredOriginal,
+    source: _OwnedArchiveInput,
 ) -> None:
     output = await _blocking(
         lambda: archive.open(path, mode="w", force_zip64=True),
@@ -360,15 +441,15 @@ async def _write_member(
     primary: BaseException | None = None
     written_total = 0
     try:
-        async for chunk in original.stream:
+        async for chunk in source.stream:
             for offset in range(0, len(chunk), ARCHIVE_CHUNK_SIZE):
                 part = chunk[offset : offset + ARCHIVE_CHUNK_SIZE]
                 written = await _blocking(partial(output.write, part))
                 if written != len(part):
                     raise OSError("Short archive member write")
                 written_total += written
-        if written_total != original.content_length:
-            raise AcquisitionSizeMismatchError("Original stream size does not match metadata")
+        if written_total != source.content_length:
+            raise AcquisitionSizeMismatchError("Archive input stream size does not match metadata")
     except BaseException as error:
         primary = error
     cleanup = await _capture_cleanup(partial(_blocking, output.close))
@@ -448,28 +529,70 @@ def portable_path_key(path: str) -> str:
     return unicodedata.normalize("NFC", path).casefold()
 
 
-def build_manifest(request: ArchiveRequest, batch: CatalogSummaryBatch) -> ArchiveManifest:
+def build_manifest(
+    request: ArchiveRequest,
+    batch: CatalogSummaryBatch,
+    *,
+    output_policy: OutputPolicy = OUTPUT_POLICY,
+    supports_conversion: Callable[[str, str], bool] | None = None,
+) -> ArchiveManifest:
     known = {book.public_id: book for book in batch.books}
-    selected: list[tuple[str, BookSummary | None, ArchiveEntryStatus]] = []
-    downloadable: list[BookSummary] = []
+    selected: list[tuple[str, BookSummary | None, ArchiveEntryStatus, tuple[str, ...]]] = []
+    downloadable: list[tuple[BookSummary, OutputDecision]] = []
     total_size = 0
+
+    def is_supported(source_format: str, target_format: str) -> bool:
+        decision = output_policy.decision(source_format, target_format)
+        if decision is OutputDecision.CONVERT:
+            return supports_conversion is not None and supports_conversion(
+                source_format, target_format
+            )
+        return decision is not OutputDecision.UNSUPPORTED
 
     for public_id in request.ids:
         book = known.get(public_id)
         if book is None:
-            selected.append((public_id, None, ArchiveEntryStatus.UNKNOWN))
-        elif not book.downloadable or book.availability is BookAvailability.MISSED:
-            selected.append((public_id, book, ArchiveEntryStatus.UNAVAILABLE))
-        else:
-            selected.append((public_id, book, ArchiveEntryStatus.DOWNLOADABLE))
-            downloadable.append(book)
-            total_size += book.size
-            if total_size > MAX_ELIGIBLE_SIZE:
-                raise ArchiveLimitError("Selected books exceed the source-size limit")
+            selected.append((public_id, None, ArchiveEntryStatus.UNKNOWN, ()))
+            continue
+        if not book.downloadable or book.availability is BookAvailability.MISSED:
+            selected.append((public_id, book, ArchiveEntryStatus.UNAVAILABLE, ()))
+            continue
 
+        supported_formats = tuple(
+            choice.key
+            for choice in output_policy.choices()
+            if choice.key != "original" and is_supported(book.original_format, choice.key)
+        )
+        decision = output_policy.decision(book.original_format, request.format)
+        if decision is OutputDecision.CONVERT and not is_supported(
+            book.original_format, request.format
+        ):
+            decision = OutputDecision.UNSUPPORTED
+        if decision is OutputDecision.UNSUPPORTED:
+            selected.append((public_id, book, ArchiveEntryStatus.UNSUPPORTED, supported_formats))
+            continue
+
+        selected.append((public_id, book, ArchiveEntryStatus.DOWNLOADABLE, supported_formats))
+        downloadable.append((book, decision))
+        total_size += book.size
+        if total_size > MAX_ELIGIBLE_SIZE:
+            raise ArchiveLimitError("Selected books exceed the source-size limit")
+
+    target_choice = output_policy.choice(request.format)
     path_records = [
-        _PathRecord(index, book, _book_path_parts(book, request.preset))
-        for index, book in enumerate(downloadable)
+        _PathRecord(
+            index,
+            book,
+            decision,
+            _book_path_parts(
+                book,
+                request.preset,
+                output_extension=(
+                    target_choice.extension if request.format != "original" else None
+                ),
+            ),
+        )
+        for index, (book, decision) in enumerate(downloadable)
     ]
     base_groups: dict[str, list[_PathRecord]] = {}
     natural_owners: dict[str, list[int]] = {}
@@ -538,8 +661,9 @@ def build_manifest(request: ArchiveRequest, batch: CatalogSummaryBatch) -> Archi
                 if status is ArchiveEntryStatus.DOWNLOADABLE
                 else None
             ),
+            supported_formats=supported_formats,
         )
-        for public_id, book, status in selected
+        for public_id, book, status, supported_formats in selected
     )
     members = tuple(
         ArchiveMember(
@@ -547,6 +671,7 @@ def build_manifest(request: ArchiveRequest, batch: CatalogSummaryBatch) -> Archi
             record.book,
             record.base_path,
             record.path,
+            decision=record.decision,
             collision=record.collision_group is not None,
             collision_group=record.collision_group,
         )
@@ -565,6 +690,7 @@ class _PathParts:
 class _PathRecord:
     index: int
     book: BookSummary
+    decision: OutputDecision
     base_parts: _PathParts
     base_path: str = ""
     base_key: str = ""
@@ -607,14 +733,19 @@ class _CollisionSets:
         return result
 
 
-def _book_path_parts(book: BookSummary, preset: ArchivePreset) -> _PathParts:
+def _book_path_parts(
+    book: BookSummary,
+    preset: ArchivePreset,
+    *,
+    output_extension: str | None = None,
+) -> _PathParts:
     author_source = book.authors[0] if book.authors else ""
     author = sanitize_component(
         " ".join(part.strip() for part in author_source.split(",") if part.strip()),
         "Unknown author",
     )
     title = sanitize_component(book.title, "book")
-    extension = normalize_extension(book.original_format)
+    extension = normalize_extension(output_extension or book.original_format)
 
     if book.series is None:
         components: tuple[str, ...] = (

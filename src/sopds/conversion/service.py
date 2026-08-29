@@ -98,6 +98,14 @@ class ConversionService:
         self._registry = registry
         self._cache = cache
 
+    def supports(self, source_format: str, target_format: str) -> bool:
+        """Report only capabilities backed by a registered converter."""
+        try:
+            self._registry.resolve(source_format, target_format)
+        except UnsupportedConversionError, ValueError:
+            return False
+        return True
+
     async def convert(
         self,
         public_id: str,
