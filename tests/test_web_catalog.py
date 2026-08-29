@@ -1048,6 +1048,55 @@ def test_book_detail_accepts_catalog_root_without_a_query() -> None:
     assert "Back to results" in response.text
 
 
+def test_book_detail_read_action_is_secondary_and_preserves_reader_context() -> None:
+    app, catalog, _ = _app()
+    return_to = "/?q=book&search_field=title&cursor=opaque%2Ftoken"
+    with TestClient(app) as client:
+        active = client.get("/books/public-1", params={"return_to": return_to})
+        hidden = client.get(
+            "/books/public-1",
+            params={
+                "include_missed": "true",
+                "include_hidden": "true",
+                "return_to": return_to,
+            },
+        )
+
+        catalog.original_format = "epub"
+        epub = client.get("/books/public-1")
+
+        catalog.original_format = "azw3"
+        unsupported = client.get("/books/public-1")
+
+        catalog.original_format = "fb2"
+        missed = client.get("/books/public-1?include_missed=true")
+
+        catalog.detail_downloadable = False
+        unavailable = client.get("/books/public-1")
+
+        catalog.detail_downloadable = True
+        catalog.detail_size = 64 * 1024 * 1024 + 1
+        over_limit = client.get("/books/public-1")
+
+    active_href = _link_href(active.text, "detail-read-link")
+    hidden_href = _link_href(hidden.text, "detail-read-link")
+    assert active_href is not None
+    assert urlsplit(active_href).path == "/books/public-1/read"
+    assert parse_qs(urlsplit(active_href).query) == {"return_to": [return_to]}
+    assert parse_qs(urlsplit(hidden_href).query) == {
+        "return_to": [return_to],
+        "include_missed": ["true"],
+        "include_hidden": ["true"],
+    }
+    for response in (active, hidden, epub, over_limit):
+        assert 'target="_blank" rel="noopener noreferrer">Read</a>' in response.text
+        assert response.text.index("book-detail__download-action") < response.text.index(
+            "book-detail__read-action"
+        )
+    for response in (unsupported, missed, unavailable):
+        assert 'data-testid="detail-read-link"' not in response.text
+
+
 def test_reader_route_rejects_ineligible_books_and_honors_availability_scopes() -> None:
     app, catalog, _ = _app()
     with TestClient(app) as client:
@@ -1121,9 +1170,11 @@ def test_reader_shell_is_standalone_and_preserves_validated_detail_context() -> 
     assert 'data-reader-toolbar role="toolbar" aria-label="Reading controls"' in response.text
     assert 'data-reader-contents aria-labelledby="reader-contents-title"' in response.text
     assert 'data-reader-state="error" role="alert" hidden' in response.text
-    assert "<script" not in response.text
-    assert "<link" not in response.text
-    assert "/static/" not in response.text
+    assert response.text.count("<script") == 1
+    assert '<script type="module" src="/static/reader/app.js"></script>' in response.text
+    assert response.text.count("<link") == 1
+    assert '<link rel="stylesheet" href="/static/css/reader.css">' in response.text
+    assert not re.search(r"<script(?![^>]+src=)", response.text)
     assert "htmx" not in response.text.casefold()
     assert "selection.js" not in response.text
     assert "Application is healthy" not in response.text
@@ -1143,6 +1194,27 @@ def test_reader_shell_is_standalone_and_preserves_validated_detail_context() -> 
     assert catalog.detail_requests == [(False, True)]
 
 
+def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        javascript = client.get("/static/reader/app.js")
+        stylesheet = client.get("/static/css/reader.css")
+
+    assert javascript.status_code == 200
+    assert stylesheet.status_code == 200
+    assert "import '../vendor/foliate/view.js'" in javascript.text
+    assert "import { openPublication } from './book.js'" in javascript.text
+    assert "view.renderer.setAttribute('max-column-count', '1')" in javascript.text
+    assert "view.renderer.setStyles" in javascript.text
+    assert "await publication.destroy()" in javascript.text
+    assert "event.stopImmediatePropagation()" in javascript.text
+    assert "localStorage" not in javascript.text
+    assert "foliate-view" in stylesheet.text
+    assert "prefers-color-scheme: dark" in stylesheet.text
+    assert "@media (max-width: 35rem)" in stylesheet.text
+    assert 'url("../fonts/IBMPlexSans-Regular.woff2")' in stylesheet.text
+
+
 def test_reader_rejects_unsafe_return_context_and_renders_known_size_limit() -> None:
     app, catalog, _ = _app()
     catalog.detail_size = 64 * 1024 * 1024 + 1
@@ -1159,6 +1231,8 @@ def test_reader_rejects_unsafe_return_context_and_renders_known_size_limit() -> 
     assert response.headers["content-security-policy"] == routes._READER_CSP
     assert "larger than the 64 MiB web reader limit" in response.text
     assert "Preparing the book for reading" in response.text
+    assert '<link rel="stylesheet" href="/static/css/reader.css">' in response.text
+    assert "<script" not in response.text
     assert re.search(r'data-reader-state="loading"[^>]* hidden', response.text)
     assert re.search(r'data-reader-state="error" role="alert">', response.text)
     assert _link_href(response.text, "reader-retry") == ("/books/public-1/read?include_hidden=true")

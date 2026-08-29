@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Read {{ book.title }} in SOPDS.">
     <title>{{ book.title }} · SOPDS reader</title>
+    <link rel="stylesheet" href="/static/css/reader.css">
+    {% if not reader_error %}<script type="module" src="/static/reader/app.js"></script>{% endif %}
   </head>
   <body
     data-reader-root
@@ -12,38 +14,42 @@
     data-source-format="{{ source_format }}"
     data-source-url="{{ source_url }}"
   >
-    <a href="#reader-main">Skip to reader</a>
+    <a class="reader-skip-link" href="#reader-main">Skip to reader</a>
     <main id="reader-main">
-      <section data-reader-state="loading" role="status" aria-live="polite"{% if reader_error %} hidden{% endif %}>
-        <h1>{{ book.title }}</h1>
-        <p>Preparing the book for reading…</p>
+      <section class="reader-message" data-reader-state="loading" role="status" aria-live="polite"{% if reader_error %} hidden{% endif %}>
+        <div>
+          <h1>{{ book.title }}</h1>
+          <p>Preparing the book for reading…</p>
+        </div>
       </section>
 
       <section data-reader-state="reader" aria-label="Book reader" hidden>
         <header data-reader-toolbar role="toolbar" aria-label="Reading controls">
-          <strong data-reader-title>{{ book.title }}</strong>
-          <button type="button" data-reader-contents-button aria-controls="reader-contents" disabled>Contents</button>
+          <strong data-reader-title title="{{ book.title }}">{{ book.title }}</strong>
+          <button type="button" data-reader-contents-button aria-controls="reader-contents" aria-expanded="false" disabled>Contents</button>
           <button type="button" data-reader-previous aria-label="Previous page" disabled>Previous</button>
           <button type="button" data-reader-next aria-label="Next page" disabled>Next</button>
-          <output data-reader-progress aria-live="polite">0%</output>
+          <output data-reader-progress aria-label="Reading progress" aria-live="polite">0%</output>
           <button type="button" data-reader-font-decrease aria-label="Decrease font size" disabled>Smaller text</button>
           <button type="button" data-reader-font-increase aria-label="Increase font size" disabled>Larger text</button>
         </header>
         <dialog id="reader-contents" data-reader-contents aria-labelledby="reader-contents-title">
           <h2 id="reader-contents-title">Contents</h2>
-          <nav aria-label="Book contents"></nav>
+          <nav aria-label="Book contents" data-reader-contents-navigation></nav>
         </dialog>
         <div data-reader-surface tabindex="0" aria-label="Reading surface"></div>
       </section>
 
-      <section data-reader-state="error" role="alert"{% if not reader_error %} hidden{% endif %}>
-        <h1>Unable to open {{ book.title }}</h1>
-        <p data-reader-error-message>{{ reader_error or "The book could not be opened in the web reader." }}</p>
-        <nav aria-label="Reader recovery actions">
-          <a data-testid="reader-retry" href="{{ retry_url }}" data-reader-retry>Retry</a>
-          <a data-testid="reader-download" href="{{ download_url }}" data-reader-download>Download original</a>
-          <a data-testid="reader-back" href="{{ detail_url }}" data-reader-back>Back to book</a>
-        </nav>
+      <section class="reader-message reader-message--error" data-reader-state="error" role="alert"{% if not reader_error %} hidden{% endif %}>
+        <div>
+          <h1>Unable to open {{ book.title }}</h1>
+          <p data-reader-error-message>{{ reader_error or "The book could not be opened in the web reader." }}</p>
+          <nav aria-label="Reader recovery actions">
+            <a data-testid="reader-retry" href="{{ retry_url }}" data-reader-retry>Retry</a>
+            <a data-testid="reader-download" href="{{ download_url }}" data-reader-download>Download original</a>
+            <a data-testid="reader-back" href="{{ detail_url }}" data-reader-back>Back to book</a>
+          </nav>
+        </div>
       </section>
     </main>
   </body>

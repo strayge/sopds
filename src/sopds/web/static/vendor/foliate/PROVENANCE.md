@@ -26,6 +26,9 @@ Security patches:
 2. `view.js` still emits the cancelable `external-link` custom event but removes
    Foliate's default call to `globalThis.open`, leaving link handling to the
    embedding adapter.
+3. `paginator.js` disconnects its resize observers during destruction and makes
+   queued iframe-load, resize, font, and style callbacks no-op, preventing observer
+   reactivation and detached-document access during reader teardown.
 
 Formatting-only normalization:
 

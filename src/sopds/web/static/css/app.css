@@ -1339,6 +1339,25 @@ button.selection-remove:hover {
   color: #ffffff;
 }
 
+.book-detail__read-action {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-forest);
+  border-radius: var(--radius-small);
+  color: var(--color-forest);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.book-detail__read-action:hover {
+  border-color: var(--color-terracotta-dark);
+  color: var(--color-terracotta-dark);
+}
+
 .download-split--detail {
   width: 100%;
 }

@@ -208,7 +208,10 @@ const setStylesImportant = (el, styles) => {
 }
 
 class View {
-    #observer = new ResizeObserver(() => this.expand())
+    #destroyed = false
+    #observer = new ResizeObserver(() => {
+        if (!this.#destroyed) this.expand()
+    })
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
     #contentRange = document.createRange()
@@ -253,8 +256,16 @@ class View {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         return new Promise(resolve => {
             this.#iframe.addEventListener('load', () => {
+                if (this.#destroyed) {
+                    resolve()
+                    return
+                }
                 const doc = this.document
                 afterLoad?.(doc)
+                if (this.#destroyed) {
+                    resolve()
+                    return
+                }
 
                 // it needs to be visible for Firefox to get computed style
                 this.#iframe.style.display = 'block'
@@ -269,6 +280,10 @@ class View {
                 const layout = beforeRender?.({ vertical, rtl, background })
                 this.#iframe.style.display = 'block'
                 this.render(layout)
+                if (this.#destroyed) {
+                    resolve()
+                    return
+                }
                 this.#observer.observe(doc.body)
 
                 // the resize observer above doesn't work in Firefox
@@ -282,7 +297,8 @@ class View {
         })
     }
     render(layout) {
-        if (!layout) return
+        const doc = this.document
+        if (this.#destroyed || !layout || !doc?.documentElement || !doc.body) return
         this.#column = layout.flow !== 'scrolled'
         this.#layout = layout
         if (this.#column) this.columnize(layout)
@@ -359,6 +375,7 @@ class View {
         }
     }
     expand() {
+        if (this.#destroyed) return
         const { documentElement } = this.document
         if (this.#column) {
             const side = this.#vertical ? 'height' : 'width'
@@ -415,7 +432,8 @@ class View {
         return this.#overlayer
     }
     destroy() {
-        if (this.document) this.#observer.unobserve(this.document.body)
+        this.#destroyed = true
+        this.#observer.disconnect()
     }
 }
 
@@ -426,7 +444,10 @@ export class Paginator extends HTMLElement {
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
     #root = this.attachShadow({ mode: 'closed' })
-    #observer = new ResizeObserver(() => this.render())
+    #destroyed = false
+    #observer = new ResizeObserver(() => {
+        if (!this.#destroyed) this.render()
+    })
     #top
     #background
     #container
@@ -751,7 +772,7 @@ export class Paginator extends HTMLElement {
         return { height, width, margin, gap, columnWidth }
     }
     render() {
-        if (!this.#view) return
+        if (this.#destroyed || !this.#view) return
         this.#view.render(this.#beforeRender({
             vertical: this.#vertical,
             rtl: this.#rtl,
@@ -969,6 +990,7 @@ export class Paginator extends HTMLElement {
     }
     async #display(promise) {
         const { index, src, anchor, onLoad, select } = await promise
+        if (this.#destroyed) return
         this.#index = index
         const hasFocus = this.#view?.document?.hasFocus()
         if (src) {
@@ -985,16 +1007,19 @@ export class Paginator extends HTMLElement {
             }
             const beforeRender = this.#beforeRender.bind(this)
             await view.load(src, afterLoad, beforeRender)
+            if (this.#destroyed) return
             this.dispatchEvent(new CustomEvent('create-overlayer', {
                 detail: {
                     doc: view.document, index,
                     attach: overlayer => view.overlayer = overlayer,
                 },
             }))
+            if (this.#destroyed) return
             this.#view = view
         }
         await this.scrollToAnchor((typeof anchor === 'function'
             ? anchor(this.#view.document) : anchor) ?? 0, select)
+        if (this.#destroyed) return
         if (hasFocus) this.focusView()
     }
     #canGoToIndex(index) {
@@ -1108,18 +1133,22 @@ export class Paginator extends HTMLElement {
         } else $style.textContent = styles
 
         // NOTE: needs `requestAnimationFrame` in Chromium
-        requestAnimationFrame(() =>
-            this.#background.style.background = getBackground(this.#view.document))
+        requestAnimationFrame(() => {
+            if (this.#destroyed || !this.#view) return
+            this.#background.style.background = getBackground(this.#view.document)
+        })
 
         // needed because the resize observer doesn't work in Firefox
-        this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
+        this.#view?.document?.fonts?.ready?.then(() => this.#view?.expand())
     }
     focusView() {
         this.#view.document.defaultView.focus()
     }
     destroy() {
-        this.#observer.unobserve(this)
-        this.#view.destroy()
+        if (this.#destroyed) return
+        this.#destroyed = true
+        this.#observer.disconnect()
+        this.#view?.destroy()
         this.#view = null
         this.sections[this.#index]?.unload?.()
         this.#mediaQuery.removeEventListener('change', this.#mediaQueryListener)

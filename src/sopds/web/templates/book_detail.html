@@ -85,6 +85,7 @@
               </details>
             {% endif %}
           </div>
+          {% if reader_url %}<a data-testid="detail-read-link" href="{{ reader_url }}" class="book-detail__read-action" target="_blank" rel="noopener noreferrer">Read</a>{% endif %}
         {% endif %}
       </aside>
     </div>

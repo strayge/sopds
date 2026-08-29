@@ -1160,12 +1160,22 @@ async def book_detail(
     if book is None:
         raise HTTPException(status_code=404, detail="Book not found")
     validated_return_url = _validated_return_url(return_to)
+    source_format = _reader_source_format(book.original_format)
+    reader_url = None
+    if book.downloadable and book.availability.value != "missed" and source_format is not None:
+        reader_url, _download_url, _detail_url = _reader_book_urls(
+            book.public_id,
+            include_missed=include_missed,
+            include_hidden=include_hidden,
+            return_to=validated_return_url,
+        )
     return templates.TemplateResponse(
         request=request,
         name="book_detail.html",
         context={
             **_shell_context(request, active_navigation="catalog"),
             "book": book,
+            "reader_url": reader_url,
             "back_href": validated_return_url or "/",
             "back_label": (
                 "Back to results" if validated_return_url is not None else "Back to catalog"
