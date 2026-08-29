@@ -1,12 +1,13 @@
 """Server-rendered catalog and operational status routes."""
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal, cast, override
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -75,6 +76,27 @@ _WEB_PAGE_SIZE = 200
 _MAX_SELECTED_BODY_BYTES = 8_388_608
 _SELECTED_ARCHIVE_FILENAME = "selected-books.zip"
 _CSRF_ERROR_MESSAGE = "This page has expired. Reload it and try again."
+_READER_SOURCE_LIMIT = 64 * 1024 * 1024
+_READER_CSP = "; ".join(
+    (
+        "default-src 'none'",
+        "script-src 'self'",
+        "script-src-attr 'none'",
+        "style-src 'self' 'unsafe-inline' blob:",
+        "img-src data: blob:",
+        "font-src 'self'",
+        "connect-src 'self'",
+        "frame-src blob:",
+        "worker-src 'none'",
+        "media-src 'none'",
+        "object-src 'none'",
+        "manifest-src 'none'",
+        "form-action 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    )
+)
+_READER_HEADERS = {"Content-Security-Policy": _READER_CSP}
 _PUBLIC_ARCHIVE_INPUT_MESSAGES = frozenset(
     {
         "Invalid archive preset",
@@ -1082,6 +1104,46 @@ async def catalog_fragment(
     return response
 
 
+def _reader_book_urls(
+    public_id: str,
+    *,
+    include_missed: bool,
+    include_hidden: bool,
+    return_to: str | None,
+) -> tuple[str, str, str]:
+    path_id = quote(public_id, safe="")
+    values: dict[str, str] = {}
+    if return_to is not None:
+        values["return_to"] = return_to
+    if include_missed:
+        values["include_missed"] = "true"
+    if include_hidden:
+        values["include_hidden"] = "true"
+    query = urlencode(values)
+    suffix = f"?{query}" if query else ""
+    return (
+        f"/books/{path_id}/read{suffix}",
+        f"/books/{path_id}/download",
+        f"/books/{path_id}{suffix}",
+    )
+
+
+def _reader_source_format(value: str) -> str | None:
+    try:
+        source_format = normalize_format(value)
+    except ValueError:
+        return None
+    return source_format if source_format in {"fb2", "epub"} else None
+
+
+def _source_revision_token(original: AcquiredOriginal) -> str:
+    revision = original.source_revision
+    identity = (
+        f"{revision.archive_size}:{revision.archive_mtime_ns}:{revision.member_crc32}"
+    ).encode()
+    return hashlib.sha256(identity).hexdigest()
+
+
 @router.get("/books/{public_id}", response_class=HTMLResponse)
 async def book_detail(
     request: Request,
@@ -1113,6 +1175,61 @@ async def book_detail(
                 request, book.original_format
             ),
         },
+    )
+
+
+@router.get("/books/{public_id}/read", response_class=HTMLResponse)
+async def book_reader(
+    request: Request,
+    public_id: str,
+    include_missed: bool = False,
+    include_hidden: bool = False,
+    return_to: str | None = None,
+) -> Response:
+    book = await _catalog(request).details(
+        public_id,
+        include_missed=include_missed,
+        include_hidden=include_hidden,
+    )
+    source_format = None if book is None else _reader_source_format(book.original_format)
+    if (
+        book is None
+        or not book.downloadable
+        or book.availability.value == "missed"
+        or source_format is None
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Book not found",
+            headers=_READER_HEADERS,
+        )
+
+    validated_return_url = _validated_return_url(return_to)
+    retry_url, download_url, detail_url = _reader_book_urls(
+        book.public_id,
+        include_missed=include_missed,
+        include_hidden=include_hidden,
+        return_to=validated_return_url,
+    )
+    over_limit = book.size > _READER_SOURCE_LIMIT
+    return templates.TemplateResponse(
+        request=request,
+        name="book_reader.html",
+        context={
+            "book": book,
+            "source_format": source_format,
+            "source_url": download_url,
+            "retry_url": retry_url,
+            "download_url": download_url,
+            "detail_url": detail_url,
+            "reader_error": (
+                "This book is larger than the 64 MiB web reader limit. "
+                "You can still download the original file."
+                if over_limit
+                else None
+            ),
+        },
+        headers=_READER_HEADERS,
     )
 
 
@@ -1274,6 +1391,7 @@ async def download_original(request: Request, public_id: str) -> Response:
             "Content-Length": str(original.content_length),
             "Content-Disposition": content_disposition(original.filename),
             "X-Content-Type-Options": "nosniff",
+            "X-SOPDS-Source-Revision": _source_revision_token(original),
         }
         return _OwnedStreamingResponse(original, headers)
     except BaseException:

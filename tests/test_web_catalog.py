@@ -91,6 +91,7 @@ class _Catalog:
         self.detail_keywords: str | None = None
         self.detail_libid: str | None = None
         self.detail_downloadable = True
+        self.detail_size = 126_000
         self.original_format = "fb2"
         self.available_filters = CatalogFilters(
             languages=(FilterOption("en", "en"),),
@@ -185,7 +186,7 @@ class _Catalog:
             genres=(("sf", "Science fiction"),),
             series="Series",
             series_number="1",
-            size=126_000,
+            size=self.detail_size,
             libid=self.detail_libid,
             published_date=self.detail_published_date,
             language="en",
@@ -232,6 +233,7 @@ class _Acquisition:
     def __init__(self) -> None:
         self.error: Exception | None = None
         self.stream = _Stream()
+        self.revision = _REVISION
 
     async def acquire(self, public_id: str) -> AcquiredOriginal:
         if self.error is not None:
@@ -242,7 +244,7 @@ class _Acquisition:
             content_length=len(self.stream.body),
             stream=self.stream,
             source_format="fb2",
-            source_revision=_REVISION,
+            source_revision=self.revision,
         )
 
 
@@ -1044,6 +1046,125 @@ def test_book_detail_accepts_catalog_root_without_a_query() -> None:
     assert response.status_code == 200
     assert _link_href(response.text, "detail-back-link") == "/"
     assert "Back to results" in response.text
+
+
+def test_reader_route_rejects_ineligible_books_and_honors_availability_scopes() -> None:
+    app, catalog, _ = _app()
+    with TestClient(app) as client:
+        missing = client.get("/books/missing/read")
+
+        catalog.detail_downloadable = False
+        unavailable = client.get("/books/public-1/read")
+
+        catalog.detail_downloadable = True
+        missed = client.get("/books/public-1/read?include_missed=true")
+
+        catalog.original_format = "azw3"
+        unsupported = client.get("/books/public-1/read")
+
+        catalog.original_format = "epub"
+        epub = client.get("/books/public-1/read")
+        hidden = client.get("/books/public-1/read?include_hidden=true")
+
+    for response in (missing, unavailable, missed, unsupported):
+        assert response.status_code == 404
+        assert response.headers["content-security-policy"] == routes._READER_CSP
+        assert "book_reader.html" not in response.text
+    assert epub.status_code == 200
+    assert 'data-source-format="epub"' in epub.text
+    assert hidden.status_code == 200
+    assert catalog.detail_requests == [
+        (False, False),
+        (False, False),
+        (True, False),
+        (False, False),
+        (False, False),
+        (False, True),
+    ]
+
+
+def test_reader_shell_is_standalone_and_preserves_validated_detail_context() -> None:
+    app, catalog, _ = _app()
+    return_to = "/?q=book&search_field=title&cursor=opaque%2Ftoken"
+    with TestClient(app) as client:
+        response = client.get(
+            "/books/public-1/read",
+            params={
+                "include_hidden": "true",
+                "return_to": return_to,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-security-policy"] == routes._READER_CSP
+    for directive in (
+        "default-src 'none'",
+        "script-src 'self'",
+        "script-src-attr 'none'",
+        "style-src 'self' 'unsafe-inline' blob:",
+        "img-src data: blob:",
+        "font-src 'self'",
+        "connect-src 'self'",
+        "frame-src blob:",
+        "worker-src 'none'",
+        "form-action 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    ):
+        assert directive in response.headers["content-security-policy"]
+    assert "data-reader-root" in response.text
+    assert 'data-public-id="public-1"' in response.text
+    assert 'data-source-format="fb2"' in response.text
+    assert 'data-source-url="/books/public-1/download"' in response.text
+    assert 'data-reader-state="loading" role="status" aria-live="polite"' in response.text
+    assert 'data-reader-state="reader" aria-label="Book reader" hidden' in response.text
+    assert 'data-reader-toolbar role="toolbar" aria-label="Reading controls"' in response.text
+    assert 'data-reader-contents aria-labelledby="reader-contents-title"' in response.text
+    assert 'data-reader-state="error" role="alert" hidden' in response.text
+    assert "<script" not in response.text
+    assert "<link" not in response.text
+    assert "/static/" not in response.text
+    assert "htmx" not in response.text.casefold()
+    assert "selection.js" not in response.text
+    assert "Application is healthy" not in response.text
+    assert _link_href(response.text, "reader-download") == "/books/public-1/download"
+    retry = _link_href(response.text, "reader-retry")
+    detail = _link_href(response.text, "reader-back")
+    assert parse_qs(urlsplit(retry).query) == {
+        "return_to": [return_to],
+        "include_hidden": ["true"],
+    }
+    assert parse_qs(urlsplit(detail).query) == {
+        "return_to": [return_to],
+        "include_hidden": ["true"],
+    }
+    assert urlsplit(retry).path == "/books/public-1/read"
+    assert urlsplit(detail).path == "/books/public-1"
+    assert catalog.detail_requests == [(False, True)]
+
+
+def test_reader_rejects_unsafe_return_context_and_renders_known_size_limit() -> None:
+    app, catalog, _ = _app()
+    catalog.detail_size = 64 * 1024 * 1024 + 1
+    with TestClient(app) as client:
+        response = client.get(
+            "/books/public-1/read",
+            params={
+                "include_hidden": "true",
+                "return_to": "https://example.invalid/catalog",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-security-policy"] == routes._READER_CSP
+    assert "larger than the 64 MiB web reader limit" in response.text
+    assert "Preparing the book for reading" in response.text
+    assert re.search(r'data-reader-state="loading"[^>]* hidden', response.text)
+    assert re.search(r'data-reader-state="error" role="alert">', response.text)
+    assert _link_href(response.text, "reader-retry") == ("/books/public-1/read?include_hidden=true")
+    assert _link_href(response.text, "reader-download") == "/books/public-1/download"
+    assert _link_href(response.text, "reader-back") == ("/books/public-1?include_hidden=true")
+    assert "example.invalid" not in response.text
 
 
 def test_book_detail_renders_present_metadata_and_availability_actions() -> None:
@@ -2512,6 +2633,7 @@ def test_original_download_headers_body_and_status_mappings(
     assert response.headers["content-type"] == "application/x-fictionbook+xml"
     assert response.headers["content-length"] == "8"
     assert response.headers["x-content-type-options"] == "nosniff"
+    assert re.fullmatch(r"[0-9a-f]{64}", response.headers["x-sopds-source-revision"])
     assert "filename*=UTF-8''" in response.headers["content-disposition"]
     assert acquisition.stream.closed
     assert missing.status_code == 404
@@ -2523,6 +2645,89 @@ def test_original_download_headers_body_and_status_mappings(
     assert any("failure_type=AcquisitionCorruptError" in message for message in messages)
     assert any("failure_type=AcquisitionSourceIOError" in message for message in messages)
     assert "public-1" not in " ".join(messages)
+
+
+def test_original_download_revision_header_is_stable_and_changes_with_acquired_source() -> None:
+    app, _, _ = _app()
+    acquisition: _Acquisition = app.state.acquisition
+    with TestClient(app) as client:
+        first = client.get("/books/public-1/download")
+        acquisition.stream = _Stream()
+        second = client.get("/books/public-1/download")
+        acquisition.revision = SourceRevision(1, 2, 4)
+        acquisition.stream = _Stream()
+        changed = client.get("/books/public-1/download")
+
+    first_token = first.headers["x-sopds-source-revision"]
+    assert first.status_code == second.status_code == changed.status_code == 200
+    assert first_token == second.headers["x-sopds-source-revision"]
+    assert changed.headers["x-sopds-source-revision"] != first_token
+    assert re.fullmatch(r"[0-9a-f]{64}", changed.headers["x-sopds-source-revision"])
+    assert "1:2:" not in first_token
+
+
+async def test_reader_source_fetch_disconnect_closes_acquired_stream() -> None:
+    started = asyncio.Event()
+    disconnected = asyncio.Event()
+
+    class BlockingStream(_Stream):
+        @override
+        async def _iterate(self) -> AsyncIterator[bytes]:
+            started.set()
+            await asyncio.Event().wait()
+            yield b"unreachable"
+
+    class BlockingAcquisition:
+        def __init__(self) -> None:
+            self.stream = BlockingStream()
+
+        async def acquire(self, public_id: str) -> AcquiredOriginal:
+            del public_id
+            return AcquiredOriginal(
+                "book.fb2",
+                "application/x-fictionbook+xml",
+                8,
+                self.stream,
+                "fb2",
+                _REVISION,
+            )
+
+    app, _, _ = _app()
+    acquisition = BlockingAcquisition()
+    app.state.acquisition = acquisition
+    messages: list[Message] = []
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/books/public-1/download",
+        "raw_path": b"/books/public-1/download",
+        "query_string": b"",
+        "headers": [(b"host", b"catalog.example")],
+        "client": ("127.0.0.1", 1234),
+        "server": ("catalog.example", 443),
+    }
+
+    async def receive() -> Message:
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    serving = asyncio.create_task(app(scope, receive, send))
+    await started.wait()
+    disconnected.set()
+    await asyncio.wait_for(serving, 1)
+
+    assert acquisition.stream.closed
+    response_start = next(
+        message for message in messages if message["type"] == "http.response.start"
+    )
+    headers = dict(response_start["headers"])
+    assert re.fullmatch(rb"[0-9a-f]{64}", headers[b"x-sopds-source-revision"])
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("send failed"), asyncio.CancelledError()])
