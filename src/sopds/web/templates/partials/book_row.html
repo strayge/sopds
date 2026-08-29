@@ -65,7 +65,20 @@
   </ul>
   <div class="result-row__actions">
     {% if row_mode == "catalog" %}
-      {% if row_book.downloadable and row_book.availability.value != "missed" %}<a class="result-row__download" href="/books/{{ row_book.public_id|urlencode }}/download">Download</a>{% endif %}
+      {% if row_book.downloadable and row_book.availability.value != "missed" %}
+        {% set conversion_targets = additional_download_formats.get(row_book.public_id, ()) %}
+        <div class="download-split">
+          <a class="result-row__download" href="/books/{{ row_book.public_id|urlencode }}/download" aria-label="Download original {{ row_book.original_format|source_format_label }} file for {{ row_book.title }}">{{ row_book.original_format|source_format_label }}</a>
+          {% if conversion_targets %}
+            <details class="download-menu">
+              <summary aria-label="More download formats for {{ row_book.title }}"><span aria-hidden="true">▾</span></summary>
+              <div class="download-menu__items">
+                {% for target in conversion_targets %}<a href="/books/{{ row_book.public_id|urlencode }}/download/{{ target.key }}" aria-label="Download {{ target.label }} conversion for {{ row_book.title }}">{{ target.label }}</a>{% endfor %}
+              </div>
+            </details>
+          {% endif %}
+        </div>
+      {% endif %}
       <a class="result-row__action" href="/books/{{ row_book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">Open details</a>
     {% else %}
       <a class="result-row__action" href="/books/{{ row_book.public_id|urlencode }}?return_to=%2Fselected{% if row_book.availability.value == 'hidden' %}&amp;include_hidden=true{% endif %}{% if row_book.availability.value == 'missed' %}&amp;include_missed=true{% endif %}">Open details</a>

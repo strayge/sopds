@@ -73,8 +73,18 @@
           <p class="book-detail__unavailable" role="status">Original file unavailable</p>
           <p class="muted">The catalog record remains available, but its original file is missing.</p>
         {% else %}
-          <p class="book-detail__download-label">Original file</p>
-          <a class="book-detail__download-action" href="/books/{{ book.public_id|urlencode }}/download">Download original · {{ book.original_format|upper }} · {{ book.size|kilobytes }}</a>
+          <p class="book-detail__download-label">Original file · {{ book.size|kilobytes }}</p>
+          <div class="download-split download-split--detail">
+            <a class="book-detail__download-action" href="/books/{{ book.public_id|urlencode }}/download" aria-label="Download original {{ book.original_format|source_format_label }} file for {{ book.title }}">{{ book.original_format|source_format_label }}</a>
+            {% if additional_download_formats %}
+              <details class="download-menu download-menu--detail">
+                <summary aria-label="More download formats for {{ book.title }}"><span aria-hidden="true">▾</span></summary>
+                <div class="download-menu__items">
+                  {% for target in additional_download_formats %}<a href="/books/{{ book.public_id|urlencode }}/download/{{ target.key }}" aria-label="Download {{ target.label }} conversion for {{ book.title }}">{{ target.label }}</a>{% endfor %}
+                </div>
+              </details>
+            {% endif %}
+          </div>
         {% endif %}
       </aside>
     </div>

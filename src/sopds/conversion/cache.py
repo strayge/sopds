@@ -12,6 +12,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import BinaryIO, TypeVar
@@ -33,6 +34,16 @@ _LOGGER = logging.getLogger(__name__)
 
 class _InvalidCachedArtifact(Exception):
     """An artifact pathname no longer refers to a safe cached file."""
+
+
+@dataclass(slots=True)
+class _Operation:
+    """Track callers sharing one producer so abandonment can stop real work."""
+
+    task: asyncio.Task[Path]
+    retired: asyncio.Event
+    waiters: int = 0
+    accepting: bool = True
 
 
 def cache_digest(key: ConversionSourceKey) -> str:
@@ -117,7 +128,7 @@ class ArtifactCache:
         self._ttl = ttl_seconds
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sopds-conversion")
         self._lock = asyncio.Lock()
-        self._operations: dict[str, asyncio.Task[Path]] = {}
+        self._operations: dict[str, _Operation] = {}
         self._bookkeeping: set[asyncio.Task[None]] = set()
         self._admitted: set[asyncio.Future[None]] = set()
         self._leases: set[_ArtifactStream] = set()
@@ -224,26 +235,72 @@ class ArtifactCache:
                 self._working_paths.discard(output)
             await self._worker(lambda: _safe_remove(output))
 
-    def _remember_operation(self, digest: str, operation: asyncio.Task[Path]) -> None:
-        def forget(completed: asyncio.Task[Path]) -> None:
-            bookkeeping = asyncio.create_task(self._forget_operation(digest, completed))
+    def _remember_operation(self, digest: str, operation: _Operation) -> None:
+        def forget(_completed: asyncio.Task[Path]) -> None:
+            bookkeeping = asyncio.create_task(self._forget_operation(digest, operation))
             self._bookkeeping.add(bookkeeping)
             bookkeeping.add_done_callback(self._bookkeeping.discard)
 
         self._operations[digest] = operation
-        operation.add_done_callback(forget)
+        operation.task.add_done_callback(forget)
 
-    async def _operation_for(self, digest: str, producer: ArtifactProducer) -> asyncio.Task[Path]:
+    async def _operation_for(self, digest: str, producer: ArtifactProducer) -> _Operation:
+        while True:
+            async with self._lock:
+                operation = self._operations.get(digest)
+                if operation is None:
+                    if self._closing:
+                        raise ConversionShutdownError("Conversion cache is shutting down")
+                    task = asyncio.create_task(
+                        self._resolve(digest, producer), name=f"conversion-{digest}"
+                    )
+                    operation = _Operation(task, asyncio.Event())
+                    self._remember_operation(digest, operation)
+                if operation.accepting:
+                    operation.waiters += 1
+                    return operation
+                retired = operation.retired
+            await retired.wait()
+
+    async def _release_waiter(self, operation: _Operation) -> None:
+        drain: asyncio.Task[Path] | None = None
         async with self._lock:
-            operation = self._operations.get(digest)
-            if operation is None:
-                if self._closing:
-                    raise ConversionShutdownError("Conversion cache is shutting down")
-                operation = asyncio.create_task(
-                    self._resolve(digest, producer), name=f"conversion-{digest}"
-                )
-                self._remember_operation(digest, operation)
-            return operation
+            if operation.waiters <= 0:
+                return
+            operation.waiters -= 1
+            if operation.waiters == 0 and operation.accepting and not operation.task.done():
+                operation.accepting = False
+                operation.task.cancel()
+                drain = operation.task
+        if drain is not None:
+            await self._drain_operation(drain)
+
+    @staticmethod
+    async def _drain_operation(operation: asyncio.Task[Path]) -> None:
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        with suppress(BaseException):
+            operation.result()
+
+    async def _await_operation(self, operation: _Operation) -> Path:
+        try:
+            return await asyncio.shield(operation.task)
+        finally:
+            release = asyncio.create_task(self._release_waiter(operation))
+            cancelled = False
+            while not release.done():
+                try:
+                    await asyncio.shield(release)
+                except asyncio.CancelledError:
+                    cancelled = True
+            release.result()
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def get_or_create(
         self, key: ConversionSourceKey, producer: ArtifactProducer
@@ -267,7 +324,7 @@ class ArtifactCache:
     async def _get_or_create(self, digest: str, producer: ArtifactProducer) -> ArtifactResult:
         for attempt in range(2):
             operation = await self._operation_for(digest, producer)
-            path = await asyncio.shield(operation)
+            path = await self._await_operation(operation)
 
             async with self._lock:
                 self._active[digest] = self._active.get(digest, 0) + 1
@@ -283,6 +340,7 @@ class ArtifactCache:
                     async with self._lock:
                         if self._operations.get(digest) is operation:
                             self._operations.pop(digest, None)
+                        operation.retired.set()
                     if attempt == 0:
                         continue
                     raise InvalidConversionOutputError(
@@ -295,6 +353,7 @@ class ArtifactCache:
                         self._leases.add(stream)
                         if self._operations.get(digest) is operation:
                             self._operations.pop(digest, None)
+                        operation.retired.set()
                     transferred = True
                     return ArtifactResult(content_length=length, stream=stream)
                 except BaseException:
@@ -306,10 +365,11 @@ class ArtifactCache:
                     await self._release_digest(digest)
         raise AssertionError("unreachable")
 
-    async def _forget_operation(self, digest: str, operation: asyncio.Task[Path]) -> None:
+    async def _forget_operation(self, digest: str, operation: _Operation) -> None:
         async with self._lock:
             if self._operations.get(digest) is operation:
                 self._operations.pop(digest, None)
+            operation.retired.set()
 
     async def create_source_path(self, digest: str) -> Path:
         def create() -> Path:
@@ -403,11 +463,15 @@ class ArtifactCache:
     async def _run_shutdown(self) -> None:
         async with self._lock:
             operations = tuple(self._operations.values())
+            for operation in operations:
+                operation.accepting = False
             admitted = tuple(self._admitted)
         for operation in operations:
-            operation.cancel()
+            operation.task.cancel()
         if operations:
-            await asyncio.gather(*operations, return_exceptions=True)
+            await asyncio.gather(
+                *(operation.task for operation in operations), return_exceptions=True
+            )
         if admitted:
             await asyncio.gather(*admitted, return_exceptions=True)
 

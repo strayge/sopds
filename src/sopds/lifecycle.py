@@ -14,6 +14,11 @@ from sopds.acquisition.service import AcquisitionService
 from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig
+from sopds.conversion.adapters import (
+    EpubToAzw3Converter,
+    Fb2ToAzw3Converter,
+    Fb2ToEpubConverter,
+)
 from sopds.conversion.cache import ArtifactCache
 from sopds.conversion.registry import ConverterRegistry
 from sopds.conversion.service import ConversionService
@@ -53,7 +58,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             resources.push_async_callback(_observed_cleanup, "acquisition", acquisition.shutdown)
             archive = ArchiveService(catalog, acquisition)
-            registry = ConverterRegistry()
+            registry = ConverterRegistry(
+                (
+                    Fb2ToEpubConverter("/usr/local/bin/fbc"),
+                    Fb2ToAzw3Converter("/usr/local/bin/fbc", "/usr/local/bin/kindling-cli"),
+                    EpubToAzw3Converter("/usr/local/bin/kindling-cli"),
+                )
+            )
             conversion_cache = ArtifactCache(
                 config.conversion.cache_dir, config.conversion.cache_ttl_seconds
             )

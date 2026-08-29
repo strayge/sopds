@@ -632,7 +632,7 @@ dd {
 }
 
 .result-list {
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--color-border);
   border-radius: 0.4rem;
   background: var(--color-surface);
@@ -858,6 +858,76 @@ dd {
   justify-content: flex-end;
 }
 
+.download-split {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.download-split > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.download-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.download-menu summary {
+  display: inline-grid;
+  width: 2.125rem;
+  min-height: 2.125rem;
+  place-items: center;
+  border: 1px solid var(--color-forest);
+  border-left: 0;
+  border-radius: 0 var(--radius-small) var(--radius-small) 0;
+  background: var(--color-forest);
+  color: #ffffff;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.download-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.download-menu summary:hover,
+.download-menu[open] summary {
+  border-color: var(--color-forest-dark);
+  background: var(--color-forest-dark);
+}
+
+.download-menu__items {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  display: grid;
+  min-width: 7rem;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-small);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-raised);
+}
+
+.download-menu__items a {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-small);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.download-menu__items a:hover {
+  background: var(--color-paper-deep);
+}
+
 .result-row__action,
 .result-row__download,
 .catalog-pagination__next {
@@ -901,6 +971,11 @@ dd {
   border-color: var(--color-forest-dark);
   background: var(--color-forest-dark);
   color: #ffffff;
+}
+
+.download-split:has(.download-menu) .result-row__download,
+.download-split:has(.download-menu) .book-detail__download-action {
+  border-radius: var(--radius-small) 0 0 var(--radius-small);
 }
 
 .catalog-pagination__next {
@@ -1259,6 +1334,15 @@ button.selection-remove:hover {
 .book-detail__download-action:hover {
   background: var(--color-forest-dark);
   color: #ffffff;
+}
+
+.download-split--detail {
+  width: 100%;
+}
+
+.download-menu--detail summary {
+  width: 2.75rem;
+  min-height: 2.75rem;
 }
 
 .book-detail__unavailable {
@@ -1623,7 +1707,8 @@ button.selection-remove:hover {
   .catalog-clear,
   .author-overflow summary,
   .result-row__action,
-  .result-row__download {
+  .result-row__download,
+  .download-menu summary {
     min-height: 2.75rem;
   }
 
@@ -1700,6 +1785,7 @@ button.selection-remove:hover {
   .author-overflow summary,
   .result-row__action,
   .result-row__download,
+  .download-menu summary,
   .selection-control,
   button.selection-remove,
   .selected-download-form button {

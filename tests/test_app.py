@@ -74,12 +74,30 @@ def test_health_is_unavailable_without_catalog_state_singleton(
     assert "Catalog database is not ready" not in caplog.text
 
 
-def test_empty_converter_registry_has_no_conversion_route(
+def test_lifecycle_registers_pinned_converters_without_a_separate_conversion_api(
     migrated_app_config: AppConfig,
 ) -> None:
     app = create_app(migrated_app_config)
-    with TestClient(app):
-        assert len(app.state.converter_registry) == 0
+    with (
+        patch(
+            "sopds.conversion.process.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as execute,
+        TestClient(app),
+    ):
+        registry = app.state.converter_registry
+        epub = registry.resolve("fb2", "epub").converter
+        fb2_azw3 = registry.resolve("fb2", "azw3").converter
+        epub_azw3 = registry.resolve("epub", "azw3").converter
+        assert len(registry) == 3
+        assert epub.identity.name == "fb2cng"
+        assert fb2_azw3.identity.name == "fb2cng-kindling"
+        assert epub_azw3.identity.name == "kindling"
+        assert epub._executable == "/usr/local/bin/fbc"
+        assert fb2_azw3._fbc_executable == "/usr/local/bin/fbc"
+        assert fb2_azw3._kindling_executable == "/usr/local/bin/kindling-cli"
+        assert epub_azw3._executable == "/usr/local/bin/kindling-cli"
+        execute.assert_not_awaited()
         assert not any(
             route.path.startswith("/conversion")
             for route in app.routes

@@ -50,6 +50,21 @@ from sopds.catalog.contracts import (
     FilterOption,
     SearchField,
 )
+from sopds.conversion.contracts import (
+    ConversionResult,
+    ConversionShutdownError,
+    ConversionSourceError,
+    ConversionTimeoutError,
+    ConverterExecutionError,
+    InvalidConversionOutputError,
+    SourceChangedError,
+    SourceUnavailableError,
+    UnsupportedConversionError,
+    normalize_format,
+)
+from sopds.conversion.policy import OUTPUT_POLICY, OutputChoice, OutputDecision
+from sopds.conversion.registry import ConverterRegistry
+from sopds.conversion.service import ConversionService
 from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
 from sopds.web.csrf import issue_csrf_token, validate_csrf_token
 
@@ -103,9 +118,17 @@ def _format_integer(value: int) -> str:
     return f"{value:,}".replace(",", " ")
 
 
+def _source_format_label(value: str) -> str:
+    try:
+        return normalize_format(value).upper()
+    except ValueError:
+        return "FILE"
+
+
 templates.env.filters["author_name"] = _format_author_name
 templates.env.filters["kilobytes"] = _format_kilobytes
 templates.env.filters["integer"] = _format_integer
+templates.env.filters["source_format_label"] = _source_format_label
 
 
 def _catalog(request: Request) -> Catalog:
@@ -122,6 +145,30 @@ def _acquisition(request: Request) -> Acquisition:
 
 def _archive(request: Request) -> ArchiveService:
     return cast(ArchiveService, request.app.state.archive)
+
+
+def _conversion(request: Request) -> ConversionService:
+    return cast(ConversionService, request.app.state.conversion)
+
+
+def _converter_registry(request: Request) -> ConverterRegistry | None:
+    return cast(ConverterRegistry | None, getattr(request.app.state, "converter_registry", None))
+
+
+def _additional_download_formats(request: Request, source_format: str) -> tuple[OutputChoice, ...]:
+    registry = _converter_registry(request)
+    if registry is None:
+        return ()
+    targets: list[OutputChoice] = []
+    for choice in OUTPUT_POLICY.choices():
+        if OUTPUT_POLICY.decision(source_format, choice.key) is not OutputDecision.CONVERT:
+            continue
+        try:
+            registry.resolve(source_format, choice.key)
+        except UnsupportedConversionError, ValueError:
+            continue
+        targets.append(choice)
+    return tuple(targets)
 
 
 def _shell_context(
@@ -352,6 +399,10 @@ async def _results_context(
             catalog_request.include_hidden,
         ),
         "detail_query": _detail_query(catalog_request),
+        "additional_download_formats": {
+            book.public_id: _additional_download_formats(request, book.original_format)
+            for book in page.books
+        },
         "searched": searched,
     }
 
@@ -1041,11 +1092,16 @@ async def book_detail(
                 "Back to results" if validated_return_url is not None else "Back to catalog"
             ),
             "availability_query": _availability_query(include_missed, include_hidden),
+            "additional_download_formats": _additional_download_formats(
+                request, book.original_format
+            ),
         },
     )
 
 
-async def _stream_original(original: AcquiredOriginal) -> AsyncIterator[bytes]:
+async def _stream_original(
+    original: AcquiredOriginal | ConversionResult,
+) -> AsyncIterator[bytes]:
     try:
         async for chunk in original.stream:
             yield chunk
@@ -1059,7 +1115,9 @@ async def _stream_original(original: AcquiredOriginal) -> AsyncIterator[bytes]:
         await original.stream.aclose()
 
 
-async def _close_owned_stream(original: AcquiredOriginal, *, response_started: bool) -> bool:
+async def _close_owned_stream(
+    original: AcquiredOriginal | ConversionResult, *, response_started: bool
+) -> bool:
     """Finish response-owned cleanup even when its caller is repeatedly cancelled."""
     cleanup = asyncio.create_task(original.stream.aclose())
     cancelled = False
@@ -1081,7 +1139,9 @@ async def _close_owned_stream(original: AcquiredOriginal, *, response_started: b
 class _OwnedStreamingResponse(StreamingResponse):
     """Own an acquired stream for the complete ASGI response lifecycle."""
 
-    def __init__(self, original: AcquiredOriginal, headers: dict[str, str]) -> None:
+    def __init__(
+        self, original: AcquiredOriginal | ConversionResult, headers: dict[str, str]
+    ) -> None:
         self._original = original
         super().__init__(_stream_original(original), status_code=200, headers=headers)
 
@@ -1111,6 +1171,58 @@ class _OwnedStreamingResponse(StreamingResponse):
                 response_started=response_started,
             ):
                 raise asyncio.CancelledError
+
+
+async def _discard_conversion(conversion: asyncio.Task[ConversionResult], *, cancel: bool) -> bool:
+    """Drain an abandoned conversion and close any artifact won in a completion race."""
+    if cancel and not conversion.done():
+        conversion.cancel()
+    cancelled = await _drain_route_task(conversion)
+    if conversion.cancelled():
+        return cancelled
+    try:
+        result = conversion.result()
+    except BaseException:
+        return cancelled
+    close_cancelled = await _close_owned_stream(result, response_started=False)
+    return cancelled or close_cancelled
+
+
+async def _convert_while_connected(
+    request: Request, public_id: str, target_format: str
+) -> ConversionResult | None:
+    conversion = asyncio.create_task(_conversion(request).convert(public_id, target_format))
+    disconnect = asyncio.create_task(_wait_for_disconnect(request))
+    try:
+        completed, _pending = await asyncio.wait(
+            {conversion, disconnect}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        disconnect.cancel()
+        conversion.cancel()
+        await _drain_route_task(disconnect)
+        await _discard_conversion(conversion, cancel=False)
+        raise
+
+    if disconnect in completed:
+        disconnect_error: BaseException | None = None
+        try:
+            disconnect.result()
+        except BaseException as error:
+            disconnect_error = error
+        cancelled = await _discard_conversion(conversion, cancel=True)
+        if cancelled:
+            raise asyncio.CancelledError
+        if disconnect_error is not None:
+            raise disconnect_error
+        return None
+
+    disconnect.cancel()
+    cancelled = await _drain_route_task(disconnect)
+    if cancelled:
+        await _discard_conversion(conversion, cancel=False)
+        raise asyncio.CancelledError
+    return conversion.result()
 
 
 @router.get("/books/{public_id}/download")
@@ -1149,6 +1261,96 @@ async def download_original(request: Request, public_id: str) -> Response:
         return _OwnedStreamingResponse(original, headers)
     except BaseException:
         await original.stream.aclose()
+        raise
+
+
+@router.get("/books/{public_id}/download/{target_format}")
+async def download_conversion(
+    request: Request,
+    public_id: str,
+    target_format: str,
+) -> Response:
+    if target_format not in {"epub", "azw3"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Requested format is unavailable",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        result = await _convert_while_connected(request, public_id, target_format)
+    except UnsupportedConversionError as error:
+        raise HTTPException(
+            status_code=422,
+            detail="Requested format is unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except SourceUnavailableError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="Original is unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except ConversionShutdownError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Service is shutting down",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except ConversionSourceError as error:
+        _LOGGER.warning(
+            f"Converted download source integrity failed surface=web phase=convert "
+            f"failure_type={type(error).__name__}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Original cannot be converted",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except ConversionTimeoutError as error:
+        _LOGGER.warning(
+            f"Converted download timed out surface=web phase=convert "
+            f"failure_type={type(error).__name__}"
+        )
+        raise HTTPException(
+            status_code=504,
+            detail="Book conversion timed out",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except SourceChangedError as error:
+        _LOGGER.warning(
+            f"Converted download source changed surface=web phase=convert "
+            f"failure_type={type(error).__name__}"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Original changed; retry the download",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except (ConverterExecutionError, InvalidConversionOutputError) as error:
+        _LOGGER.warning(
+            f"Converted download failed surface=web phase=convert "
+            f"failure_type={type(error).__name__}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Book conversion failed",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+
+    if result is None:
+        return _ClientDisconnectedResponse()
+
+    try:
+        headers = {
+            "Content-Type": result.media_type,
+            "Content-Length": str(result.content_length),
+            "Content-Disposition": content_disposition(result.filename),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        return _OwnedStreamingResponse(result, headers)
+    except BaseException:
+        await result.stream.aclose()
         raise
 
 

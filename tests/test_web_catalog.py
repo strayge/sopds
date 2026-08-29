@@ -4,6 +4,7 @@ import asyncio
 import html
 import io
 import json
+import os
 import re
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
@@ -35,6 +36,7 @@ from sopds.acquisition.contracts import (
     AcquisitionNotFoundError,
     AcquisitionSourceIOError,
     AcquisitionStoreShutdownError,
+    OriginalDescription,
     SourceRevision,
 )
 from sopds.catalog.contracts import (
@@ -49,6 +51,25 @@ from sopds.catalog.contracts import (
     FilterOption,
     SearchField,
 )
+from sopds.conversion.adapters import (
+    EpubToAzw3Converter,
+    Fb2ToAzw3Converter,
+    Fb2ToEpubConverter,
+)
+from sopds.conversion.cache import ArtifactCache
+from sopds.conversion.contracts import (
+    ConversionResult,
+    ConversionShutdownError,
+    ConversionSourceError,
+    ConversionTimeoutError,
+    ConverterExecutionError,
+    InvalidConversionOutputError,
+    SourceChangedError,
+    SourceUnavailableError,
+    UnsupportedConversionError,
+)
+from sopds.conversion.registry import ConverterRegistry
+from sopds.conversion.service import ConversionService
 from sopds.imports.status import ImportState, ImportStatus, ImportTrigger
 from sopds.web import routes
 from sopds.web.csrf import issue_csrf_token
@@ -70,6 +91,7 @@ class _Catalog:
         self.detail_keywords: str | None = None
         self.detail_libid: str | None = None
         self.detail_downloadable = True
+        self.original_format = "fb2"
         self.available_filters = CatalogFilters(
             languages=(FilterOption("en", "en"),),
             genres=(FilterOption("sf", "Science fiction"),),
@@ -118,7 +140,7 @@ class _Catalog:
                     series="Series",
                     series_number="1",
                     language=None if request.query == "sparse-metadata" else "en",
-                    original_format="fb2",
+                    original_format=self.original_format,
                     size=126_000,
                     published_date=(
                         None if request.query == "sparse-metadata" else date(2024, 2, 3)
@@ -167,7 +189,7 @@ class _Catalog:
             libid=self.detail_libid,
             published_date=self.detail_published_date,
             language="en",
-            original_format="fb2",
+            original_format=self.original_format,
             rating=self.detail_rating,
             keywords=self.detail_keywords,
             availability=availability,
@@ -221,6 +243,29 @@ class _Acquisition:
             stream=self.stream,
             source_format="fb2",
             source_revision=_REVISION,
+        )
+
+
+class _Conversion:
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+        self.calls: list[tuple[str, str]] = []
+        self.last_stream: _Stream | None = None
+
+    async def convert(self, public_id: str, target_format: str) -> ConversionResult:
+        self.calls.append((public_id, target_format))
+        if self.error is not None:
+            raise self.error
+        self.last_stream = _Stream(b"converted")
+        return ConversionResult(
+            filename=f"Книга.{target_format}",
+            media_type=(
+                "application/epub+zip"
+                if target_format == "epub"
+                else "application/vnd.amazon.ebook"
+            ),
+            content_length=len(self.last_stream.body),
+            stream=self.last_stream,
         )
 
 
@@ -360,6 +405,10 @@ def _app(imports: _Imports | None = None) -> tuple[FastAPI, _Catalog, _Imports]:
     app.state.import_coordinator = import_provider
     app.state.acquisition = _Acquisition()
     app.state.archive = _Archive()
+    app.state.converter_registry = ConverterRegistry(
+        (Fb2ToEpubConverter(), Fb2ToAzw3Converter(), EpubToAzw3Converter())
+    )
+    app.state.conversion = _Conversion()
     app.state.csrf_key = b"c" * 32
     static = Path(routes.__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static), name="static")
@@ -502,7 +551,10 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert "EN" in metadata.group(1)
     assert "2024-02-03" in metadata.group(1)
     assert "123 KB" in metadata.group(1)
-    download_action = '<a class="result-row__download" href="/books/public-1/download">Download</a>'
+    download_action = (
+        '<a class="result-row__download" href="/books/public-1/download" '
+        'aria-label="Download original FB2 file for A Book">FB2</a>'
+    )
     detail_action = '<a class="result-row__action" href="/books/public-1'
     assert download_action in page.text
     assert ">Open details</a>" in page.text
@@ -545,8 +597,10 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert "<dd>123 KB</dd>" in detail.text
     assert "Back to catalog" in detail.text
     assert "availability-badge--active" not in detail.text
-    assert "Download original · FB2 · 123 KB" in detail.text
-    assert 'href="/books/public-1/download"' in detail.text
+    assert "Original file · 123 KB" in detail.text
+    assert 'aria-label="Download original FB2 file for A Book">FB2</a>' in detail.text
+    assert 'href="/books/public-1/download/epub"' in detail.text
+    assert 'href="/books/public-1/download/azw3"' in detail.text
     assert "Published" not in detail.text
     assert "Rating" not in detail.text
     assert "Keywords" not in detail.text
@@ -1010,9 +1064,11 @@ def test_book_detail_renders_present_metadata_and_availability_actions() -> None
     assert 'class="tag" href="/?genre=sf">Science fiction</a>' in active.text
     assert 'class="tag tag--text">one</span>' in active.text
     assert 'class="tag tag--text">два</span>' in active.text
-    assert "Download original · FB2 · 123 KB" in active.text
+    assert "Original file · 123 KB" in active.text
+    assert ">FB2</a>" in active.text
     assert 'availability-badge--hidden">Hidden</span>' in hidden.text
-    assert "Download original · FB2 · 123 KB" in hidden.text
+    assert "Original file · 123 KB" in hidden.text
+    assert ">FB2</a>" in hidden.text
     assert 'href="/?series=Series&amp;include_hidden=true"' in hidden.text
     assert 'availability-badge--missed">Missed</span>' in missed.text
     assert "Original file unavailable" in missed.text
@@ -2063,6 +2119,272 @@ def test_book_detail_accepts_exact_selected_return_url() -> None:
     assert _link_href(selected.text, "detail-back-link") == "/selected"
     assert "Back to results" in selected.text
     assert _link_href(selected_query.text, "detail-back-link") == "/"
+
+
+@pytest.mark.parametrize(
+    ("source_format", "targets"),
+    [
+        ("fb2", ("epub", "azw3")),
+        ("epub", ("azw3",)),
+        ("azw3", ()),
+        ("pdf", ()),
+    ],
+)
+def test_download_controls_show_only_actual_non_duplicate_conversions(
+    source_format: str, targets: tuple[str, ...]
+) -> None:
+    app, catalog, _ = _app()
+    catalog.original_format = source_format
+
+    with TestClient(app) as client:
+        page = client.get("/?q=book")
+        detail = client.get("/books/public-1")
+
+    label = source_format.upper()
+    assert f'aria-label="Download original {label} file for A Book">{label}</a>' in page.text
+    assert f'aria-label="Download original {label} file for A Book">{label}</a>' in detail.text
+    for target in ("epub", "azw3"):
+        path = f"/books/public-1/download/{target}"
+        assert (path in page.text) is (target in targets)
+        assert (path in detail.text) is (target in targets)
+    assert ('<details class="download-menu">' in page.text) is bool(targets)
+    assert ('<details class="download-menu download-menu--detail">' in detail.text) is bool(targets)
+
+
+def test_converted_download_headers_body_and_bounded_target() -> None:
+    app, _, _ = _app()
+    conversion: _Conversion = app.state.conversion
+
+    with TestClient(app) as client:
+        response = client.get("/books/public-1/download/epub")
+        invalid = client.get("/books/public-1/download/mobi")
+
+    assert response.status_code == 200
+    assert response.content == b"converted"
+    assert response.headers["content-type"] == "application/epub+zip"
+    assert response.headers["content-length"] == "9"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "filename*=UTF-8''" in response.headers["content-disposition"]
+    assert conversion.last_stream is not None and conversion.last_stream.closed
+    assert conversion.calls == [("public-1", "epub")]
+    assert invalid.status_code == 422
+    assert invalid.headers["cache-control"] == "no-store"
+    assert "mobi" not in invalid.text
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code"),
+    [
+        (UnsupportedConversionError("/private/source.fb2"), 422),
+        (SourceUnavailableError("/private/source.fb2"), 404),
+        (ConversionSourceError("/private/source.fb2"), 500),
+        (ConversionTimeoutError("/private/source.fb2"), 504),
+        (SourceChangedError("/private/source.fb2"), 409),
+        (ConverterExecutionError("/private/source.fb2"), 500),
+        (InvalidConversionOutputError("/private/source.fb2"), 500),
+        (ConversionShutdownError("/private/source.fb2"), 503),
+    ],
+)
+def test_converted_download_error_mappings_are_path_free(
+    error: Exception,
+    status_code: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app, _, _ = _app()
+    conversion: _Conversion = app.state.conversion
+    conversion.error = error
+
+    with TestClient(app) as client:
+        response = client.get("/books/secret-public-id/download/epub")
+
+    assert response.status_code == status_code
+    assert response.headers["cache-control"] == "no-store"
+    assert "/private/" not in response.text
+    assert "secret-public-id" not in response.text
+    assert "/private/" not in caplog.text
+    assert "secret-public-id" not in caplog.text
+
+
+async def test_converted_download_disconnect_cancels_and_drains_conversion() -> None:
+    app, _, _ = _app()
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    class BlockingConversion:
+        async def convert(self, _public_id: str, _target_format: str) -> ConversionResult:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await cleanup_release.wait()
+                cleaned.set()
+            raise AssertionError("cancelled conversion resumed")
+
+    app.state.conversion = BlockingConversion()
+    disconnected = asyncio.Event()
+    messages: list[Message] = []
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/books/public-1/download/epub",
+        "raw_path": b"/books/public-1/download/epub",
+        "query_string": b"",
+        "headers": [(b"host", b"catalog.example")],
+        "client": ("127.0.0.1", 1234),
+        "server": ("catalog.example", 443),
+    }
+
+    async def receive() -> Message:
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    serving = asyncio.create_task(app(scope, receive, send))
+    await started.wait()
+    disconnected.set()
+    await cleanup_started.wait()
+    await asyncio.sleep(0)
+    assert not serving.done()
+    assert messages == []
+
+    cleanup_release.set()
+    await serving
+
+    assert cleaned.is_set()
+    assert messages == []
+
+
+async def test_converted_download_disconnect_cancels_real_single_flight_producer(
+    tmp_path: Path,
+) -> None:
+    ready = tmp_path / "converter-ready"
+    terminated = tmp_path / "converter-terminated"
+    executable = tmp_path / "gated-fbc"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import signal
+import sys
+import time
+from pathlib import Path
+
+ready = Path("""
+        + repr(os.fspath(ready))
+        + """)
+terminated = Path("""
+        + repr(os.fspath(terminated))
+        + """)
+output = Path(sys.argv[sys.argv.index("--output-file") + 1])
+output.write_bytes(b"partial")
+ready.write_text(str(__import__("os").getpid()))
+
+def stop(*_args):
+    terminated.write_text("terminated")
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+time.sleep(30)
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+
+    class ConversionAcquisition:
+        def __init__(self) -> None:
+            self.streams: list[_Stream] = []
+
+        async def describe(
+            self,
+            public_id: str,
+            *,
+            expected_generation_id: int | None = None,
+        ) -> OriginalDescription:
+            del expected_generation_id
+            return OriginalDescription(public_id, "A Book", "fb2", 8, _REVISION)
+
+        async def acquire(
+            self,
+            public_id: str,
+            *,
+            expected_generation_id: int | None = None,
+        ) -> AcquiredOriginal:
+            del public_id, expected_generation_id
+            stream = _Stream(b"original")
+            self.streams.append(stream)
+            return AcquiredOriginal(
+                "book.fb2",
+                "application/x-fictionbook+xml",
+                8,
+                stream,
+                "fb2",
+                _REVISION,
+            )
+
+    app, _, _ = _app()
+    acquisition = ConversionAcquisition()
+    converter = Fb2ToEpubConverter(executable=os.fspath(executable))
+    registry = ConverterRegistry((converter,))
+    cache_dir = tmp_path / "cache"
+    cache = ArtifactCache(cache_dir, 60)
+    await cache.startup()
+    service = ConversionService(acquisition, registry, cache)
+    app.state.acquisition = acquisition
+    app.state.converter_registry = registry
+    app.state.conversion = service
+    disconnected = asyncio.Event()
+    messages: list[Message] = []
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/books/public-1/download/epub",
+        "raw_path": b"/books/public-1/download/epub",
+        "query_string": b"",
+        "headers": [(b"host", b"catalog.example")],
+        "client": ("127.0.0.1", 1234),
+        "server": ("catalog.example", 443),
+    }
+
+    async def receive() -> Message:
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    try:
+        serving = asyncio.create_task(app(scope, receive, send))
+        for _ in range(200):
+            if ready.exists():
+                break
+            if serving.done():
+                raise AssertionError("conversion route completed before converter started")
+            await asyncio.sleep(0.01)
+        assert ready.exists()
+        process_id = int(ready.read_text())
+        disconnected.set()
+        await asyncio.wait_for(serving, 3)
+
+        assert terminated.read_text() == "terminated"
+        with pytest.raises(ProcessLookupError):
+            os.kill(process_id, 0)
+        assert acquisition.streams[0].closed
+        assert not list(cache_dir.glob("*.source"))
+        assert not list(cache_dir.glob("*.tmp"))
+        assert not list(cache_dir.glob("*.artifact"))
+        assert messages == []
+    finally:
+        await service.shutdown()
 
 
 def test_original_download_headers_body_and_status_mappings(

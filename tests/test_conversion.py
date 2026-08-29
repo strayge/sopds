@@ -636,6 +636,82 @@ async def test_service_shutdown_cancels_gated_converter_and_removes_source(tmp_p
     assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
 
 
+async def test_service_sole_waiter_cancellation_stops_converter_and_cleans_working_files(
+    tmp_path: Path,
+) -> None:
+    class GatedConverter(_Converter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cleanup_started = asyncio.Event()
+            self.cleanup_release = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        @override
+        async def convert(self, source_path: Path, target_format: str, output_path: Path) -> None:
+            del source_path, target_format
+            self.calls += 1
+            await asyncio.to_thread(output_path.write_bytes, b"partial")
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cleanup_started.set()
+                await self.cleanup_release.wait()
+                self.cancelled.set()
+
+    acquisition = _Acquisition()
+    converter = GatedConverter()
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    service = ConversionService(acquisition, ConverterRegistry([converter]), cache)
+    request = asyncio.create_task(service.convert("public", "epub"))
+    await converter.started.wait()
+
+    request.cancel()
+    await converter.cleanup_started.wait()
+    request.cancel()
+    await asyncio.sleep(0)
+    assert not request.done()
+    converter.cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(request, 2)
+    assert converter.cancelled.is_set()
+    assert acquisition.streams[0].closed
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.tmp")))
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.artifact")))
+    await service.shutdown()
+
+
+async def test_service_cancelled_waiter_preserves_same_key_producer_for_survivor(
+    tmp_path: Path,
+) -> None:
+    acquisition = _Acquisition()
+    release = asyncio.Event()
+    converter = _Converter(gate=release)
+    cache = ArtifactCache(tmp_path, 60)
+    await cache.startup()
+    service = ConversionService(acquisition, ConverterRegistry([converter]), cache)
+    cancelled = asyncio.create_task(service.convert("public", "epub"))
+    await converter.started.wait()
+    survivor = asyncio.create_task(service.convert("public", "epub"))
+    await asyncio.sleep(0)
+
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    assert not survivor.done()
+    release.set()
+    result = await asyncio.wait_for(survivor, 2)
+
+    assert converter.calls == 1
+    assert await _read(result.stream) == b"converted"
+    assert acquisition.streams[0].closed
+    assert not await asyncio.to_thread(lambda: list(tmp_path.glob("*.source")))
+    await service.shutdown()
+
+
 async def test_service_passes_expected_generation_to_describe_and_acquire(
     tmp_path: Path,
 ) -> None:
