@@ -1504,12 +1504,14 @@ def test_selected_download_rejects_extra_duplicate_missing_and_malformed_form(
 @pytest.mark.parametrize(
     "headers",
     [
+        {"Origin": "http://testserver"},
+        {"Origin": "http://testserver:80"},
         {"Origin": "https://catalog.example"},
-        {"Origin": "https://catalog.example:443"},
         {"Sec-Fetch-Site": "same-origin"},
+        {"Host": "127.0.0.1:8000", "Origin": "http://127.0.0.1:8000"},
     ],
 )
-def test_selected_download_accepts_canonical_same_origin_transport(
+def test_selected_download_accepts_served_same_origin_transport(
     headers: dict[str, str],
 ) -> None:
     app, _, _ = _app()
@@ -1527,6 +1529,21 @@ def test_selected_download_accepts_canonical_same_origin_transport(
     assert archive.last_file is not None and archive.last_file.closed
 
 
+def test_selected_download_accepts_same_origin_with_request_query() -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/download?source=selected-page",
+            data={"ids": '["public-1"]', "preset": "nested"},
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert response.status_code == 200
+    assert archive.download_requests == [ArchiveRequest(["public-1"], "nested")]
+
+
 @pytest.mark.parametrize(
     "headers",
     [
@@ -1538,10 +1555,16 @@ def test_selected_download_accepts_canonical_same_origin_transport(
         {"Origin": "https://catalog.example:"},
         {"Origin": "https://catalog.example:444"},
         {"Origin": "https://sibling.catalog.example"},
+        {"Origin": "http://testserver:8000"},
+        {"Origin": "https://testserver"},
         {"Sec-Fetch-Site": "cross-site"},
         {
             "Origin": "https://catalog.example",
             "Sec-Fetch-Site": "cross-site",
+        },
+        {
+            "Origin": "http://testserver",
+            "Sec-Fetch-Site": "cross-site, same-origin",
         },
         {"Sec-Fetch-Site": "same-site"},
     ],

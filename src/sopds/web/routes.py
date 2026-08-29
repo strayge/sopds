@@ -498,8 +498,8 @@ def _http_origin(
 
 
 def _selected_download_is_same_origin(request: Request) -> bool:
-    fetch_sites = request.headers.getlist("sec-fetch-site")
-    if any(value.strip().casefold() == "cross-site" for value in fetch_sites):
+    fetch_sites = [value.strip().casefold() for value in request.headers.getlist("sec-fetch-site")]
+    if fetch_sites and fetch_sites != ["same-origin"]:
         return False
 
     origins = request.headers.getlist("origin")
@@ -507,12 +507,14 @@ def _selected_download_is_same_origin(request: Request) -> bool:
         if len(origins) != 1:
             return False
         submitted = _http_origin(origins[0])
+        served_url = request.url.replace(query="")
+        served = _http_origin(served_url, allow_resource_path=True)
         configured = _http_origin(
             request.app.state.config.server.base_url, allow_resource_path=True
         )
-        return submitted is not None and submitted == configured
+        return submitted is not None and submitted in {served, configured}
 
-    return len(fetch_sites) == 1 and fetch_sites[0].strip().casefold() == "same-origin"
+    return fetch_sites == ["same-origin"]
 
 
 def _reject_json_constant(_value: str) -> object:
