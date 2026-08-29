@@ -14,14 +14,14 @@ browsers, OPDS reader apps, and an optional Telegram bot.
   results by language, genre, format, and availability.
 - **Compact reader-focused web interface** — browse results, inspect book
   details, and return without losing the current search, filters, or page.
-- **Original book downloads** — download files in the format stored in the
-  library, without conversion.
-- **Multiple-book ZIP downloads** — build one archive from books selected
-  across different searches and result pages.
-- **OPDS 1.2 catalog** — browse and download the library from compatible ebook
-  readers.
-- **Telegram access** — allow selected chats to search for books and download
-  originals from a bot.
+- **Reader-ready downloads** — keep the stored format as the primary action,
+  with EPUB and AZW3 choices when SOPDS can produce them.
+- **Multiple-book ZIP downloads** — build one original-, EPUB-, or AZW3-format
+  archive from books selected across different searches and result pages.
+- **OPDS 1.2 catalog** — browse the library and use its additional EPUB and
+  AZW3 acquisitions from compatible ebook readers.
+- **Telegram access** — allow selected chats to search for books and choose an
+  available download format from a bot.
 - **Safe catalog updates** — refresh the library while readers continue using
   the previous catalog if an update fails.
 
@@ -30,7 +30,13 @@ browsers, OPDS reader apps, and an optional Telegram bot.
 ### Find and download a book
 
 Use the search field and filters to narrow the catalog. Open a result to see its
-full metadata, or use **Download** to get the original file immediately.
+full metadata, or use the source-format button, such as **FB2** or **EPUB**, to
+get the stored file unchanged. When more formats are available, the adjacent
+menu offers **EPUB** or **AZW3** without repeating the source format.
+
+FB2 books can become EPUB2 or AZW3. Existing EPUB files pass through unchanged
+when EPUB is selected and can become AZW3. Existing AZW3 files pass through
+unchanged when AZW3 is selected. Other combinations are not offered.
 
 The catalog normally shows books whose source archives are available. Use
 **Include hidden** or **Include missing** when you need to inspect exceptional
@@ -50,9 +56,9 @@ On the selected-books page you can:
 
 - uncheck books that should not be included in the next ZIP;
 - remove individual books or clear the selection;
-- review unavailable books and filename conflicts;
-- choose a ZIP layout;
-- download all currently included originals together.
+- review unavailable, unsupported, and conflicting books;
+- choose a ZIP layout and one output format;
+- download all currently included supported books together.
 
 Unchecked rows remain visible until the page is reloaded, making it easy to
 change your mind. The selection belongs to the current browser profile and does
@@ -65,19 +71,26 @@ Available ZIP layouts are:
   filenames.
 - **Single list** — place every book at the archive root.
 
-Filename conflicts are resolved automatically. Unknown or unavailable books
-are left out of the ZIP. If no selected book can be downloaded, SOPDS reports
-an error instead of producing an empty archive.
+The source option is labeled with that format, such as **FB2**, when all checked,
+downloadable books share it; mixed sources use **Original**. EPUB and AZW3 are
+shown when at least one included book supports them. A selected EPUB or AZW3 ZIP
+contains only that format: unsupported books are identified and excluded.
+Because preview does not run conversions, converted selections report **source
+size**, not the final ZIP size.
 
-A single ZIP can contain up to 10,000 books and 10 GB of eligible originals. If
-the page reports that it has expired, reload it and retry the download.
+Filename conflicts are resolved automatically. Unknown or unavailable books
+are also left out. If no selected book can be downloaded in the chosen format,
+SOPDS reports an error instead of producing an empty archive.
+
+A single ZIP can contain up to 10,000 books and 10 GB of eligible source files.
+If the page reports that it has expired, reload it and retry the download.
 
 ## Using an OPDS reader
 
 Add the OPDS catalog address shown in the deployment instructions to any
 OPDS 1.2-compatible reader. You can browse by author, series, or title, search
-the catalog, open book metadata, and download original files directly into the
-reader.
+the catalog, open book metadata, and use the original acquisition plus any
+additional EPUB or AZW3 acquisitions supported for that book.
 
 ## Using Telegram
 
@@ -85,10 +98,12 @@ When Telegram support is enabled, authorized chats can:
 
 - send text to search the catalog;
 - open matching book details;
-- download original files up to 50 MiB.
+- use format buttons for the source format, EPUB, or AZW3 when available.
 
-Unauthorized chats are ignored. Files larger than 50 MiB are reported as too
-large and are not replaced with an external download link.
+Unauthorized chats are ignored. The 50 MiB limit applies to the actual file
+sent: originals are checked before upload, while converted files are checked
+after conversion. Larger files are reported as too large and are not replaced
+with an external download link.
 
 ## Managing the catalog
 
@@ -142,7 +157,8 @@ The Compose deployment publishes port 8000 on all host interfaces. Restrict
 that port when the catalog should not be reachable by the whole network.
 
 Run exactly one SOPDS container. Multi-worker and horizontally scaled
-deployments are not supported.
+deployments are not supported. The Docker image currently supports only
+`linux/amd64` because its converter binaries are architecture-specific.
 
 ### Mounted storage
 
@@ -156,10 +172,13 @@ UID 1000 must be able to read the configuration and library and write to the
 data directory. Adapt ownership when your container runtime uses a different
 UID mapping.
 
-Allow enough free space in `data/` for catalog updates. Multiple-book downloads
-use the container's temporary filesystem. A maximum-size download can require
-slightly more than 10 GB after ZIP overhead, and simultaneous downloads multiply
-that requirement.
+Allow enough free space in `data/` for catalog updates and cached conversion
+artifacts. Conversions briefly stage source and output files there; successful
+artifacts remain cached until their configured expiry, so simultaneous and
+varied format requests increase storage use. Multiple-book downloads use the
+container's temporary filesystem. A maximum-size download can require slightly
+more than 10 GB after ZIP overhead, and simultaneous downloads multiply that
+requirement.
 
 ## Configuration
 
@@ -170,7 +189,7 @@ The main settings control:
 
 - the listening host, port, and externally visible base address;
 - the INPX source, archive directory, and automatic check interval;
-- the SQLite database location;
+- the SQLite database and conversion-cache locations and cache lifetime;
 - optional Telegram access and the allowed chat IDs.
 
 Paths in `config.example.toml` are container paths used by the default Compose
@@ -197,6 +216,11 @@ PYTHONPATH=src python -m sopds --config config.toml
 ```
 
 Open <http://localhost:8000/> after startup.
+
+Original-only local runs need no converter binaries. Converted downloads require
+installing the pinned compatible `fb2cng` 1.6.1 (`fbc`) and Kindling 0.38.0
+(`kindling-cli`) binaries at `/usr/local/bin/fbc` and
+`/usr/local/bin/kindling-cli`; Docker bundles them.
 
 ## Backup and restore
 
