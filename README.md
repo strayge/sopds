@@ -1,16 +1,115 @@
 # SOPDS
 
-SOPDS is a private, self-hosted ebook catalog backed by INPX metadata and ZIP
-archives. It provides a web interface, an OPDS 1.2 catalog, original-file
-downloads, and an optional allowlisted Telegram bot.
+SOPDS turns an INPX ebook library into a private, self-hosted catalog for web
+browsers, OPDS reader apps, and an optional Telegram bot.
 
-The web and OPDS interfaces have no authentication. The Compose file publishes
-port 8000 on all host interfaces. Run it only on a trusted network, restrict the
-port with a firewall, or place it behind an authenticating reverse proxy.
+> [!IMPORTANT]
+> SOPDS does not provide user accounts or authentication. Run it only on a
+> trusted network, restrict access with a firewall, or place it behind an
+> authenticating reverse proxy.
 
-## Run with Docker Compose
+## Features
 
-The container runs as UID 1000. Prepare the deployment files and directories:
+- **Fast catalog search** — find books by title, author, or series and narrow
+  results by language, genre, format, and availability.
+- **Compact reader-focused web interface** — browse results, inspect book
+  details, and return without losing the current search, filters, or page.
+- **Original book downloads** — download files in the format stored in the
+  library, without conversion.
+- **Multiple-book ZIP downloads** — build one archive from books selected
+  across different searches and result pages.
+- **OPDS 1.2 catalog** — browse and download the library from compatible ebook
+  readers.
+- **Telegram access** — allow selected chats to search for books and download
+  originals from a bot.
+- **Safe catalog updates** — refresh the library while readers continue using
+  the previous catalog if an update fails.
+
+## Using the web catalog
+
+### Find and download a book
+
+Use the search field and filters to narrow the catalog. Open a result to see its
+full metadata, or use **Download** to get the original file immediately.
+
+The catalog normally shows books whose source archives are available. Use
+**Include hidden** or **Include missing** when you need to inspect exceptional
+records:
+
+- **Hidden** books were marked as deleted by the source catalog.
+- **Missed** books refer to source archives that are not currently available.
+
+Unavailable books remain discoverable but cannot be downloaded.
+
+### Download several books
+
+Select downloadable books from any catalog result page. The **Selected** entry
+in the navigation shows how many books are currently selected.
+
+On the selected-books page you can:
+
+- uncheck books that should not be included in the next ZIP;
+- remove individual books or clear the selection;
+- review unavailable books and filename conflicts;
+- choose a ZIP layout;
+- download all currently included originals together.
+
+Unchecked rows remain visible until the page is reloaded, making it easy to
+change your mind. The selection belongs to the current browser profile and does
+not synchronize to other browsers or addresses.
+
+Available ZIP layouts are:
+
+- **Nested folders** — organize books by author and series.
+- **Author folders** — keep author folders while placing series information in
+  filenames.
+- **Single list** — place every book at the archive root.
+
+Filename conflicts are resolved automatically. Unknown or unavailable books
+are left out of the ZIP. If no selected book can be downloaded, SOPDS reports
+an error instead of producing an empty archive.
+
+A single ZIP can contain up to 10,000 books and 10 GB of eligible originals. If
+the page reports that it has expired, reload it and retry the download.
+
+## Using an OPDS reader
+
+Add the OPDS catalog address shown in the deployment instructions to any
+OPDS 1.2-compatible reader. You can browse by author, series, or title, search
+the catalog, open book metadata, and download original files directly into the
+reader.
+
+## Using Telegram
+
+When Telegram support is enabled, authorized chats can:
+
+- send text to search the catalog;
+- open matching book details;
+- download original files up to 50 MiB.
+
+Unauthorized chats are ignored. Files larger than 50 MiB are reported as too
+large and are not replaced with an external download link.
+
+## Managing the catalog
+
+SOPDS checks the configured INPX source when it starts and then at the configured
+interval. Readers can continue browsing while a catalog update runs.
+
+The management page provides these actions:
+
+- **Import changes** — check the source immediately and import it when needed.
+- **Force import** — rebuild the catalog even when the source appears unchanged.
+- **Vacuum database** — reclaim database space during maintenance.
+
+A failed update leaves the previous catalog available. If no catalog has ever
+been imported, SOPDS starts with an empty catalog. If the management page
+reports that it has expired, reload it and retry the operation.
+
+## Deploy with Docker Compose
+
+### Prepare files
+
+The container runs as UID 1000. From the repository directory:
 
 ```shell
 cp config.example.toml config.toml
@@ -19,167 +118,94 @@ sudo chown -R 1000:1000 config.toml library data
 sudo chmod 600 config.toml
 ```
 
-Edit `config.toml`, then place the INPX file and its referenced ZIP archives in
-`library/`. Preserve the archive paths and names expected by the INPX file.
+Edit `config.toml`, then place the INPX file and all ZIP archives it references
+inside `library/`. Preserve the paths and filenames expected by the INPX source.
 
-Start SOPDS:
+### Start SOPDS
 
 ```shell
 docker compose up --build -d
 ```
 
-Open <http://localhost:8000/>. The OPDS catalog is available at
-<http://localhost:8000/opds/>.
+On the Docker host, open the web catalog at <http://localhost:8000/>. From
+another device, replace `localhost` with the server's reachable hostname or IP
+address.
 
-The deployment uses these mounts:
+Use the same reachable address with `/opds/` appended when configuring an OPDS
+reader. For example:
 
-- `config.toml` → `/config/config.toml`, read-only;
-- `library/` → `/library`, read-only;
-- `data/` → `/data`, writable.
+```text
+http://books.example.test:8000/opds/
+```
 
-UID 1000 must be able to read `config.toml` and `library/`, and read and write
-`data/`. Adapt the ownership commands when the container runtime uses a
-different UID mapping.
+The Compose deployment publishes port 8000 on all host interfaces. Restrict
+that port when the catalog should not be reachable by the whole network.
 
-Run exactly one SOPDS container. Do not add Uvicorn workers or scale the Compose
-service because imports and Telegram polling are process-local.
+Run exactly one SOPDS container. Multi-worker and horizontally scaled
+deployments are not supported.
+
+### Mounted storage
+
+The default deployment mounts:
+
+- `config.toml` at `/config/config.toml` as read-only configuration;
+- `library/` at `/library` as the read-only source library;
+- `data/` at `/data` as writable application data.
+
+UID 1000 must be able to read the configuration and library and write to the
+data directory. Adapt ownership when your container runtime uses a different
+UID mapping.
+
+Allow enough free space in `data/` for catalog updates. Multiple-book downloads
+use the container's temporary filesystem. A maximum-size download can require
+slightly more than 10 GB after ZIP overhead, and simultaneous downloads multiply
+that requirement.
 
 ## Configuration
 
-Copy and edit `config.example.toml`. SOPDS reads only this TOML file, does not
-support environment-variable overrides, and rejects unknown options.
+SOPDS reads `config.toml` and rejects unknown settings. Environment-variable
+overrides are not supported.
 
-SOPDS emits origin-relative OPDS and download links, so clients keep using the
-host through which they reached the catalog. If a reverse proxy exposes SOPDS
-under a path prefix, include that prefix in `server.base_url`; its scheme and
-host are not included in generated links. Paths in the example configuration
-are container paths.
+The main settings control:
+
+- the listening host, port, and externally visible base address;
+- the INPX source, archive directory, and automatic check interval;
+- the SQLite database location;
+- optional Telegram access and the allowed chat IDs.
+
+Paths in `config.example.toml` are container paths used by the default Compose
+deployment.
+
+Publish SOPDS at the root of its hostname; reverse-proxy path prefixes are not
+supported by the web interface. Use the externally reachable catalog address in
+`server.base_url` and when configuring clients.
 
 To enable Telegram, set `telegram.enabled = true`, provide the bot token, and
-add at least one numeric chat ID to `allowed_chat_ids`. Unauthorized chats are
-ignored without a reply.
+list at least one numeric chat ID in `allowed_chat_ids`.
 
-## Catalog operation
+## Run locally without Docker
 
-SOPDS checks the INPX source in the background at startup and periodically
-afterward. The web interface remains available while an import runs. If the
-INPX file is missing or invalid, SOPDS keeps the previous catalog, or starts
-with an empty catalog when none exists.
-
-Use **Import changes** to check the source immediately or **Force import** to
-rebuild the catalog. A failed import leaves the previous catalog available. If
-the management page reports that it has expired, reload it and retry the
-operation.
-
-Books whose ZIP archives are missing are marked as missed. INPX records marked as
-deleted are hidden. Both categories are excluded from catalog search by default;
-the web search can include either category explicitly. After upgrading an existing
-database to this version, run **Force import** once to populate searchable hidden
-metadata. Periodic checks update archive availability without rebuilding catalog
-metadata.
-
-Book pages, OPDS clients, and Telegram download original files directly from
-the ZIP archives. No converted formats are currently offered.
-
-OPDS author, series, and title browsing groups lists larger than 100 entries by
-normalized name prefixes. Prefixes with only one possible continuation are
-collapsed until the next useful branch. Authors with series are divided into
-series, standalone books, and all books; authors without series open their book
-list directly.
-
-## Selected-book ZIP downloads
-
-Downloadable catalog rows can be selected across searches and pages. SOPDS
-stores only the ordered public book IDs in browser `localStorage`; selections
-are local to that browser profile and origin. They are not cookies, accounts,
-or server-side state and do not synchronize to another browser or origin.
-
-Open `/selected` to review the current selection, exclude books, choose a ZIP
-layout, and download the available originals. Unchecked books remain visible
-until the page is reloaded. If the page reports that it has expired, reload it
-and retry the download.
-
-The three built-in layouts use the first listed author, include the normalized
-original extension, and pad purely numeric series numbers to at least two
-digits. For a book by `Ava Reader` titled `First Tide` in `Harbor Cycle` number
-`1`, the exact examples are:
-
-- **Nested:** `Ava Reader/Harbor Cycle/01 - First Tide.fb2`
-- **Flatten:** `Ava Reader/Harbor Cycle 01 - First Tide.fb2`
-- **List:** `Ava Reader. Harbor Cycle 01 - First Tide.fb2`
-
-Books without a series omit the series and number. Portable sanitization can
-make otherwise different names equal; the preview automatically highlights all
-such collisions without displaying a generated path on every row, and the ZIP
-uses deterministic numeric suffixes such as ` (2)` before the extension.
-
-Unknown IDs and books whose originals are missed or otherwise unavailable stay
-visible and removable in the preview but are silently omitted from the ZIP.
-The archive contains no omission report. If every selection is omitted, SOPDS
-returns an error instead of an empty ZIP.
-
-A download is limited to 10,000 books and 10 GB of eligible originals. Allow up
-to 10 GB of temporary disk space for each simultaneous download. Interrupted
-or failed downloads are cleaned up automatically.
-
-## Telegram
-
-Authorized chats can:
-
-- send plain text to search;
-- open book details and download the original file.
-
-Files over 50 MiB are reported as too large. The bot does not provide an HTTP
-fallback link.
-
-## Backup
-
-Stop SOPDS before copying `data/sopds.sqlite3`; SQLite uses WAL sidecar files
-while running. Back up the INPX file and ZIP archives separately because they
-remain the catalog's source of authority.
-
-Keep enough free space in `data/` for the current and replacement catalog
-generations plus temporary SQLite growth.
-
-## Develop locally
-
-Requires Python 3.14 and pip.
+SOPDS requires Python 3.14.
 
 ```shell
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -r requirements.dev.freeze.txt
+python -m pip install -r requirements.freeze.txt
 cp config.example.toml config.toml
-# Change container paths in config.toml to local paths.
-PYTHONPATH=src python -m sopds --config config.toml --reload
+# Change the container paths in config.toml to local paths.
+PYTHONPATH=src python -m sopds --config config.toml
 ```
 
-Run the checks:
+Open <http://localhost:8000/> after startup.
 
-```shell
-ruff check .
-ruff format --check .
-mypy src tests
-PYTHONPATH=src lint-imports
-pytest
-```
+## Backup and restore
 
-## Database migrations
+Stop SOPDS before creating a backup, then copy:
 
-Define schema changes in `src/sopds/db/models.py`, then generate a native Tortoise
-migration instead of writing one manually:
+- `config.toml`;
+- the database file configured by `database.path`;
+- the INPX source and all referenced ZIP archives.
 
-```shell
-PYTHONPATH=src tortoise -c your_module.TORTOISE_ORM makemigrations catalog -n concise_name
-pytest tests/test_database.py
-```
-
-The referenced configuration object should be created with `build_tortoise_config()`.
-
-## Refresh dependencies
-
-Regenerate the pinned requirement files with uv:
-
-```shell
-./scripts/refresh-freeze.sh
-```
+The INPX file and ZIP archives remain the source library, while the database
+contains the catalog built from that source. Restore both when moving the
+service to another host.
