@@ -209,3 +209,8 @@ Stop SOPDS before creating a backup, then copy:
 The INPX file and ZIP archives remain the source library, while the database
 contains the catalog built from that source. Restore both when moving the
 service to another host.
+
+## Converter software
+
+- [fb2cng](https://github.com/rupor-github/fb2cng) — GPL-3.0
+- [Kindling](https://github.com/ciscoriordan/kindling) — MIT
