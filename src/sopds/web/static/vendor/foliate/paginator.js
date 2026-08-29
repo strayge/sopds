@@ -225,6 +225,7 @@ class View {
         this.container = container
         this.onExpand = onExpand
         this.#iframe.setAttribute('part', 'filter')
+        this.#iframe.setAttribute('title', 'Book content')
         this.#element.append(this.#iframe)
         Object.assign(this.#element.style, {
             boxSizing: 'content-box',

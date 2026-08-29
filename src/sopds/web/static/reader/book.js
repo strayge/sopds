@@ -4,9 +4,9 @@ import {
     MEDIA_TYPES,
     PublicationError,
     canonicalArchivePath,
+    createRasterBudget,
     encodePackageFragment,
     encodePackagePath,
-    hasRasterSignature,
     isExternalReference,
     isRasterMediaType,
     normalizedMediaType,
@@ -17,6 +17,7 @@ import {
     safeLanguage,
     safeToken,
     splitEncodedPackageHref,
+    validateRasterImage,
 } from './policy.js'
 
 const XML = 'application/xml'
@@ -180,6 +181,11 @@ const children = (element, name, namespace = element.namespaceURI) => elementChi
     .filter(item => item.localName === name && item.namespaceURI === namespace)
 const packageHref = ({ path, fragment }) => `${encodePackagePath(path)}${
     fragment ? `#${encodePackageFragment(fragment)}` : ''}`
+const requiredAttribute = (element, name) => {
+    const value = element.getAttribute(name)
+    if (!value) fail('The publication is missing required metadata.')
+    return value
+}
 
 const linkAbortSignal = (controller, signal) => {
     if (!signal) return () => {}
@@ -574,8 +580,8 @@ const validateFB2DescriptionChildren = element => {
     }
 }
 
-const decodeFB2Binary = async (element, signal) => {
-    const type = normalizedMediaType(element.getAttribute('content-type'))
+const decodeFB2Binary = async (element, budget, signal) => {
+    const type = normalizedMediaType(requiredAttribute(element, 'content-type'))
     if (!isRasterMediaType(type)) fail('FB2 contains an unsupported image type.')
     const encoded = element.textContent.replace(/[\t\n\f\r ]+/g, '')
     if (!encoded || encoded.length > Math.ceil(LIMITS.sourceBytes * 4 / 3) + 4
@@ -588,10 +594,8 @@ const decodeFB2Binary = async (element, signal) => {
     } catch (error) {
         throw new PublicationError('FB2 contains invalid base64 image data.', { cause: error })
     }
-    const blob = new Blob([decoded], { type })
-    const validSignature = await hasRasterSignature(blob, type)
+    await validateRasterImage(decoded, type, budget)
     checkAbort(signal)
-    if (!validSignature) fail('FB2 image data does not match its media type.')
     return { type, encoded }
 }
 
@@ -744,9 +748,10 @@ const makeSafeFB2 = async (file, signal) => {
 
     safeRoot.append(copyNode(descriptions[0], false))
     for (const body of bodies) safeRoot.append(copyNode(body, true))
+    const rasterBudget = createRasterBudget()
     for (const id of referenced) {
         checkAbort(signal)
-        const decoded = await decodeFB2Binary(binaries.get(id), signal)
+        const decoded = await decodeFB2Binary(binaries.get(id), rasterBudget, signal)
         checkAbort(signal)
         const binary = safe.createElementNS(namespace, 'binary')
         binary.setAttribute('id', id)
@@ -883,8 +888,8 @@ const CSS_PROPERTIES = new Set([
     'border-right-color', 'border-right-style', 'border-right-width', 'border-spacing',
     'border-style', 'border-top', 'border-top-color', 'border-top-style',
     'border-top-width', 'border-width', 'box-sizing', 'caption-side', 'clear', 'color',
-    'display', 'empty-cells', 'float', 'font-family', 'font-size', 'font-style',
-    'font-variant', 'font-weight', 'height', 'hyphens', 'letter-spacing', 'line-height',
+    'display', 'empty-cells', 'float', 'font-family', 'font-style', 'font-variant',
+    'font-weight', 'height', 'hyphens', 'letter-spacing', 'line-height',
     'list-style', 'list-style-position', 'list-style-type', 'margin', 'margin-bottom',
     'margin-left', 'margin-right', 'margin-top', 'max-height', 'max-width', 'min-height',
     'min-width', 'orphans', 'overflow-wrap', 'padding', 'padding-bottom', 'padding-left',
@@ -950,7 +955,7 @@ const cssFunctionsAreSafe = value => {
 }
 
 const ZERO_DIMENSION_PROPERTIES = new Set([
-    'font-size', 'line-height', 'height', 'width', 'max-height', 'max-width',
+    'line-height', 'height', 'width', 'max-height', 'max-width',
     'min-height', 'min-width',
 ])
 const isZeroCSSDimension = value => /^[+-]?(?:0+(?:\.0*)?|\.0+)(?:[a-z%]+)?$/i.test(value)
@@ -1087,7 +1092,7 @@ const validateEPUBPackage = async (blobs, signal) => {
             .filter(item => item.getAttribute('media-type') === 'application/oebps-package+xml')
         : []
     if (!rootfiles.length) fail('The EPUB container has no package document.')
-    const rootfile = resolvePackageReference(rootfiles[0].getAttribute('full-path'), '')
+    const rootfile = resolvePackageReference(requiredAttribute(rootfiles[0], 'full-path'), '')
     if (!rootfile || rootfile.fragment)
         fail('The EPUB container has an invalid package path.')
     const opfPath = rootfile.path
@@ -1097,7 +1102,7 @@ const validateEPUBPackage = async (blobs, signal) => {
     if (!opfSource) fail('The EPUB package document is missing.')
     const opf = parseXML(opfSource, 'EPUB package')
     const packageElement = opf.documentElement
-    const version = packageElement.getAttribute('version')
+    const version = requiredAttribute(packageElement, 'version')
     if (packageElement.localName !== 'package'
         || packageElement.namespaceURI !== OPF_NS
         || !/^(?:2(?:\.\d+)?|3(?:\.\d+)?)$/.test(version))
@@ -1121,8 +1126,8 @@ const validateEPUBPackage = async (blobs, signal) => {
             fail('The EPUB Dublin Core metadata has an invalid namespace.')
 
     for (const meta of [...metadata.getElementsByTagNameNS(OPF_NS, 'meta')]) {
-        const property = meta.getAttribute('property').toLowerCase()
-        const name = meta.getAttribute('name').toLowerCase()
+        const property = (meta.getAttribute('property') ?? '').toLowerCase()
+        const name = (meta.getAttribute('name') ?? '').toLowerCase()
         const value = (meta.getAttribute('content') || text(meta)).trim().toLowerCase()
         if (((property === 'rendition:layout' || property.endsWith(':layout')
             || name === 'rendition:layout' || name.endsWith(':layout'))
@@ -1146,17 +1151,17 @@ const validateEPUBPackage = async (blobs, signal) => {
     const manifest = new Map()
     const manifestByPath = new Map()
     for (const item of children(manifestElement, 'item')) {
-        const id = item.getAttribute('id')
+        const id = requiredAttribute(item, 'id')
         if (!safeToken(id) || manifest.has(id)) fail('The EPUB manifest has invalid IDs.')
-        const resolved = resolvePackageReference(item.getAttribute('href'), opfPath)
+        const resolved = resolvePackageReference(requiredAttribute(item, 'href'), opfPath)
         if (!resolved || resolved.fragment || !blobs.has(resolved.path)
             || manifestByPath.has(resolved.path))
             fail('The EPUB manifest contains an invalid resource path.')
         const record = {
             id,
             path: resolved.path,
-            mediaType: normalizedMediaType(item.getAttribute('media-type')),
-            properties: new Set(item.getAttribute('properties').split(/\s+/).filter(Boolean)),
+            mediaType: normalizedMediaType(requiredAttribute(item, 'media-type')),
+            properties: new Set((item.getAttribute('properties') ?? '').split(/\s+/).filter(Boolean)),
         }
         if (record.properties.has('remote-resources'))
             fail('EPUB remote resources are not supported.')
@@ -1169,9 +1174,9 @@ const validateEPUBPackage = async (blobs, signal) => {
     const spine = []
     const spinePaths = new Set()
     for (const itemref of children(spineElement, 'itemref')) {
-        const item = manifest.get(itemref.getAttribute('idref'))
-        const properties = itemref.getAttribute('properties').split(/\s+/)
-        const declaredLinear = itemref.getAttribute('linear').toLowerCase()
+        const item = manifest.get(requiredAttribute(itemref, 'idref'))
+        const properties = (itemref.getAttribute('properties') ?? '').split(/\s+/)
+        const declaredLinear = (itemref.getAttribute('linear') ?? '').toLowerCase()
         if (!item || item.mediaType !== XHTML
             || (declaredLinear && !['yes', 'no'].includes(declaredLinear))
             || properties.some(value => value.endsWith('layout-pre-paginated')))
@@ -1188,11 +1193,12 @@ const validateEPUBPackage = async (blobs, signal) => {
     const navItems = [...manifest.values()].filter(item => item.properties.has('nav'))
     if (navItems.length > 1 || navItems.some(item => item.mediaType !== XHTML))
         fail('The EPUB navigation document is invalid.')
-    const declaredNCX = manifest.get(spineElement.getAttribute('toc'))
+    const declaredNCX = manifest.get(spineElement.getAttribute('toc') ?? '')
     const ncxItem = declaredNCX
         ?? [...manifest.values()].find(item => item.mediaType === 'application/x-dtbncx+xml')
     if (declaredNCX && declaredNCX.mediaType !== 'application/x-dtbncx+xml')
         fail('The EPUB NCX document is invalid.')
+    const pageProgression = spineElement.getAttribute('page-progression-direction') ?? ''
     return {
         opfPath,
         manifestByPath,
@@ -1204,8 +1210,7 @@ const validateEPUBPackage = async (blobs, signal) => {
             title: text([...metadata.getElementsByTagNameNS(DC_NS, 'title')][0]),
             language: text([...metadata.getElementsByTagNameNS(DC_NS, 'language')][0]),
         },
-        dir: ['ltr', 'rtl'].includes(spineElement.getAttribute('page-progression-direction'))
-            ? spineElement.getAttribute('page-progression-direction') : undefined,
+        dir: ['ltr', 'rtl'].includes(pageProgression) ? pageProgression : undefined,
     }
 }
 
@@ -1306,7 +1311,7 @@ const parseNavTOC = async (item, blobs, idsByPath, sources, signal) => {
             const subitems = sublists.length ? parseList(sublists[0], hierarchyDepth + 1) : []
             const href = labels[0].localName === 'a'
                 ? validateTOCTarget(
-                    labels[0].getAttribute('href'), item.path, idsByPath)
+                    requiredAttribute(labels[0], 'href'), item.path, idsByPath)
                 : null
             if (!href && !subitems.length)
                 fail('The EPUB navigation item has no publication target.')
@@ -1351,7 +1356,7 @@ const parseNCXTOC = async (item, blobs, idsByPath, signal) => {
             || elementChildren(contents[0]).length)
             fail('The EPUB NCX document has an invalid label.')
         const href = validateTOCTarget(
-            contents[0].getAttribute('src'), item.path, idsByPath)
+            requiredAttribute(contents[0], 'src'), item.path, idsByPath)
         const subitems = subpoints.map(childPoint => parsePoint(childPoint, hierarchyDepth + 1))
         const result = { label: tocLabel(labelTexts[0]), href }
         if (subitems.length) result.subitems = subitems
@@ -1390,6 +1395,7 @@ const makeSafeEPUB = async (file, signal) => {
                 fail('The EPUB contents document is too large.')
         }
         const rasterURLs = new Map()
+        const rasterBudget = createRasterBudget()
         const resolveImage = async (reference, basePath) => {
             if (isExternalReference(reference)) return null
             const resolved = resolvePackageReference(reference, basePath)
@@ -1399,10 +1405,8 @@ const makeSafeEPUB = async (file, signal) => {
             if (!item || !blob || !isRasterMediaType(item.mediaType))
                 fail('EPUB content refers to a missing or unsupported image.')
             if (!rasterURLs.has(resolved.path)) {
-                const validSignature = await hasRasterSignature(blob, item.mediaType)
+                await validateRasterImage(blob, item.mediaType, rasterBudget)
                 checkAbort(signal)
-                if (!validSignature)
-                    fail('An EPUB image does not match its declared media type.')
                 const url = URL.createObjectURL(new Blob([blob], { type: item.mediaType }))
                 rasterURLs.set(resolved.path, url)
                 adapterURLs.push(url)
@@ -1466,7 +1470,8 @@ const makeSafeEPUB = async (file, signal) => {
                     claimID(id)
                     targetElement.setAttribute('id', id)
                 }
-                const classNames = sourceElement.getAttribute('class').split(/\s+/).filter(Boolean)
+                const classNames = (sourceElement.getAttribute('class') ?? '')
+                    .split(/\s+/).filter(Boolean)
                 if (classNames.length && classNames.every(safeToken))
                     targetElement.setAttribute('class', classNames.join(' '))
                 const language = sourceElement.getAttribute('lang')
@@ -1489,8 +1494,10 @@ const makeSafeEPUB = async (file, signal) => {
                         node.textContent, item.path, resolveImage, cssBudget, signal))
                     checkAbort(signal)
                 } else if (node.localName === 'link'
-                    && node.getAttribute('rel').toLowerCase().split(/\s+/).includes('stylesheet')) {
-                    const resolved = resolvePackageReference(node.getAttribute('href'), item.path)
+                    && (node.getAttribute('rel') ?? '').toLowerCase()
+                        .split(/\s+/).includes('stylesheet')) {
+                    const resolved = resolvePackageReference(
+                        requiredAttribute(node, 'href'), item.path)
                     if (!resolved || resolved.fragment) continue
                     const resource = publication.manifestByPath.get(resolved.path)
                     if (!resource || resource.mediaType !== 'text/css' || !blobs.has(resolved.path))

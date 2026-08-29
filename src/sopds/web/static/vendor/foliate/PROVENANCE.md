@@ -29,6 +29,8 @@ Security patches:
 3. `paginator.js` disconnects its resize observers during destruction and makes
    queued iframe-load, resize, font, and style callbacks no-op, preventing observer
    reactivation and detached-document access during reader teardown.
+4. `paginator.js` gives every publication iframe the stable accessible title
+   `Book content` before attaching it to the paginator.
 
 Formatting-only normalization:
 

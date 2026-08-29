@@ -43,7 +43,7 @@ main {
 }
 
 body {
-  min-width: 20rem;
+  min-width: 0;
   background: var(--reader-paper);
   color: var(--reader-ink);
   font-size: 0.9rem;
@@ -56,6 +56,7 @@ a {
 }
 
 button {
+  max-width: 100%;
   min-height: 2.75rem;
   padding: 0.45rem 0.7rem;
   border: 1px solid var(--reader-border);
@@ -112,12 +113,18 @@ button:disabled {
   z-index: 2;
   display: grid;
   min-width: 0;
+  max-height: 50vh;
   grid-template-columns: minmax(8rem, 1fr) repeat(3, auto) 4.2rem repeat(2, auto);
+  align-content: start;
   align-items: center;
   gap: 0.35rem;
   padding: 0.4rem 0.55rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   border-bottom: 1px solid var(--reader-border);
   background: var(--reader-surface);
+  scrollbar-gutter: stable;
 }
 
 [data-reader-title] {
@@ -308,6 +315,71 @@ foliate-view {
     grid-row: 3;
     grid-column: 4 / 5;
   }
+}
+
+@media (max-width: 24rem) {
+  [data-reader-toolbar] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  [data-reader-toolbar] button {
+    width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  [data-reader-title] {
+    grid-row: 1;
+    grid-column: 1 / -1;
+  }
+
+  [data-reader-contents-button] {
+    grid-row: 2;
+    grid-column: 1;
+  }
+
+  [data-reader-previous] {
+    grid-row: 2;
+    grid-column: 2;
+  }
+
+  [data-reader-next] {
+    grid-row: 3;
+    grid-column: 1;
+  }
+
+  [data-reader-progress] {
+    grid-row: 3;
+    grid-column: 2;
+    text-align: center;
+  }
+
+  [data-reader-font-decrease] {
+    grid-row: 4;
+    grid-column: 1;
+  }
+
+  [data-reader-font-increase] {
+    grid-row: 4;
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 14rem) {
+  [data-reader-toolbar] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-reader-toolbar] > * {
+    grid-column: 1;
+  }
+
+  [data-reader-contents-button] { grid-row: 2; }
+  [data-reader-previous] { grid-row: 3; }
+  [data-reader-next] { grid-row: 4; }
+  [data-reader-progress] { grid-row: 5; }
+  [data-reader-font-decrease] { grid-row: 6; }
+  [data-reader-font-increase] { grid-row: 7; }
 }
 
 @media (prefers-color-scheme: dark) {

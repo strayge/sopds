@@ -1199,20 +1199,66 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     with TestClient(app) as client:
         javascript = client.get("/static/reader/app.js")
         stylesheet = client.get("/static/css/reader.css")
+        book_adapter = client.get("/static/reader/book.js")
+        policy = client.get("/static/reader/policy.js")
+        paginator = client.get("/static/vendor/foliate/paginator.js")
 
     assert javascript.status_code == 200
     assert stylesheet.status_code == 200
+    assert book_adapter.status_code == 200
+    assert policy.status_code == 200
+    assert paginator.status_code == 200
     assert "import '../vendor/foliate/view.js'" in javascript.text
     assert "import { openPublication } from './book.js'" in javascript.text
     assert "view.renderer.setAttribute('max-column-count', '1')" in javascript.text
     assert "view.renderer.setStyles" in javascript.text
+    assert "font-size: ${scale}em !important;" in javascript.text
     assert "await publication.destroy()" in javascript.text
     assert "event.stopImmediatePropagation()" in javascript.text
     assert "localStorage" not in javascript.text
     assert "foliate-view" in stylesheet.text
     assert "prefers-color-scheme: dark" in stylesheet.text
     assert "@media (max-width: 35rem)" in stylesheet.text
+    assert "@media (max-width: 24rem)" in stylesheet.text
+    assert "@media (max-width: 14rem)" in stylesheet.text
+    assert "max-height: 50vh" in stylesheet.text
+    assert "overflow-y: auto" in stylesheet.text
+    assert "overscroll-behavior-y: contain" in stylesheet.text
+    assert "min-width: 20rem" not in stylesheet.text
     assert 'url("../fonts/IBMPlexSans-Regular.woff2")' in stylesheet.text
+
+    css_allowlist = book_adapter.text.split("const CSS_PROPERTIES", 1)[1].split("])\n", 1)[0]
+    assert "'font-size'" not in css_allowlist
+    assert "(meta.getAttribute('property') ?? '').toLowerCase()" in book_adapter.text
+    assert "(itemref.getAttribute('linear') ?? '').toLowerCase()" in book_adapter.text
+    assert "(sourceElement.getAttribute('class') ?? '')" in book_adapter.text
+    assert "(node.getAttribute('rel') ?? '').toLowerCase()" in book_adapter.text
+    assert "createRasterBudget()" in book_adapter.text
+    assert "validateRasterImage(blob, item.mediaType, rasterBudget)" in book_adapter.text
+
+    for limit in (
+        "imageDimension: 16_384",
+        "imagePixels: 40_000_000",
+        "imageFrames: 256",
+        "publicationImagePixelFrames: 200_000_000",
+        "publicationImageFrames: 1024",
+    ):
+        assert limit in policy.text
+    for parser in ("parseJPEG", "parsePNG", "parseGIF", "parseWebP"):
+        assert parser in policy.text
+    assert "createImageBitmap" not in policy.text
+    assert "source.arrayBuffer()" in policy.text
+    assert "budget.pixelFrames += pixelFrames" in policy.text
+    assert "animationFrames + (defaultImageIsSeparate ? 1 : 0)" in policy.text
+    assert "frameControls !== animationFrames" in policy.text
+    assert "type === 'iCCP' || type === 'zTXt'" in policy.text
+    assert "bytes[keywordEnd + 1] === 1" in policy.text
+    assert "marker === 0xdc" in policy.text
+    assert "expectDNL = deferredWidth !== null" in policy.text
+
+    title_at = paginator.text.index("this.#iframe.setAttribute('title', 'Book content')")
+    attachment_at = paginator.text.index("this.#element.append(this.#iframe)")
+    assert title_at < attachment_at
 
 
 def test_reader_rejects_unsafe_return_context_and_renders_known_size_limit() -> None:
