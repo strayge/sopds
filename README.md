@@ -38,6 +38,31 @@ FB2 books can become EPUB2 or AZW3. Existing EPUB files pass through unchanged
 when EPUB is selected and can become AZW3. Existing AZW3 files pass through
 unchanged when AZW3 is selected. Other combinations are not offered.
 
+### Read a stored book
+
+On a book's details page, **Read** is a secondary action for downloadable stored
+FB2 and EPUB sources; the original-format download remains primary. It opens the
+reader in a new browser tab. The reader supports stored FB2 and reflowable EPUB
+2/3 without converting the book. Converted downloads and other source formats
+cannot be read there.
+
+The compact toolbar shows the book title, **Contents**, **Previous**, **Next**,
+reading progress, **Smaller text**, and **Larger text**. Arrow Left/Right, Page
+Up/Down, and touch navigation are also supported. The reader follows the
+browser's light or dark appearance.
+
+The reader automatically resumes a saved position and remembers the font-size
+setting in this browser. These settings are not synchronized between browsers,
+devices, or users. Clearing SOPDS site data removes them.
+
+Fixed-layout and encrypted EPUB files are not supported. Sources larger than 64
+MiB cannot be opened in the reader; use the original download instead. If a book
+cannot be opened, use **Retry**, **Download original**, or **Back to book**.
+
+Current Chromium and Firefox on desktop are manually validated. Android Chromium
+and Firefox are the target baseline, but physical-device validation remains
+pending.
+
 The catalog normally shows books whose source archives are available. Use
 **Include hidden** or **Include missing** when you need to inspect exceptional
 records:
