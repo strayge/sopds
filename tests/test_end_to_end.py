@@ -15,6 +15,7 @@ from sopds.app import create_app
 from sopds.config import AppConfig
 from sopds.db.migrations_runner import apply_migrations
 from sopds.imports.service import derive_public_id
+from sopds.web.csrf import issue_csrf_token
 
 _SEPARATOR = "\x04"
 
@@ -234,7 +235,9 @@ def test_selected_preview_and_zip_download_use_real_catalog_stack(
     ]
     eligible_size = sum(len(original) for original in originals.values())
 
-    with TestClient(create_app(app_config)) as client:
+    app = create_app(app_config)
+    with TestClient(app) as client:
+        csrf_token = issue_csrf_token(app.state.csrf_key)
         deadline = time.monotonic() + 10
         status = client.get("/imports/status")
         while "<dt>State</dt><dd>succeeded</dd>" not in status.text:
@@ -307,8 +310,11 @@ def test_selected_preview_and_zip_download_use_real_catalog_stack(
 
             response = client.post(
                 "/selected/download",
-                data={"ids": json.dumps(selected_ids), "preset": preset},
-                headers={"Sec-Fetch-Site": "same-origin"},
+                data={
+                    "ids": json.dumps(selected_ids),
+                    "preset": preset,
+                    "csrf_token": csrf_token,
+                },
             )
             assert response.status_code == 200
             assert response.headers["content-type"] == "application/zip"
@@ -326,8 +332,11 @@ def test_selected_preview_and_zip_download_use_real_catalog_stack(
 
         empty = client.post(
             "/selected/download",
-            data={"ids": json.dumps([missed_id, unknown_id]), "preset": "nested"},
-            headers={"Sec-Fetch-Site": "same-origin"},
+            data={
+                "ids": json.dumps([missed_id, unknown_id]),
+                "preset": "nested",
+                "csrf_token": csrf_token,
+            },
         )
         assert empty.status_code == 422
         assert "No selected books are available for download" in empty.text

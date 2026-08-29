@@ -464,12 +464,12 @@ def test_scheduled_availability_refresh_updates_web_filters(
         assert 'value="zz"' in refreshed.text
 
 
-def test_create_app_uses_a_distinct_csrf_token_per_instance(app_config: AppConfig) -> None:
+def test_create_app_uses_distinct_signing_keys_per_instance(app_config: AppConfig) -> None:
     first = create_app(app_config)
     second = create_app(app_config)
 
-    assert first.state.csrf_token != second.state.csrf_token
-    assert len(first.state.csrf_token) >= 32
+    assert first.state.csrf_key != second.state.csrf_key
+    assert len(first.state.csrf_key) == 32
     assert first.state.cursor_key != second.state.cursor_key
     assert len(first.state.cursor_key) == 32
-    assert first.state.cursor_key != first.state.csrf_token
+    assert first.state.cursor_key != first.state.csrf_key

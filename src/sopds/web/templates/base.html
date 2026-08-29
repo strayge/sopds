@@ -8,6 +8,7 @@
     <link rel="alternate" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="{{ opds_url }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
     <script src="{{ url_for('static', path='/vendor/htmx/htmx-2.0.10.min.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/csrf.js') }}"></script>
     <script defer src="{{ url_for('static', path='/selection.js') }}"></script>
     {% block head %}{% endblock %}
   </head>

@@ -5,13 +5,12 @@ import html
 import io
 import json
 import re
-import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import override
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from fastapi import FastAPI
@@ -52,9 +51,9 @@ from sopds.catalog.contracts import (
 )
 from sopds.imports.status import ImportState, ImportStatus, ImportTrigger
 from sopds.web import routes
+from sopds.web.csrf import issue_csrf_token
 
 _REVISION = SourceRevision(1, 2, 3)
-_SAME_ORIGIN_FORM_HEADERS = {"Sec-Fetch-Site": "same-origin"}
 
 
 class _Catalog:
@@ -361,11 +360,23 @@ def _app(imports: _Imports | None = None) -> tuple[FastAPI, _Catalog, _Imports]:
     app.state.import_coordinator = import_provider
     app.state.acquisition = _Acquisition()
     app.state.archive = _Archive()
-    app.state.csrf_token = secrets.token_urlsafe(32)
+    app.state.csrf_key = b"c" * 32
     static = Path(routes.__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static), name="static")
     app.include_router(routes.router)
     return app, catalog, import_provider
+
+
+def _csrf_token(app: FastAPI) -> str:
+    return issue_csrf_token(app.state.csrf_key)
+
+
+def _download_form(app: FastAPI, ids: str, preset: str) -> dict[str, str]:
+    return {"ids": ids, "preset": preset, "csrf_token": _csrf_token(app)}
+
+
+def _csrf_form_suffix(app: FastAPI) -> str:
+    return "&" + urlencode({"csrf_token": _csrf_token(app)})
 
 
 def test_full_page_fragment_filters_pagination_and_details() -> None:
@@ -427,6 +438,9 @@ def test_full_page_fragment_filters_pagination_and_details() -> None:
     assert 'name="cursor"' not in page.text
     assert '<option value="title" selected>Title</option>' in page.text
     assert management.status_code == 200
+    assert management.headers["cache-control"] == "no-store"
+    assert "set-cookie" not in management.headers
+    assert "/static/csrf.js" in management.text
     assert '<a href="/">Catalog</a>' in management.text
     assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
     assert "Manage catalog" in management.text
@@ -1198,8 +1212,7 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
         preview = client.post("/selected/preview", json=payload)
         download = client.post(
             "/selected/download",
-            data={"ids": json.dumps(payload["ids"]), "preset": payload["preset"]},
-            headers=_SAME_ORIGIN_FORM_HEADERS,
+            data=_download_form(app, json.dumps(payload["ids"]), str(payload["preset"])),
         )
 
     assert page.status_code == 200
@@ -1209,6 +1222,9 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert 'action="/selected/download"' in page.text
     assert 'method="post"' in page.text
     assert 'name="ids" value="[]" data-selected-ids' in page.text
+    assert re.search(r'name="csrf_token" value="[A-Za-z0-9_-]+"', page.text)
+    assert page.headers["cache-control"] == "no-store"
+    assert "set-cookie" not in page.headers
     assert "data-selected-preview-target" in page.text
     assert "data-selection-clear" in page.text
     assert "data-selected-request-status" in page.text
@@ -1364,9 +1380,10 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
     app, _, _ = _app()
     with TestClient(app) as client:
         script = client.get("/static/selection.js")
+        csrf_script = client.get("/static/csrf.js")
         page = client.get("/selected")
 
-    assert script.status_code == 200
+    assert script.status_code == csrf_script.status_code == 200
     for contract in (
         '"sopds.selected-books.v1"',
         "JSON.parse",
@@ -1432,8 +1449,13 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
     assert 'data-selected-preview-error role="alert" tabindex="-1"' in script.text
     assert "querySelector(`[data-public-id=" not in script.text
     assert "Blob" not in script.text
+    assert 'document.addEventListener("htmx:responseError"' in csrf_script.text
+    assert "xhr.status !== 403" in csrf_script.text
+    assert 'xhr.getResponseHeader("X-SOPDS-CSRF-Expired")' in csrf_script.text
+    assert "target.innerHTML = xhr.responseText" in csrf_script.text
     assert 'method="post" action="/selected/download"' in page.text
     assert 'type="hidden" name="ids"' in page.text
+    assert 'type="hidden" name="csrf_token"' in page.text
     assert '<option value="nested" selected>' in page.text
     assert '<option value="flatten">' in page.text
     assert '<option value="list">' in page.text
@@ -1476,6 +1498,7 @@ def test_selected_preview_rejects_non_object_extra_missing_duplicate_and_malform
     [
         "ids=%5B%22public-1%22%5D&preset=nested&extra=x",
         "ids=%5B%22public-1%22%5D&ids=%5B%5D&preset=nested",
+        "ids=%5B%22public-1%22%5D&preset=nested&csrf_token=duplicate",
         "ids=%5B%22public-1%22%5D",
         "ids=%ZZ&preset=nested",
         "ids=not-json&preset=nested",
@@ -1488,103 +1511,61 @@ def test_selected_download_rejects_extra_duplicate_missing_and_malformed_form(
     with TestClient(app) as client:
         response = client.post(
             "/selected/download",
-            content=body,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                **_SAME_ORIGIN_FORM_HEADERS,
-            },
+            content=body + _csrf_form_suffix(app),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
     assert response.status_code == 400
     assert "Invalid selected-books request" in response.text
-    assert len(response.content) < 3_000
+    assert len(response.content) < 3_200
     assert app.state.archive.download_requests == []
 
 
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {"Origin": "http://testserver"},
-        {"Origin": "http://testserver:80"},
-        {"Origin": "https://catalog.example"},
-        {"Sec-Fetch-Site": "same-origin"},
-        {"Host": "127.0.0.1:8000", "Origin": "http://127.0.0.1:8000"},
-    ],
-)
-def test_selected_download_accepts_served_same_origin_transport(
-    headers: dict[str, str],
-) -> None:
+def test_selected_download_token_supports_retries_and_changed_selection() -> None:
     app, _, _ = _app()
     archive: _Archive = app.state.archive
 
     with TestClient(app) as client:
-        response = client.post(
+        token = _csrf_token(app)
+        first = client.post(
             "/selected/download",
-            data={"ids": '["public-1"]', "preset": "nested"},
-            headers=headers,
+            data={"ids": '["public-1"]', "preset": "nested", "csrf_token": token},
+            headers={"Origin": "https://unrelated.example", "Sec-Fetch-Site": "cross-site"},
+        )
+        retry = client.post(
+            "/selected/download",
+            data={"ids": '["public-2"]', "preset": "nested", "csrf_token": token},
         )
 
-    assert response.status_code == 200
-    assert archive.download_requests == [ArchiveRequest(["public-1"], "nested")]
+    assert first.status_code == retry.status_code == 200
+    assert archive.download_requests == [
+        ArchiveRequest(["public-1"], "nested"),
+        ArchiveRequest(["public-2"], "nested"),
+    ]
     assert archive.last_file is not None and archive.last_file.closed
 
 
-def test_selected_download_accepts_same_origin_with_request_query() -> None:
-    app, _, _ = _app()
-    archive: _Archive = app.state.archive
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/selected/download?source=selected-page",
-            data={"ids": '["public-1"]', "preset": "nested"},
-            headers={"Origin": "http://testserver"},
-        )
-
-    assert response.status_code == 200
-    assert archive.download_requests == [ArchiveRequest(["public-1"], "nested")]
-
-
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {},
-        {"Origin": "null"},
-        {"Origin": "https://[malformed"},
-        {"Origin": "https://catalog.example/"},
-        {"Origin": "https://catalog.example?"},
-        {"Origin": "https://catalog.example:"},
-        {"Origin": "https://catalog.example:444"},
-        {"Origin": "https://sibling.catalog.example"},
-        {"Origin": "http://testserver:8000"},
-        {"Origin": "https://testserver"},
-        {"Sec-Fetch-Site": "cross-site"},
-        {
-            "Origin": "https://catalog.example",
-            "Sec-Fetch-Site": "cross-site",
-        },
-        {
-            "Origin": "http://testserver",
-            "Sec-Fetch-Site": "cross-site, same-origin",
-        },
-        {"Sec-Fetch-Site": "same-site"},
-    ],
-)
-def test_selected_download_rejects_untrusted_transport_before_parsing_or_building(
-    headers: dict[str, str],
+@pytest.mark.parametrize("case", [None, "", "wrong", "expired", "other-instance"])
+def test_selected_download_rejects_invalid_token_before_parsing_or_building(
+    case: str | None,
 ) -> None:
     app, _, _ = _app()
     archive: _Archive = app.state.archive
 
     with TestClient(app) as client:
-        response = client.post(
-            "/selected/download",
-            content=b"not-even-a-valid-form",
-            headers=headers,
-        )
+        supplied = case
+        if case == "expired":
+            supplied = issue_csrf_token(app.state.csrf_key, now=0)
+        elif case == "other-instance":
+            supplied = issue_csrf_token(b"d" * 32)
+        data = {"ids": '["public-1"]', "preset": "nested"}
+        if supplied is not None:
+            data["csrf_token"] = supplied
+        response = client.post("/selected/download", data=data)
 
     assert response.status_code == 403
-    assert routes._SELECTED_ORIGIN_ERROR in response.text
-    assert len(response.content) < 3_000
+    assert routes._CSRF_ERROR_MESSAGE in response.text
+    assert len(response.content) < 3_200
     assert archive.download_requests == []
 
 
@@ -1597,8 +1578,7 @@ def test_selected_json_and_form_apply_the_same_logical_validation() -> None:
         )
         download = client.post(
             "/selected/download",
-            data={"ids": '["public-1"]', "preset": "unknown"},
-            headers=_SAME_ORIGIN_FORM_HEADERS,
+            data=_download_form(app, '["public-1"]', "unknown"),
         )
         wrong_preview_type = client.post(
             "/selected/preview",
@@ -1608,7 +1588,7 @@ def test_selected_json_and_form_apply_the_same_logical_validation() -> None:
         wrong_download_type = client.post(
             "/selected/download",
             content=b"ids=%5B%5D&preset=nested",
-            headers={"Content-Type": "text/plain", **_SAME_ORIGIN_FORM_HEADERS},
+            headers={"Content-Type": "text/plain"},
         )
 
     assert preview.status_code == download.status_code == 422
@@ -1629,10 +1609,7 @@ def test_selected_routes_stop_oversized_bodies_before_decoding() -> None:
         download = client.post(
             "/selected/download",
             content=oversized,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                **_SAME_ORIGIN_FORM_HEADERS,
-            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
     assert preview.status_code == download.status_code == 413
@@ -1664,12 +1641,11 @@ def test_selected_download_status_mappings_are_bounded_and_path_free(
     with TestClient(app) as client:
         response = client.post(
             "/selected/download",
-            data={"ids": '["secret-public-id"]', "preset": "nested"},
-            headers=_SAME_ORIGIN_FORM_HEADERS,
+            data=_download_form(app, '["secret-public-id"]', "nested"),
         )
 
     assert response.status_code == status_code
-    assert len(response.content) < 3_000
+    assert len(response.content) < 3_200
     assert "/private/" not in response.text
     assert "secret-public-id" not in response.text
     assert "/private/" not in caplog.text
@@ -1728,6 +1704,10 @@ def _selected_download_scope() -> Scope:
     }
 
 
+def _selected_download_body(app: FastAPI) -> bytes:
+    return urlencode(_download_form(app, '["public-1"]', "nested")).encode()
+
+
 async def _run_synthetic_selected_download(app: FastAPI, receive: Receive, send: Send) -> None:
     await app(_selected_download_scope(), receive, send)
 
@@ -1763,7 +1743,7 @@ async def test_selected_download_disconnect_cancels_and_drains_blocked_build() -
         if receive_calls == 1:
             return {
                 "type": "http.request",
-                "body": b"ids=%5B%22public-1%22%5D&preset=nested",
+                "body": _selected_download_body(app),
                 "more_body": False,
             }
         await disconnect.wait()
@@ -1813,7 +1793,7 @@ async def test_selected_download_completion_disconnect_race_closes_returned_arch
         if receive_calls == 1:
             return {
                 "type": "http.request",
-                "body": b"ids=%5B%22public-1%22%5D&preset=nested",
+                "body": _selected_download_body(app),
                 "more_body": False,
             }
         receive_waiting.set()
@@ -1865,7 +1845,7 @@ async def test_selected_download_repeated_cancellation_drains_build_cleanup() ->
         if receive_calls == 1:
             return {
                 "type": "http.request",
-                "body": b"ids=%5B%22public-1%22%5D&preset=nested",
+                "body": _selected_download_body(app),
                 "more_body": False,
             }
         listener_started.set()
@@ -2065,8 +2045,7 @@ def test_selected_download_closes_staged_archive_if_response_creation_fails(
     with TestClient(app) as client:
         response = client.post(
             "/selected/download",
-            data={"ids": '["public-1"]', "preset": "nested"},
-            headers=_SAME_ORIGIN_FORM_HEADERS,
+            data=_download_form(app, '["public-1"]', "nested"),
         )
 
     assert response.status_code == 500
@@ -2323,10 +2302,14 @@ def test_import_status_polls_only_while_running() -> None:
 def test_manual_import_requires_csrf_and_reports_current_run() -> None:
     imports = _Imports(_status(ImportState.RUNNING))
     app, _, _ = _app(imports)
-    csrf_token = app.state.csrf_token
     with TestClient(app) as client:
+        csrf_token = _csrf_token(app)
         missing = client.post("/imports")
         invalid = client.post("/imports", headers={"X-CSRF-Token": "wrong"})
+        expired = client.post(
+            "/imports",
+            headers={"X-CSRF-Token": issue_csrf_token(app.state.csrf_key, now=0)},
+        )
         accepted = client.post("/imports", headers={"X-CSRF-Token": csrf_token})
         forced = client.post("/imports/force", headers={"X-CSRF-Token": csrf_token})
         imports.active = True
@@ -2338,8 +2321,13 @@ def test_manual_import_requires_csrf_and_reports_current_run() -> None:
         imports.accept = False
         already_running = client.post("/imports", headers={"X-CSRF-Token": csrf_token})
 
-    assert missing.status_code == 403
-    assert invalid.status_code == 403
+    assert missing.status_code == invalid.status_code == expired.status_code == 403
+    assert routes._CSRF_ERROR_MESSAGE in missing.text
+    assert routes._CSRF_ERROR_MESSAGE in invalid.text
+    assert routes._CSRF_ERROR_MESSAGE in expired.text
+    assert missing.headers["X-SOPDS-CSRF-Expired"] == "true"
+    assert invalid.headers["X-SOPDS-CSRF-Expired"] == "true"
+    assert expired.headers["X-SOPDS-CSRF-Expired"] == "true"
     assert accepted.status_code == 202
     assert forced.status_code == 202
     assert "Import check is starting" in accepted.text
@@ -2358,8 +2346,8 @@ def test_manual_import_requires_csrf_and_reports_current_run() -> None:
 def test_unchanged_import_stops_polling_and_vacuum_refreshes_statistics() -> None:
     imports = _Imports(_status(ImportState.SUCCEEDED))
     app, _, _ = _app(imports)
-    csrf_token = app.state.csrf_token
     with TestClient(app) as client:
+        csrf_token = _csrf_token(app)
         unchanged = client.get("/imports/status?after_run_id=1")
         missing_csrf = client.post("/database/vacuum")
         vacuumed = client.post("/database/vacuum", headers={"X-CSRF-Token": csrf_token})

@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal, cast, override
@@ -52,6 +51,7 @@ from sopds.catalog.contracts import (
     SearchField,
 )
 from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
+from sopds.web.csrf import issue_csrf_token, validate_csrf_token
 
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -59,7 +59,7 @@ _LOGGER = logging.getLogger(__name__)
 _WEB_PAGE_SIZE = 200
 _MAX_SELECTED_BODY_BYTES = 8_388_608
 _SELECTED_ARCHIVE_FILENAME = "selected-books.zip"
-_SELECTED_ORIGIN_ERROR = "Selected-books download request is not allowed"
+_CSRF_ERROR_MESSAGE = "This page has expired. Reload it and try again."
 _PUBLIC_ARCHIVE_INPUT_MESSAGES = frozenset(
     {
         "Invalid archive preset",
@@ -446,6 +446,20 @@ class _SelectedBodyTooLargeError(_SelectedBodyError):
     """Stop consuming a selected-books request as soon as it exceeds its bound."""
 
 
+class _CsrfError(ValueError):
+    """Reject missing, malformed, expired, or restart-invalidated browser tokens."""
+
+
+def _issue_csrf(request: Request) -> str:
+    return issue_csrf_token(cast(bytes, request.app.state.csrf_key))
+
+
+def _validate_csrf(request: Request, supplied: str) -> None:
+    key = cast(bytes, request.app.state.csrf_key)
+    if not validate_csrf_token(key, supplied):
+        raise _CsrfError
+
+
 async def _read_selected_body(request: Request) -> bytes:
     body = bytearray()
     try:
@@ -460,61 +474,6 @@ async def _read_selected_body(request: Request) -> bytes:
 
 def _media_type(request: Request) -> str:
     return request.headers.get("content-type", "").partition(";")[0].strip().casefold()
-
-
-def _http_origin(
-    value: object, *, allow_resource_path: bool = False
-) -> tuple[str, str, int] | None:
-    """Normalize HTTP origins while rejecting paths in submitted Origin headers."""
-    text = str(value)
-    if (
-        not text
-        or text != text.strip()
-        or any(character.isspace() for character in text)
-        or (not allow_resource_path and any(delimiter in text for delimiter in "?#"))
-    ):
-        return None
-    try:
-        parsed = urlsplit(text)
-        port = parsed.port
-    except ValueError:
-        return None
-    scheme = parsed.scheme.casefold()
-    host = parsed.hostname
-    if (
-        scheme not in {"http", "https"}
-        or host is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or (bool(parsed.path) and not allow_resource_path)
-        or parsed.query
-        or parsed.fragment
-        or parsed.netloc.endswith(":")
-        or "%" in host
-    ):
-        return None
-    effective_port = port if port is not None else (443 if scheme == "https" else 80)
-    return scheme, host.casefold(), effective_port
-
-
-def _selected_download_is_same_origin(request: Request) -> bool:
-    fetch_sites = [value.strip().casefold() for value in request.headers.getlist("sec-fetch-site")]
-    if fetch_sites and fetch_sites != ["same-origin"]:
-        return False
-
-    origins = request.headers.getlist("origin")
-    if origins:
-        if len(origins) != 1:
-            return False
-        submitted = _http_origin(origins[0])
-        served_url = request.url.replace(query="")
-        served = _http_origin(served_url, allow_resource_path=True)
-        configured = _http_origin(
-            request.app.state.config.server.base_url, allow_resource_path=True
-        )
-        return submitted is not None and submitted in {served, configured}
-
-    return fetch_sites == ["same-origin"]
 
 
 def _reject_json_constant(_value: str) -> object:
@@ -570,13 +529,17 @@ async def _form_archive_request(request: Request) -> ArchiveRequest:
             strict_parsing=True,
             encoding="utf-8",
             errors="strict",
-            max_num_fields=3,
+            max_num_fields=4,
         )
     except (UnicodeDecodeError, ValueError) as error:
         raise _SelectedBodyError from error
-    if len(pairs) != 2 or {name for name, _value in pairs} != {"ids", "preset"}:
+    names = [name for name, _value in pairs]
+    if len(names) != len(set(names)) or not set(names) <= {"ids", "preset", "csrf_token"}:
         raise _SelectedBodyError
     fields = dict(pairs)
+    _validate_csrf(request, fields.get("csrf_token", ""))
+    if set(fields) != {"ids", "preset", "csrf_token"}:
+        raise _SelectedBodyError
     try:
         ids = json.loads(fields["ids"], parse_constant=_reject_json_constant)
     except (json.JSONDecodeError, ValueError, RecursionError) as error:
@@ -648,7 +611,11 @@ async def selected(request: Request) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="selected.html",
-        context=_shell_context(request, active_navigation="selected"),
+        context={
+            **_shell_context(request, active_navigation="selected"),
+            "csrf_token": _issue_csrf(request),
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -834,16 +801,15 @@ class _OwnedStagedArchiveResponse(StreamingResponse):
 
 @router.post("/selected/download")
 async def selected_download(request: Request) -> Response:
-    if not _selected_download_is_same_origin(request):
+    try:
+        archive_request = await _form_archive_request(request)
+    except _CsrfError:
         return _selected_error_response(
             request,
-            message=_SELECTED_ORIGIN_ERROR,
+            message=_CSRF_ERROR_MESSAGE,
             status_code=403,
             fragment=False,
         )
-
-    try:
-        archive_request = await _form_archive_request(request)
     except _SelectedBodyError as error:
         return _selected_transport_error(request, error, fragment=False)
     except ArchiveInputError as error:
@@ -953,7 +919,7 @@ async def manage(request: Request) -> Response:
             **_shell_context(request, active_navigation="manage"),
             "statistics_context": statistics_context,
             "status": None if import_pending else current_import_status,
-            "csrf_token": cast(str, request.app.state.csrf_token),
+            "csrf_token": _issue_csrf(request),
             "ImportState": ImportState,
             "message": "Catalog import is starting" if import_pending else None,
             "poll": import_pending,
@@ -965,6 +931,7 @@ async def manage(request: Request) -> Response:
             ),
         },
         status_code=status_code,
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1252,15 +1219,21 @@ async def import_status(request: Request, after_run_id: int | None = None) -> Re
     return response
 
 
-def _validate_csrf(request: Request) -> None:
-    supplied = request.headers.get("X-CSRF-Token", "")
-    expected = cast(str, request.app.state.csrf_token)
-    if not supplied or not secrets.compare_digest(supplied, expected):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+def _csrf_operation_error(request: Request) -> Response:
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/operation_result.html",
+        context={"message": _CSRF_ERROR_MESSAGE, "error": True},
+        status_code=403,
+        headers={"X-SOPDS-CSRF-Expired": "true"},
+    )
 
 
 async def _start_import(request: Request, *, force: bool) -> Response:
-    _validate_csrf(request)
+    try:
+        _validate_csrf(request, request.headers.get("X-CSRF-Token", ""))
+    except _CsrfError:
+        return _csrf_operation_error(request)
     coordinator = _imports(request)
     previous_status = await coordinator.get_status()
     accepted = coordinator.start_manual_import(force=force)
@@ -1295,7 +1268,10 @@ async def start_force_import(request: Request) -> Response:
 
 @router.post("/database/vacuum", response_class=HTMLResponse)
 async def vacuum_database(request: Request) -> Response:
-    _validate_csrf(request)
+    try:
+        _validate_csrf(request, request.headers.get("X-CSRF-Token", ""))
+    except _CsrfError:
+        return _csrf_operation_error(request)
     vacuumed = await _imports(request).vacuum_database()
     response = templates.TemplateResponse(
         request=request,
