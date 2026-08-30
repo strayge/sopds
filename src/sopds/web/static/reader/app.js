@@ -28,6 +28,9 @@ const nextEdgeButton = document.querySelector('[data-reader-edge-right]')
 const pageControls = document.querySelectorAll('[data-reader-page-control]')
 const progressOutput = document.querySelector('[data-reader-progress]')
 const dockProgressOutput = document.querySelector('[data-reader-dock-progress]')
+const bookScrollbar = document.querySelector('[data-reader-book-scrollbar]')
+const bookPosition = document.querySelector('[data-reader-book-position]')
+const seekPreview = document.querySelector('[data-reader-seek-preview]')
 const decreaseButton = document.querySelector('[data-reader-font-decrease]')
 const increaseButton = document.querySelector('[data-reader-font-increase]')
 const retryLink = document.querySelector('[data-reader-retry]')
@@ -36,6 +39,7 @@ const publicId = root?.dataset.publicId ?? ''
 const format = root?.dataset.sourceFormat ?? ''
 const sourceUrl = root?.dataset.sourceUrl ?? ''
 const FONT_STEP = 0.1
+const BOOK_POSITION_MAX = 10_000
 
 let fontScale = getFontScale()
 let readerMode = getReaderMode()
@@ -50,6 +54,8 @@ let unloading = false
 let lifecycle = Promise.resolve()
 let modeSwitch = Promise.resolve()
 let modeSwitching = false
+let bookSeeking = false
+let lastProgress = 0
 
 const publicationStyles = scale => `
 @font-face {
@@ -98,6 +104,19 @@ const applyPageControlState = (visible, disabled = false) => {
     }
 }
 
+const updateBookPosition = (progress, preview = false) => {
+    const bounded = Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 0
+    const percent = `${Math.round(bounded * 100)}%`
+    bookPosition.value = String(Math.round(bounded * BOOK_POSITION_MAX))
+    bookPosition.setAttribute('aria-valuetext', percent)
+    bookScrollbar.style.setProperty('--reader-seek-position', `${bounded * 100}%`)
+    if (preview) {
+        seekPreview.value = percent
+        seekPreview.textContent = percent
+        seekPreview.hidden = false
+    }
+}
+
 const applyModeUI = mode => {
     const pages = mode === 'pages'
     readerState.dataset.readerMode = mode
@@ -107,6 +126,10 @@ const applyModeUI = mode => {
         ? 'Switch to scroll view' : 'Switch to pages view')
     progressOutput.hidden = pages
     dockProgressOutput.hidden = !pages
+    bookScrollbar.hidden = pages
+    bookPosition.disabled = pages || !activeView || modeSwitching || bookSeeking
+    bookPosition.tabIndex = pages ? -1 : 0
+    if (pages) seekPreview.hidden = true
     applyPageControlState(pages)
 }
 
@@ -158,6 +181,12 @@ const cleanup = async () => {
     progressOutput.textContent = progressOutput.value
     dockProgressOutput.value = progressOutput.value
     dockProgressOutput.textContent = progressOutput.value
+    bookSeeking = false
+    lastProgress = 0
+    updateBookPosition(0)
+    bookPosition.disabled = true
+    bookScrollbar.hidden = true
+    seekPreview.hidden = true
     modeToggle.disabled = true
     applyPageControlState(false, true)
     if (contentsDialog.open) contentsDialog.close()
@@ -194,6 +223,8 @@ const updateProgress = detail => {
     const fraction = Number(detail?.fraction)
     const progress = Number.isFinite(fraction)
         ? Math.min(1, Math.max(0, fraction)) : 0
+    lastProgress = progress
+    if (!bookSeeking) updateBookPosition(progress)
     progressOutput.value = `${Math.round(progress * 100)}%`
     progressOutput.textContent = progressOutput.value
     dockProgressOutput.value = progressOutput.value
@@ -207,7 +238,7 @@ const addViewListener = (target, type, listener, options) => {
 
 const keyboardNavigation = event => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey
-        || event.shiftKey || contentsDialog.open || modeSwitching) return
+        || event.shiftKey || contentsDialog.open || modeSwitching || bookSeeking) return
     const target = event.target
     if (target?.closest?.('a, button, input, select, textarea, [contenteditable="true"]')) return
     if (!activeView) return
@@ -429,11 +460,12 @@ const goToRendererLocation = async (view, cfi) => {
 
 const switchReaderMode = async requestedMode => {
     const view = activeView
-    if (!view || requestedMode === readerMode || unloading) return
+    if (!view || requestedMode === readerMode || unloading || bookSeeking) return
     const previousMode = readerMode
     const publication = activePublication
     modeSwitching = true
     modeToggle.disabled = true
+    bookPosition.disabled = true
     contentsButton.disabled = true
     previousButton.disabled = true
     nextButton.disabled = true
@@ -487,12 +519,70 @@ const switchReaderMode = async requestedMode => {
             modeToggle.disabled = false
         }
         modeSwitching = false
+        if (view === activeView && !unloading)
+            bookPosition.disabled = readerMode !== 'scroll' || bookSeeking
         delete readerState.dataset.readerSwitching
     }
 }
 
+const cancelBookSeek = () => {
+    if (!bookSeeking || bookPosition.disabled) return
+    bookSeeking = false
+    seekPreview.hidden = true
+    updateBookPosition(lastProgress)
+    if (activeView && !unloading) modeToggle.disabled = false
+}
+
+const seekToBookPosition = async () => {
+    const view = activeView
+    if (!view || readerMode !== 'scroll' || unloading) return cancelBookSeek()
+    const requested = Number(bookPosition.value) / BOOK_POSITION_MAX
+    const maximum = 1 - 1 / BOOK_POSITION_MAX
+    const fraction = Math.min(maximum, Math.max(0, requested))
+    bookSeeking = true
+    modeToggle.disabled = true
+    contentsButton.disabled = true
+    decreaseButton.disabled = true
+    increaseButton.disabled = true
+    bookPosition.disabled = true
+    readerState.dataset.readerSeeking = 'true'
+    view.renderer.inert = true
+    view.renderer.setAttribute('inert', '')
+    try {
+        await waitForRendererIdle(view)
+        await view.goToFraction(fraction)
+    } catch (error) {
+        if (view === activeView && !unloading)
+            console.warn('Book position seek failed', error)
+    } finally {
+        if (view === activeView && !unloading) {
+            view.renderer.inert = false
+            view.renderer.removeAttribute('inert')
+            bookSeeking = false
+            seekPreview.hidden = true
+            const actual = Number(view.lastLocation?.fraction)
+            updateBookPosition(Number.isFinite(actual) ? actual : lastProgress)
+            contentsButton.disabled = !contentsNavigation.querySelector('button')
+            updateFontControls()
+            modeToggle.disabled = false
+            bookPosition.disabled = false
+            bookPosition.focus()
+        }
+        delete readerState.dataset.readerSeeking
+    }
+}
+
+bookPosition.addEventListener('input', () => {
+    if (!activeView || readerMode !== 'scroll' || modeSwitching) return
+    bookSeeking = true
+    modeToggle.disabled = true
+    updateBookPosition(Number(bookPosition.value) / BOOK_POSITION_MAX, true)
+})
+bookPosition.addEventListener('change', () => void seekToBookPosition())
+bookPosition.addEventListener('pointercancel', cancelBookSeek)
+
 contentsButton.addEventListener('click', () => {
-    if (contentsButton.disabled || modeSwitching) return
+    if (contentsButton.disabled || modeSwitching || bookSeeking) return
     contentsDialog.showModal()
     contentsButton.setAttribute('aria-expanded', 'true')
 })
@@ -525,13 +615,13 @@ nextEdgeButton.addEventListener('click', () => {
 })
 
 decreaseButton.addEventListener('click', () => {
-    if (modeSwitching) return
+    if (modeSwitching || bookSeeking) return
     fontScale = setFontScale(Math.round((fontScale - FONT_STEP) * 10) / 10)
     activeView?.renderer.setStyles(publicationStyles(fontScale))
     updateFontControls()
 })
 increaseButton.addEventListener('click', () => {
-    if (modeSwitching) return
+    if (modeSwitching || bookSeeking) return
     fontScale = setFontScale(Math.round((fontScale + FONT_STEP) * 10) / 10)
     activeView?.renderer.setStyles(publicationStyles(fontScale))
     updateFontControls()

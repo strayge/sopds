@@ -1174,6 +1174,11 @@ def test_reader_shell_is_standalone_and_preserves_validated_detail_context() -> 
     assert "data-reader-mode-toggle" in response.text
     assert "data-reader-page-dock" in response.text
     assert "data-reader-edge-left" in response.text
+    assert (
+        'data-reader-book-position aria-label="Book position" aria-orientation="vertical"'
+        in response.text
+    )
+    assert "data-reader-seek-preview" in response.text
     assert 'data-reader-contents aria-labelledby="reader-contents-title"' in response.text
     assert 'data-reader-state="error" role="alert" hidden' in response.text
     assert response.text.count("<script") == 1
@@ -1232,6 +1237,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "event.code === 'Space'" in javascript.text
     assert "'Spacebar'" in javascript.text
     assert "activeView.renderer.nextScreen()" in javascript.text
+    assert "await view.goToFraction(fraction)" in javascript.text
+    assert "BOOK_POSITION_MAX = 10_000" in javascript.text
     assert "sopds.reader.v1" in state.text
     assert "export const getReaderMode" in state.text
     assert "export const setReaderMode" in state.text
@@ -1244,6 +1251,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "overflow-y: auto" in stylesheet.text
     assert "overscroll-behavior-y: contain" in stylesheet.text
     assert "data-reader-mode-toggle" in stylesheet.text
+    assert "data-reader-book-position" in stylesheet.text
+    assert "writing-mode: vertical-lr" in stylesheet.text
     assert "grid-column: 4 / 6" not in stylesheet.text
     assert 'flow="scrolled"' in paginator.text
     assert "#adjacentIndex(direction)" in paginator.text

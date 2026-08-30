@@ -52,7 +52,9 @@ names the view it will switch to. The first use defaults to Scroll mode; if you
 select Pages, that preference is reopened in this browser. Switching modes keeps
 your approximate position. Scroll mode is section-local: wheel or touch movement
 scrolls the current section, and an outward gesture at its edge automatically
-moves to the adjacent section. Pages mode provides **Previous** and **Next**
+moves to the adjacent section. Its right-edge scrollbar shows progress through
+the whole book; dragging previews a percentage and releasing jumps to that
+position. Pages mode provides **Previous** and **Next**
 controls, with a page dock generally available and edge controls on desktop.
 Arrow Left/Right, Page Up/Down, Space for the next page, and touch navigation
 are also supported. In Scroll mode, Space keeps the last complete line as the

@@ -39,6 +39,10 @@
           <nav aria-label="Book contents" data-reader-contents-navigation></nav>
         </dialog>
         <div data-reader-surface tabindex="0" aria-label="Reading surface"></div>
+        <div class="reader-book-scrollbar" data-reader-book-scrollbar hidden>
+          <input id="reader-book-position" type="range" min="0" max="10000" step="1" value="0" data-reader-book-position aria-label="Book position" aria-orientation="vertical" aria-valuetext="0%">
+          <output class="reader-book-scrollbar__preview" for="reader-book-position" data-reader-seek-preview hidden>0%</output>
+        </div>
         <nav class="reader-page-dock" data-reader-page-dock data-reader-page-control hidden aria-label="Page navigation">
           <button type="button" data-reader-previous aria-label="Previous page" disabled>Previous</button>
           <output data-reader-dock-progress aria-label="Reading progress" aria-live="polite">0%</output>
