@@ -13,11 +13,12 @@ browsers, OPDS reader apps, and an optional Telegram bot.
 - **Fast catalog search** — find books by title, author, or series and narrow
   results by language, genre, format, and availability.
 - **Compact reader-focused web interface** — browse results, inspect book
-  details, and return without losing the current search, filters, or page.
+  details, and return without losing the current search, filters, or view
+  context.
 - **Reader-ready downloads** — keep the stored format as the primary action,
   with EPUB and AZW3 choices when SOPDS can produce them.
 - **Multiple-book ZIP downloads** — build one original-, EPUB-, or AZW3-format
-  archive from books selected across different searches and result pages.
+  archive from books selected across different searches.
 - **OPDS 1.2 catalog** — browse the library and use its additional EPUB and
   AZW3 acquisitions from compatible ebook readers.
 - **Telegram access** — allow selected chats to search for books and choose an
@@ -29,23 +30,52 @@ browsers, OPDS reader apps, and an optional Telegram bot.
 
 ### Find and download a book
 
-Use the search field and filters to narrow the catalog. Open a result to see its
-full metadata, or use the source-format button, such as **FB2** or **EPUB**, to
-get the stored file unchanged. When more formats are available, the adjacent
-menu offers **EPUB** or **AZW3** without repeating the source format.
+Use the search field and filters to narrow the catalog. Each web search loads
+at most the first 1,000 matching books in title order. When more books match,
+the catalog says:
+
+> Showing the first 1 000 matching books in title order. More books match. Refine the catalog search to search beyond this loaded set.
+
+This is a loaded collection rather than an exact total. Refine the catalog
+search to reach books outside the loaded collection.
+
+Choose **Flat**, **Tree**, or **Table** to explore the loaded books. **Flat** is
+the reader-oriented list, **Tree** groups books by author and series, and
+**Table** provides compact sortable columns. Use the **Title**, **Author**, and
+**Series** fields to apply local phrase filters; they apply only to the books
+already loaded and can be combined. **Clear local filters** removes them.
+Sorting with **Sort by** is also local and does not reload the catalog. If a
+local filter finds no book in an overflowed collection, additional catalog
+matches may simply not have been loaded.
+
+Open a result to see its full metadata, or use the source-format button, such as
+**FB2** or **EPUB**, to get the stored file unchanged. When more formats are
+available, the adjacent menu offers **EPUB** or **AZW3** without repeating the
+source format.
 
 FB2 books can become EPUB2 or AZW3. Existing EPUB files pass through unchanged
 when EPUB is selected and can become AZW3. Existing AZW3 files pass through
 unchanged when AZW3 is selected. Other combinations are not offered.
 
+The selected view, local filters, and sorting choices are kept in the page
+address, so a bookmark or browser history can restore useful catalog context.
+In the same tab, **Back to results** and browser Back restore the prior search,
+filters, and view context. A direct or new-tab visit uses a safe catalog
+fallback.
+
 ### Read a stored book
 
-On a book's details page, **Read** is a secondary action for downloadable stored
-FB2 and EPUB sources; the original-format download remains primary. It opens the
-reader in a new browser tab. The reader supports stored FB2 and reflowable EPUB
-2/3 without converting the book. An FB2 cover and introductory annotation are
-shown at the start when the stored book provides them. Converted downloads and
-other source formats cannot be read there.
+Catalog results show **Read** as a secondary action only for downloadable stored
+FB2 and EPUB sources no larger than 64 MiB; the original-format download remains
+primary. Book details keep **Read** available for downloadable stored FB2 and
+EPUB sources even when they exceed 64 MiB. For a source over 64 MiB, **Read**
+opens a recovery page instead of the reader, explaining that the book is too
+large to read in-browser and offering **Download original** or **Back to book**.
+For supported sources within the limit, **Read** opens the reader in a new
+browser tab. The reader supports stored FB2 and reflowable EPUB 2/3 without
+converting the book. An FB2 cover and introductory annotation are shown at the
+start when the stored book provides them. Converted downloads and other source
+formats cannot be read there.
 
 The compact toolbar shows the book title, **Contents**, a **Pages** or **Scroll**
 action, reading progress, **Smaller text**, and **Larger text**. The mode action
@@ -86,8 +116,8 @@ Unavailable books remain discoverable but cannot be downloaded.
 
 ### Download several books
 
-Select downloadable books from any catalog result page. The **Selected** entry
-in the navigation shows how many books are currently selected.
+Select downloadable books from the catalog's loaded collection. The **Selected**
+entry in the navigation shows how many books are currently selected.
 
 On the selected-books page you can:
 
