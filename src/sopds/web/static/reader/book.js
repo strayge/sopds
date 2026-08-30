@@ -4,6 +4,7 @@ import {
     MEDIA_TYPES,
     PublicationError,
     canonicalArchivePath,
+    canonicalizeFB2RasterImage,
     createRasterBudget,
     encodePackageFragment,
     encodePackagePath,
@@ -39,18 +40,6 @@ const text = element => element?.textContent?.replace(/[\t\n\f\r ]+/g, ' ').trim
 const safeFragment = value => typeof value === 'string' && value.length > 0
     && value.length <= 256 && !/[\s#"'<>]/u.test(value)
 const hasVisibleUnicodeText = value => /[\p{L}\p{M}\p{N}\p{P}\p{S}]/u.test(value)
-const hasVisibleElementText = element => hasVisibleUnicodeText(element?.textContent ?? '')
-const decodeFB2Fragment = href => {
-    if (typeof href !== 'string' || !href.startsWith('#')) return null
-    let fragment
-    try {
-        fragment = decodeURIComponent(href.slice(1))
-    } catch {
-        fail('FB2 contains an invalid encoded fragment.')
-    }
-    if (!safeFragment(fragment)) fail('FB2 contains an unsafe fragment.')
-    return fragment
-}
 
 const decodeXMLBlob = async (blob, label, signal) => {
     const prefix = new Uint8Array(await blob.slice(0, 1024).arrayBuffer())
@@ -277,311 +266,27 @@ const FB2_BODY_ELEMENTS = new Set([
     'body', 'section', 'title', 'epigraph', 'image', 'annotation', 'p', 'poem',
     'subtitle', 'cite', 'empty-line', 'table', 'tr', 'th', 'td', 'text-author',
     'date', 'stanza', 'v', 'strong', 'emphasis', 'style', 'a', 'strikethrough',
-    'sub', 'sup', 'code',
+    'sub', 'sup', 'code', 'br',
 ])
 const FB2_METADATA_ELEMENTS = new Set([
     'description', 'title-info', 'src-title-info', 'document-info', 'publish-info',
-    'custom-info', 'genre', 'author', 'translator', 'book-title', 'book-name',
-    'annotation', 'keywords', 'date', 'coverpage', 'image', 'lang', 'src-lang',
-    'sequence', 'first-name', 'middle-name', 'last-name', 'nickname', 'email',
-    'home-page', 'id', 'version', 'program-used', 'src-url', 'src-ocr', 'publisher',
-    'city', 'year', 'isbn', 'history', 'output', 'part', 'output-document-class',
+    'genre', 'author', 'translator', 'book-title', 'book-name', 'annotation', 'keywords',
+    'date', 'coverpage', 'image', 'lang', 'src-lang', 'sequence', 'first-name', 'middle-name',
+    'last-name', 'nickname', 'email', 'home-page', 'id', 'version', 'program-used',
+    'src-url', 'src-ocr', 'publisher', 'city', 'year', 'isbn', 'history',
 ])
-const FB2_TITLE_INFO_CHILDREN = new Set([
-    'genre', 'author', 'book-title', 'annotation', 'keywords', 'date', 'coverpage',
-    'lang', 'src-lang', 'translator', 'sequence',
-])
-const FB2_PERSON_CHILDREN = new Set([
-    'first-name', 'middle-name', 'last-name', 'nickname', 'home-page', 'email', 'id',
-])
-const FB2_DESCRIPTION_CHILDREN = Object.freeze({
-    description: new Set([
-        'title-info', 'src-title-info', 'document-info', 'publish-info', 'custom-info',
-        'output',
-    ]),
-    'title-info': FB2_TITLE_INFO_CHILDREN,
-    'src-title-info': FB2_TITLE_INFO_CHILDREN,
-    'document-info': new Set([
-        'author', 'program-used', 'date', 'src-url', 'src-ocr', 'id', 'version',
-        'history', 'publisher',
-    ]),
-    'publish-info': new Set([
-        'book-name', 'publisher', 'city', 'year', 'isbn', 'sequence',
-    ]),
-    author: FB2_PERSON_CHILDREN,
-    translator: FB2_PERSON_CHILDREN,
-    coverpage: new Set(['image']),
-    sequence: new Set(['sequence']),
-    genre: new Set(),
-    'book-title': new Set(),
-    'book-name': new Set(),
-    keywords: new Set(),
-    date: new Set(),
-    lang: new Set(),
-    'src-lang': new Set(),
-    'first-name': new Set(),
-    'middle-name': new Set(),
-    'last-name': new Set(),
-    nickname: new Set(),
-    email: new Set(),
-    'home-page': new Set(),
-    id: new Set(),
-    version: new Set(),
-    'program-used': new Set(),
-    'src-url': new Set(),
-    'src-ocr': new Set(),
-    publisher: new Set(),
-    city: new Set(),
-    year: new Set(),
-    isbn: new Set(),
-    'custom-info': new Set(),
-    output: new Set(['part', 'output-document-class']),
-    'output-document-class': new Set(['part']),
-    part: new Set(),
-})
-const FB2_TEXT_ELEMENTS = new Set([
-    'genre', 'book-title', 'book-name', 'keywords', 'lang', 'src-lang', 'first-name',
-    'middle-name', 'last-name', 'nickname', 'email', 'home-page', 'id', 'version',
-    'program-used', 'src-url', 'src-ocr', 'publisher', 'city', 'year', 'isbn',
-])
-const FB2_METADATA_ORDER = Object.freeze({
-    description: [
-        ['title-info', 1, 1], ['src-title-info', 0, 1], ['document-info', 1, 1],
-        ['publish-info', 0, 1], ['custom-info', 0, Infinity], ['output', 0, 2],
-    ],
-    'title-info': [
-        ['genre', 1, Infinity], ['author', 1, Infinity], ['book-title', 1, 1],
-        ['annotation', 0, 1], ['keywords', 0, 1], ['date', 0, 1],
-        ['coverpage', 0, 1], ['lang', 1, 1], ['src-lang', 0, 1],
-        ['translator', 0, Infinity], ['sequence', 0, Infinity],
-    ],
-    'src-title-info': [
-        ['genre', 1, Infinity], ['author', 1, Infinity], ['book-title', 1, 1],
-        ['annotation', 0, 1], ['keywords', 0, 1], ['date', 0, 1],
-        ['coverpage', 0, 1], ['lang', 1, 1], ['src-lang', 0, 1],
-        ['translator', 0, Infinity], ['sequence', 0, Infinity],
-    ],
-    'document-info': [
-        ['author', 1, Infinity], ['program-used', 0, 1], ['date', 1, 1],
-        ['src-url', 0, Infinity], ['src-ocr', 0, 1], ['id', 1, 1],
-        ['version', 1, 1], ['history', 0, 1], ['publisher', 0, Infinity],
-    ],
-    'publish-info': [
-        ['book-name', 0, 1], ['publisher', 0, 1], ['city', 0, 1],
-        ['year', 0, 1], ['isbn', 0, 1], ['sequence', 0, Infinity],
-    ],
-    person: [
-        ['first-name', 0, 1], ['middle-name', 0, 1], ['last-name', 0, 1],
-        ['nickname', 0, 1], ['home-page', 0, Infinity], ['email', 0, Infinity],
-        ['id', 0, 1],
-    ],
-    coverpage: [['image', 1, Infinity]],
-})
 const FB2_INLINE_ELEMENTS = new Set([
-    'strong', 'emphasis', 'style', 'a', 'strikethrough', 'sub', 'sup', 'code',
-    'image',
+    'strong', 'emphasis', 'style', 'a', 'strikethrough', 'sub', 'sup', 'code', 'image',
 ])
-const FB2_LINK_INLINE_ELEMENTS = new Set([...FB2_INLINE_ELEMENTS].filter(name => name !== 'a'))
-const FB2_SECTION_CONTENT = new Set([
-    'p', 'poem', 'subtitle', 'cite', 'empty-line', 'table',
+const FB2_DANGEROUS_ELEMENTS = new Set([
+    'script', 'style', 'iframe', 'object', 'embed', 'form', 'svg', 'math', 'video', 'audio',
+    'canvas', 'template', 'link', 'base', 'meta', 'input', 'button', 'select', 'textarea',
 ])
-const FB2_ANNOTATION_CONTENT = new Set([
-    'p', 'poem', 'cite', 'subtitle', 'table', 'empty-line',
+const FB2_BODY_BOUNDARIES = new Set(['image', 'title', 'epigraph', 'section'])
+const FB2_FLOW_BLOCKS = new Set([
+    'section', 'title', 'epigraph', 'image', 'annotation', 'p', 'poem', 'subtitle', 'cite',
+    'empty-line', 'table', 'text-author',
 ])
-
-const validateFB2ElementChildren = (element, allowed) => {
-    for (const item of elementChildren(element))
-        if (item.namespaceURI !== FB2_NS || !allowed.has(item.localName))
-            fail(`FB2 contains ${item.localName} in an invalid structural context.`)
-}
-
-const validateFB2NoBlockText = element => {
-    for (const node of element.childNodes)
-        if ((node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE)
-            && node.data.trim())
-            fail(`FB2 contains text outside a supported block in ${element.localName}.`)
-}
-
-const validateFB2Inline = (element, insideAnchor = false) => {
-    const allowed = insideAnchor ? FB2_LINK_INLINE_ELEMENTS : FB2_INLINE_ELEMENTS
-    validateFB2ElementChildren(element, allowed)
-    for (const item of elementChildren(element)) {
-        if (item.localName === 'image') {
-            validateFB2ElementChildren(item, new Set())
-            continue
-        }
-        validateFB2Inline(item, insideAnchor || item.localName === 'a')
-    }
-}
-
-const validateFB2Block = element => {
-    const items = elementChildren(element)
-    const names = items.map(item => item.localName)
-    switch (element.localName) {
-    case 'body': {
-        validateFB2NoBlockText(element)
-        validateFB2ElementChildren(element, new Set(['image', 'title', 'epigraph', 'section']))
-        let index = names[0] === 'image' ? 1 : 0
-        if (names[index] === 'title') index++
-        while (names[index] === 'epigraph') index++
-        if (index === names.length || names.slice(index).some(name => name !== 'section'))
-            fail('An FB2 body must end with one or more sections.')
-        break
-    }
-    case 'section': {
-        validateFB2NoBlockText(element)
-        validateFB2ElementChildren(element, new Set([
-            'title', 'epigraph', 'image', 'annotation', 'section',
-            ...FB2_SECTION_CONTENT,
-        ]))
-        let index = names[0] === 'title' ? 1 : 0
-        while (names[index] === 'epigraph') index++
-        if (names[index] === 'image') index++
-        if (names[index] === 'annotation') index++
-        const content = names.slice(index)
-        if (content.length) {
-            if (content[0] === 'section') {
-                if (content.some(name => name !== 'section'))
-                    fail('An FB2 section cannot mix child sections with text blocks.')
-            } else if (!FB2_SECTION_CONTENT.has(content[0])
-                || content.slice(1).some(name => name !== 'image'
-                    && !FB2_SECTION_CONTENT.has(name)))
-                fail('An FB2 section has invalid text-block ordering.')
-        }
-        break
-    }
-    case 'annotation':
-    case 'history':
-        validateFB2NoBlockText(element)
-        validateFB2ElementChildren(element, FB2_ANNOTATION_CONTENT)
-        break
-    case 'title':
-        validateFB2NoBlockText(element)
-        validateFB2ElementChildren(element, new Set(['p', 'empty-line']))
-        break
-    case 'epigraph':
-    case 'cite': {
-        validateFB2NoBlockText(element)
-        const content = element.localName === 'epigraph'
-            ? new Set(['p', 'poem', 'cite', 'empty-line'])
-            : new Set(['p', 'poem', 'empty-line', 'subtitle', 'table'])
-        validateFB2ElementChildren(element, new Set([...content, 'text-author']))
-        const firstAuthor = names.indexOf('text-author')
-        if ((firstAuthor >= 0
-            && names.slice(firstAuthor).some(name => name !== 'text-author'))
-            || names.slice(0, firstAuthor < 0 ? names.length : firstAuthor)
-                .some(name => !content.has(name)))
-            fail(`An FB2 ${element.localName} has invalid block ordering.`)
-        break
-    }
-    case 'poem': {
-        validateFB2NoBlockText(element)
-        validateFB2ElementChildren(element, new Set([
-            'title', 'epigraph', 'subtitle', 'stanza', 'text-author', 'date',
-        ]))
-        let index = names[0] === 'title' ? 1 : 0
-        while (names[index] === 'epigraph') index++
-        const contentStart = index
-        while (['subtitle', 'stanza'].includes(names[index])) index++
-        if (index === contentStart) fail('An FB2 poem must contain a stanza or subtitle.')
-        while (names[index] === 'text-author') index++
-        if (names[index] === 'date') index++
-        if (index !== names.length) fail('An FB2 poem has invalid block ordering.')
-        break
-    }
-    case 'stanza': {
-        validateFB2NoBlockText(element)
-        validateFB2ElementChildren(element, new Set(['title', 'subtitle', 'v']))
-        let index = names[0] === 'title' ? 1 : 0
-        if (names[index] === 'subtitle') index++
-        if (index === names.length || names.slice(index).some(name => name !== 'v'))
-            fail('An FB2 stanza must end with one or more verse lines.')
-        break
-    }
-    case 'table':
-        validateFB2NoBlockText(element)
-        validateFB2ElementChildren(element, new Set(['tr']))
-        if (!items.length) fail('An FB2 table must contain a row.')
-        break
-    case 'tr':
-        validateFB2NoBlockText(element)
-        validateFB2ElementChildren(element, new Set(['th', 'td']))
-        if (!items.length) fail('An FB2 table row must contain a cell.')
-        break
-    case 'image':
-    case 'empty-line':
-        validateFB2ElementChildren(element, new Set())
-        break
-    case 'date':
-        validateFB2ElementChildren(element, new Set())
-        break
-    default:
-        validateFB2Inline(element)
-        break
-    }
-    for (const item of items) validateFB2Block(item)
-}
-
-const isFB2Person = element => ['author', 'translator'].includes(element.localName)
-    || (element.localName === 'publisher' && element.parentElement?.localName === 'document-info')
-
-const validateFB2MetadataOrder = element => {
-    const rules = FB2_METADATA_ORDER[isFB2Person(element) ? 'person' : element.localName]
-    if (!rules) return
-    const orderByName = new Map(rules.map(([name], index) => [name, index]))
-    const counts = new Map()
-    let lastIndex = 0
-    for (const item of elementChildren(element)) {
-        const index = orderByName.get(item.localName)
-        if (index === undefined || index < lastIndex)
-            fail(`FB2 contains ${item.localName} in invalid metadata order.`)
-        lastIndex = index
-        counts.set(item.localName, (counts.get(item.localName) ?? 0) + 1)
-    }
-    for (const [name, minimum, maximum] of rules) {
-        const count = counts.get(name) ?? 0
-        if (count < minimum || count > maximum)
-            fail(`FB2 metadata has invalid ${name} cardinality.`)
-    }
-}
-
-const validateFB2DescriptionChildren = element => {
-    if (['annotation', 'history'].includes(element.localName)) {
-        validateFB2Block(element)
-        return
-    }
-    if (['output', 'output-document-class', 'part'].includes(element.localName))
-        validateFB2NoBlockText(element)
-    const allowed = isFB2Person(element)
-        ? FB2_PERSON_CHILDREN : FB2_DESCRIPTION_CHILDREN[element.localName]
-    if (!allowed) fail(`FB2 contains unsupported metadata: ${element.localName}.`)
-    validateFB2MetadataOrder(element)
-    for (const item of elementChildren(element)) {
-        if (item.namespaceURI !== FB2_NS || !allowed.has(item.localName))
-            fail(`FB2 contains ${item.localName} in invalid metadata context.`)
-        if (item.localName === 'image') validateFB2Block(item)
-        else validateFB2DescriptionChildren(item)
-    }
-}
-
-const decodeFB2Binary = async (element, budget, signal) => {
-    const type = normalizedMediaType(requiredAttribute(element, 'content-type'))
-    if (!isRasterMediaType(type)) fail('FB2 contains an unsupported image type.')
-    const encoded = element.textContent.replace(/[\t\n\f\r ]+/g, '')
-    if (!encoded || encoded.length > Math.ceil(LIMITS.sourceBytes * 4 / 3) + 4
-        || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded))
-        fail('FB2 contains invalid image data.')
-    let decoded
-    try {
-        const raw = atob(encoded)
-        decoded = Uint8Array.from(raw, character => character.charCodeAt(0))
-    } catch (error) {
-        throw new PublicationError('FB2 contains invalid base64 image data.', { cause: error })
-    }
-    await validateRasterImage(decoded, type, budget)
-    checkAbort(signal)
-    return { type, encoded }
-}
 
 const makeSafeFB2 = async (file, signal) => {
     checkAbort(signal)
@@ -589,160 +294,816 @@ const makeSafeFB2 = async (file, signal) => {
     checkAbort(signal)
     const original = parseXML(source, 'FB2', { allowXHTMLDoctype: false })
     const root = original.documentElement
-    if (root.localName !== 'FictionBook' || root.namespaceURI !== FB2_NS)
-        fail('The FB2 root element or namespace is invalid.')
-    const publicationIDs = new Set()
-    for (const element of [root, ...root.getElementsByTagName('*')]) {
-        if (element.namespaceURI !== FB2_NS)
-            fail('FB2 contains content in an unexpected namespace.')
-        if (!element.hasAttribute('id')) continue
-        const id = element.getAttribute('id')
-        if (!safeFragment(id) || publicationIDs.has(id))
-            fail('FB2 contains invalid or duplicate IDs.')
-        publicationIDs.add(id)
+    if (root.localName?.toLowerCase() !== 'fictionbook')
+        fail('The publication does not have a recognizable FB2 root.')
+    const pendingNodes = [[root, 0]]
+    let sourceNodeCount = 0
+    while (pendingNodes.length) {
+        const [node, depth] = pendingNodes.pop()
+        if (++sourceNodeCount > LIMITS.fb2Nodes || depth > LIMITS.fb2Depth)
+            fail('The FB2 publication structure exceeds reader limits.')
+        if (sourceNodeCount % 2048 === 0) checkAbort(signal)
+        for (let index = node.childNodes.length - 1; index >= 0; index--)
+            pendingNodes.push([node.childNodes[index], depth + 1])
     }
 
-    const descriptions = children(root, 'description')
-    const bodies = children(root, 'body')
+    const fb2Name = element => element.localName?.toLowerCase() ?? ''
     const rootChildren = elementChildren(root)
-    const rootOrder = rootChildren.map(item => item.localName)
-    const firstBody = rootOrder.indexOf('body')
-    const firstBinary = rootOrder.indexOf('binary')
-    if (descriptions.length !== 1 || rootChildren[0] !== descriptions[0]
-        || firstBody !== 1 || (firstBinary >= 0
-            && rootOrder.slice(firstBinary).some(name => name !== 'binary'))
-        || bodies.length < 1
-        || (!hasVisibleElementText(bodies[0])
-            && !bodies[0].getElementsByTagNameNS(FB2_NS, 'image').length))
-        fail('The FB2 publication has no readable body or required structure.')
-    for (const item of rootChildren)
-        if (item.namespaceURI !== FB2_NS
-            || !['description', 'body', 'binary'].includes(item.localName))
-            fail('FB2 contains unsupported top-level content.')
-    const topLevelOnly = new Set(['description', 'body', 'binary'])
-    for (const item of root.getElementsByTagName('*'))
-        if (topLevelOnly.has(item.localName) && item.parentElement !== root)
-            fail(`FB2 contains ${item.localName} outside the publication root.`)
-    validateFB2DescriptionChildren(descriptions[0])
-    const titleInfo = child(descriptions[0], 'title-info')
-    const documentInfo = child(descriptions[0], 'document-info')
-    if (!children(titleInfo, 'genre').every(hasVisibleElementText)
-        || !hasVisibleElementText(child(titleInfo, 'book-title'))
-        || !hasVisibleElementText(child(titleInfo, 'lang'))
-        || !hasVisibleElementText(child(documentInfo, 'id')))
-        fail('The FB2 publication has empty required metadata.')
-    for (const body of bodies) {
-        if (body.hasAttribute('name') && !safeToken(body.getAttribute('name')))
-            fail('The FB2 publication has an invalid body name.')
-        validateFB2Block(body)
-    }
-
-    const binaries = new Map()
-    for (const binary of children(root, 'binary')) {
-        checkAbort(signal)
-        const id = binary.getAttribute('id')
-        if (!safeFragment(id) || binaries.has(id)) fail('FB2 contains an invalid binary ID.')
-        if (elementChildren(binary).length)
-            fail('FB2 binary data contains invalid child markup.')
-        binaries.set(id, binary)
-    }
-
+    const descriptions = rootChildren.filter(element => fb2Name(element) === 'description')
+    const bodies = rootChildren.filter(element => fb2Name(element) === 'body')
+    const binaries = rootChildren.filter(element => fb2Name(element) === 'binary')
     const namespace = FB2_NS
+    const isDroppedElement = element => {
+        const name = fb2Name(element)
+        return FB2_DANGEROUS_ELEMENTS.has(name)
+            && !(name === 'style' && element.namespaceURI === namespace)
+    }
+    const hasDroppedAncestor = element => {
+        for (let current = element; current && current !== root; current = current.parentElement)
+            if (isDroppedElement(current)) return true
+        return false
+    }
+    const canonicalNames = new Set([
+        ...FB2_BODY_ELEMENTS, ...FB2_METADATA_ELEMENTS, 'binary', 'br', 'v',
+    ])
+    const idWinners = new Map()
+    const claimedIDs = new Set()
+    const claimID = element => {
+        if (hasDroppedAncestor(element) || !canonicalNames.has(fb2Name(element))) return
+        const id = element.getAttribute('id')
+        if (!safeFragment(id) || claimedIDs.has(id)) return
+        claimedIDs.add(id)
+        idWinners.set(element, id)
+    }
+    // Binary IDs are the targets of image references. Claim them before other
+    // elements so a decorative element cannot hide a referenced binary.
+    for (const binary of binaries) claimID(binary)
+    for (const element of root.getElementsByTagName('*')) claimID(element)
+
     const safe = document.implementation.createDocument(namespace, 'FictionBook')
     const safeRoot = safe.documentElement
     safeRoot.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:l', XLINK_NS)
-    const referenced = new Set()
+    const copyID = (sourceElement, targetElement) => {
+        const id = idWinners.get(sourceElement)
+        if (id) targetElement.setAttribute('id', id)
+    }
 
-    const copyNode = (node, inBody) => {
-        if (node.nodeType === Node.TEXT_NODE) return safe.createTextNode(node.data)
-        if (node.nodeType === Node.CDATA_SECTION_NODE) return safe.createTextNode(node.data)
-        if (node.nodeType !== Node.ELEMENT_NODE) return null
-        const name = node.localName
-        if (node.namespaceURI !== FB2_NS)
-            fail('FB2 contains content in an unexpected namespace.')
-        const allowed = inBody ? FB2_BODY_ELEMENTS : FB2_METADATA_ELEMENTS
-        if (!allowed.has(name))
-            fail(`FB2 contains unsupported content: ${name}.`)
-        if (!inBody && name === 'output') return null
-        let linkFragment
-        if (name === 'a') {
-            const href = node.getAttributeNS(XLINK_NS, 'href') || node.getAttribute('href')
-            linkFragment = decodeFB2Fragment(href)
-            if (linkFragment === null) {
-                const inert = safe.createElementNS(namespace, 'style')
-                for (const item of node.childNodes) {
-                    const copied = copyNode(item, inBody)
-                    if (copied) inert.append(copied)
-                }
-                return inert
+    const direct = (element, name) => elementChildren(element)
+        .filter(childElement => fb2Name(childElement) === name)
+    const safeText = element => {
+        let value = ''
+        const collect = node => {
+            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+                value += node.data
+                return
             }
+            if (node.nodeType !== Node.ELEMENT_NODE || isDroppedElement(node)
+                || fb2Name(node) === 'style') return
+            for (const childNode of node.childNodes) collect(childNode)
         }
-        const isPoemTitle = inBody && name === 'title'
-            && node.parentElement?.localName === 'poem'
-        const result = safe.createElementNS(namespace, isPoemTitle ? 'subtitle' : name)
-        const id = node.getAttribute('id')
-        if (id && safeFragment(id)) result.setAttribute('id', id)
-        if (name === 'body' && node.hasAttribute('name'))
-            result.setAttribute('name', node.getAttribute('name'))
+        collect(element)
+        return value.replace(/[\t\n\f\r ]+/g, ' ').trim()
+    }
+    const metadataText = (element, maximum = 4096) => {
+        const value = safeText(element).slice(0, maximum)
+        return /[\u0000-\u001f\u007f]/u.test(value) ? '' : value
+    }
+    const attributeText = (element, name, maximum) => {
+        const value = element.getAttribute(name)?.trim() ?? ''
+        if (!value || value.length > maximum || /[\u0000-\u001f\u007f]/u.test(value)) return ''
+        return value
+    }
+    const readFragment = element => {
+        const href = element.getAttributeNS(XLINK_NS, 'href') || element.getAttribute('href')
+        if (typeof href !== 'string' || !href.startsWith('#')) return null
+        let fragment
+        try {
+            fragment = decodeURIComponent(href.slice(1))
+        } catch {
+            return null
+        }
+        return safeFragment(fragment) ? fragment : null
+    }
+
+    const binaryByID = new Map()
+    for (const binary of binaries) {
+        const id = idWinners.get(binary)
+        if (id && !binaryByID.has(id) && !elementChildren(binary).length)
+            binaryByID.set(id, binary)
+    }
+    const imageSources = []
+    const collectImageSources = node => {
+        if (node.nodeType !== Node.ELEMENT_NODE || isDroppedElement(node)) return
+        if (fb2Name(node) === 'image') imageSources.push(node)
+        for (const childNode of node.childNodes) collectImageSources(childNode)
+    }
+    for (const container of [...bodies, ...descriptions]) collectImageSources(container)
+    const referenced = new Set()
+    for (const image of imageSources) {
+        const id = readFragment(image)
+        if (id && binaryByID.has(id)) referenced.add(id)
+    }
+
+    const decodeBinary = async binary => {
+        const encoded = binary.textContent.replace(/[\t\n\f\r ]+/g, '')
+        if (!encoded || encoded.length > Math.ceil(LIMITS.sourceBytes * 4 / 3) + 4
+            || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return null
+        try {
+            const raw = atob(encoded)
+            return Uint8Array.from(raw, character => character.charCodeAt(0))
+        } catch {
+            return null
+        }
+    }
+    const candidateBinaries = new Map()
+    for (const id of referenced) {
+        checkAbort(signal)
+        const bytes = await decodeBinary(binaryByID.get(id))
+        if (!bytes) continue
+        try {
+            candidateBinaries.set(id, await canonicalizeFB2RasterImage(
+                bytes, binaryByID.get(id).getAttribute('content-type')))
+        } catch (error) {
+            if (!(error instanceof PublicationError)) throw error
+        }
+        checkAbort(signal)
+    }
+
+    const appendSafeText = (parent, name, sourceElement, maximum = 4096) => {
+        const value = metadataText(sourceElement, maximum)
+        if (!value) return null
+        const result = safe.createElementNS(namespace, name)
+        copyID(sourceElement, result)
+        result.textContent = value
+        parent.append(result)
+        return result
+    }
+    const firstSource = (elements, name) => elements
+        .flatMap(element => direct(element, name)).find(element => metadataText(element))
+    const appendFirstText = (parent, elements, name, maximum = 4096) => {
+        const sourceElement = firstSource(elements, name)
+        return sourceElement ? appendSafeText(parent, name, sourceElement, maximum) : null
+    }
+    const appendAllText = (parent, elements, name, maximum = 4096) => {
+        for (const sourceElement of elements.flatMap(element => direct(element, name)))
+            if (metadataText(sourceElement)) appendSafeText(parent, name, sourceElement, maximum)
+    }
+    const makePerson = (sourceElement, name) => {
+        const result = safe.createElementNS(namespace, name)
+        copyID(sourceElement, result)
+        const fields = ['first-name', 'middle-name', 'last-name', 'nickname']
+        for (const field of fields) {
+            const sourceField = direct(sourceElement, field).find(element => metadataText(element))
+            if (sourceField) appendSafeText(result, field, sourceField)
+        }
+        for (const field of ['home-page', 'email'])
+            for (const sourceField of direct(sourceElement, field))
+                if (metadataText(sourceField)) appendSafeText(result, field, sourceField)
+        const sourceID = direct(sourceElement, 'id').find(element => metadataText(element))
+        if (sourceID) appendSafeText(result, 'id', sourceID)
+        if (!result.children.length) {
+            const value = metadataText(sourceElement)
+            if (!value) return null
+            const nickname = safe.createElementNS(namespace, 'nickname')
+            nickname.textContent = value
+            result.append(nickname)
+        }
+        return result
+    }
+    const appendPeople = (parent, elements, name) => {
+        for (const sourceElement of elements.flatMap(element => direct(element, name))) {
+            const person = makePerson(sourceElement, name)
+            if (person) parent.append(person)
+        }
+    }
+    const retainedBinaries = new Set()
+    const retainedRasterBudget = createRasterBudget()
+    const makeImage = sourceElement => {
+        const id = readFragment(sourceElement)
+        const decoded = id ? candidateBinaries.get(id) : null
+        if (!decoded) return null
+        if (!retainedBinaries.has(id)) {
+            if (retainedRasterBudget.pixelFrames + decoded.pixelFrames
+                    > LIMITS.publicationImagePixelFrames
+                || retainedRasterBudget.frames + decoded.frames
+                    > LIMITS.publicationImageFrames) return null
+            retainedRasterBudget.pixelFrames += decoded.pixelFrames
+            retainedRasterBudget.frames += decoded.frames
+            retainedBinaries.add(id)
+        }
+        const image = safe.createElementNS(namespace, 'image')
+        copyID(sourceElement, image)
+        image.setAttributeNS(XLINK_NS, 'l:href', `#${id}`)
+        for (const attribute of ['alt', 'title']) {
+            const value = attributeText(sourceElement, attribute, 1024)
+            if (value) image.setAttribute(attribute, value)
+        }
+        return image
+    }
+    function hasUsableContent(node) {
+        if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE)
+            return hasVisibleUnicodeText(node.data)
+        if (node.nodeType !== Node.ELEMENT_NODE) return false
+        if (fb2Name(node) === 'image') return true
+        return [...node.childNodes].some(hasUsableContent)
+    }
+    function appendInlineNode(node, parent) {
+        if (isDroppedElement(node)) return false
+        const name = fb2Name(node)
         if (name === 'image') {
-            const href = node.getAttributeNS(XLINK_NS, 'href') || node.getAttribute('href')
-            const fragment = decodeFB2Fragment(href)
-            if (fragment === null || !binaries.has(fragment))
-                fail('FB2 contains an invalid image reference.')
-            referenced.add(fragment)
+            const image = makeImage(node)
+            if (!image) return false
+            parent.append(image)
+            return true
+        }
+        if (name === 'br') {
+            parent.append(safe.createTextNode('\n'))
+            return false
+        }
+        if (name !== 'a' && !FB2_INLINE_ELEMENTS.has(name))
+            return appendInline(node, parent)
+        const fragment = name === 'a' ? readFragment(node) : null
+        const result = safe.createElementNS(namespace, name === 'a' && !fragment ? 'style' : name)
+        copyID(node, result)
+        if (name === 'a' && fragment) {
             result.setAttributeNS(XLINK_NS, 'l:href', `#${fragment}`)
-            for (const attribute of ['alt', 'title']) {
-                const value = node.getAttribute(attribute)
-                if (value) result.setAttribute(attribute, value.slice(0, 1024))
-            }
-        } else if (name === 'a') {
-            result.setAttributeNS(XLINK_NS, 'l:href', `#${linkFragment}`)
             if (node.getAttribute('type') === 'note') result.setAttribute('type', 'note')
-        } else if (name === 'date') {
-            const value = node.getAttribute('value')
-            if (value) result.setAttribute('value', value.slice(0, 128))
-        } else if (name === 'sequence') {
-            for (const attribute of ['name', 'number']) {
-                const value = node.getAttribute(attribute)
-                if (value) result.setAttribute(attribute, value.slice(0, 256))
-            }
-        } else if (['td', 'th'].includes(name)) {
-            for (const attribute of ['colspan', 'rowspan']) {
-                const value = Number(node.getAttribute(attribute))
-                if (Number.isInteger(value) && value >= 1 && value <= 100)
-                    result.setAttribute(attribute, String(value))
+        }
+        appendInline(node, result)
+        if (!result.childNodes.length) return false
+        parent.append(result)
+        return hasUsableContent(result)
+    }
+    function appendInline(sourceElement, parent) {
+        let added = false
+        for (const node of sourceElement.childNodes) {
+            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+                parent.append(safe.createTextNode(node.data))
+                added ||= hasVisibleUnicodeText(node.data)
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                const childAdded = appendInlineNode(node, parent)
+                added ||= childAdded
             }
         }
-        if (inBody && (name === 'annotation' || isPoemTitle)) {
-            result.textContent = elementChildren(node)
-                .map(item => text(item)).filter(Boolean).join('\n\n')
-        } else {
-            const childInBody = inBody || ['annotation', 'history'].includes(name)
-            for (const item of node.childNodes) {
-                const copied = copyNode(item, childInBody)
-                if (copied) result.append(copied)
-            }
+        return added
+    }
+    function makeParagraph(sourceElement) {
+        const result = safe.createElementNS(namespace, 'p')
+        copyID(sourceElement, result)
+        appendInline(sourceElement, result)
+        return hasUsableContent(result) ? result : null
+    }
+    function copyEmptyLine(sourceElement) {
+        const result = safe.createElementNS(namespace, 'empty-line')
+        copyID(sourceElement, result)
+        return result
+    }
+    function copySimpleInlineBlock(name, sourceElement) {
+        const result = safe.createElementNS(namespace, name)
+        copyID(sourceElement, result)
+        if (name === 'date') {
+            const value = attributeText(sourceElement, 'value', 128)
+            if (value) result.setAttribute('value', value)
         }
-        const textOnlyMetadata = FB2_TEXT_ELEMENTS.has(name)
-            && !(name === 'publisher' && node.parentElement?.localName === 'document-info')
-        if (textOnlyMetadata && result.children.length)
-            fail(`FB2 contains malformed text metadata: ${name}.`)
+        appendInline(sourceElement, result)
+        return result
+    }
+    function copyTitle(sourceElement) {
+        const result = safe.createElementNS(namespace, 'title')
+        copyID(sourceElement, result)
+        let paragraph = null
+        const flush = () => {
+            if (paragraph && hasUsableContent(paragraph)) result.append(paragraph)
+            paragraph = null
+        }
+        const appendRun = node => {
+            paragraph ??= safe.createElementNS(namespace, 'p')
+            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE)
+                paragraph.append(safe.createTextNode(node.data))
+            else appendInlineNode(node, paragraph)
+        }
+        const consume = container => {
+            for (const node of container.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+                    appendRun(node)
+                    continue
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE || isDroppedElement(node)) continue
+                const name = fb2Name(node)
+                if (name === 'p') {
+                    flush()
+                    const copied = makeParagraph(node)
+                    if (copied) result.append(copied)
+                } else if (name === 'empty-line' || name === 'br') {
+                    flush()
+                    result.append(copyEmptyLine(node))
+                } else if (name === 'image') {
+                    flush()
+                    const copied = makeParagraph(node)
+                    if (copied) result.append(copied)
+                } else if (name === 'a' || FB2_INLINE_ELEMENTS.has(name)) {
+                    appendRun(node)
+                } else {
+                    consume(node)
+                }
+            }
+            flush()
+        }
+        consume(sourceElement)
+        return result
+    }
+    function copySectionLike(name, sourceElement) {
+        const result = safe.createElementNS(namespace, name)
+        copyID(sourceElement, result)
+        appendFlowChildren(sourceElement, result)
+        return result
+    }
+    function copySection(sourceElement) {
+        return copySectionLike('section', sourceElement)
+    }
+    function copyEpigraph(sourceElement) {
+        return copySectionLike('epigraph', sourceElement)
+    }
+    function copyCite(sourceElement) {
+        return copySectionLike('cite', sourceElement)
+    }
+    function copyAnnotation(sourceElement) {
+        return copySectionLike('annotation', sourceElement)
+    }
+    function copyV(sourceElement) {
+        const result = safe.createElementNS(namespace, 'v')
+        copyID(sourceElement, result)
+        appendInline(sourceElement, result)
+        return result
+    }
+    function copyStanzaTitle(sourceElement) {
+        return copyTitle(sourceElement)
+    }
+    function copyStanza(sourceElement) {
+        const result = safe.createElementNS(namespace, 'stanza')
+        copyID(sourceElement, result)
+        let repairedV = null
+        const flush = () => {
+            if (repairedV) result.append(repairedV)
+            repairedV = null
+        }
+        const appendRun = node => {
+            repairedV ??= safe.createElementNS(namespace, 'v')
+            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE)
+                repairedV.append(safe.createTextNode(node.data))
+            else appendInlineNode(node, repairedV)
+        }
+        const consume = container => {
+            for (const node of container.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+                    appendRun(node)
+                    continue
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE || isDroppedElement(node)) continue
+                const name = fb2Name(node)
+                if (name === 'v') {
+                    flush()
+                    result.append(copyV(node))
+                } else if (name === 'title') {
+                    flush()
+                    result.append(copyStanzaTitle(node))
+                } else if (name === 'subtitle') {
+                    flush()
+                    result.append(copySimpleInlineBlock('subtitle', node))
+                } else if (name === 'br' || name === 'empty-line') {
+                    flush()
+                    result.append(safe.createElementNS(namespace, 'v'))
+                } else if (name === 'a' || FB2_INLINE_ELEMENTS.has(name)) {
+                    appendRun(node)
+                } else {
+                    consume(node)
+                }
+            }
+            flush()
+        }
+        consume(sourceElement)
+        return result
+    }
+    function copyPoem(sourceElement) {
+        const result = safe.createElementNS(namespace, 'poem')
+        copyID(sourceElement, result)
+        let repairedStanza = null
+        let repairedV = null
+        const flushV = () => {
+            if (repairedV) repairedStanza.append(repairedV)
+            repairedV = null
+        }
+        const flushStanza = () => {
+            if (repairedStanza) {
+                flushV()
+                result.append(repairedStanza)
+            }
+            repairedStanza = null
+        }
+        const appendRun = node => {
+            repairedStanza ??= safe.createElementNS(namespace, 'stanza')
+            repairedV ??= safe.createElementNS(namespace, 'v')
+            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE)
+                repairedV.append(safe.createTextNode(node.data))
+            else appendInlineNode(node, repairedV)
+        }
+        const consume = container => {
+            for (const node of container.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+                    appendRun(node)
+                    continue
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE || isDroppedElement(node)) continue
+                const name = fb2Name(node)
+                if (name === 'stanza') {
+                    flushStanza()
+                    result.append(copyStanza(node))
+                } else if (name === 'epigraph') {
+                    flushStanza()
+                    result.append(copyEpigraph(node))
+                } else if (name === 'subtitle' || name === 'title') {
+                    flushStanza()
+                    result.append(copySimpleInlineBlock('subtitle', node))
+                } else if (name === 'text-author' || name === 'date') {
+                    flushStanza()
+                    result.append(copySimpleInlineBlock(name, node))
+                } else if (name === 'v') {
+                    flushStanza()
+                    const stanza = safe.createElementNS(namespace, 'stanza')
+                    stanza.append(copyV(node))
+                    result.append(stanza)
+                } else if (name === 'br' || name === 'empty-line') {
+                    flushV()
+                    repairedStanza ??= safe.createElementNS(namespace, 'stanza')
+                    repairedStanza.append(safe.createElementNS(namespace, 'v'))
+                } else if (name === 'a' || FB2_INLINE_ELEMENTS.has(name)) {
+                    appendRun(node)
+                } else {
+                    consume(node)
+                }
+            }
+            flushStanza()
+        }
+        consume(sourceElement)
+        return result
+    }
+    function copyCell(sourceElement, name = fb2Name(sourceElement)) {
+        const result = safe.createElementNS(namespace, name)
+        copyID(sourceElement, result)
+        for (const attribute of ['colspan', 'rowspan']) {
+            const value = attributeText(sourceElement, attribute, 3)
+            const number = Number(value)
+            if (Number.isInteger(number) && number >= 1 && number <= 100)
+                result.setAttribute(attribute, String(number))
+        }
+        for (const attribute of ['align', 'valign']) {
+            const value = attributeText(sourceElement, attribute, 32)
+            if (value && safeToken(value)) result.setAttribute(attribute, value)
+        }
+        appendInline(sourceElement, result)
+        return result
+    }
+    function copyTableRow(sourceElement) {
+        const result = safe.createElementNS(namespace, 'tr')
+        copyID(sourceElement, result)
+        const align = attributeText(sourceElement, 'align', 32)
+        if (align && safeToken(align)) result.setAttribute('align', align)
+        let repairedCell = null
+        const flush = () => {
+            if (repairedCell) result.append(repairedCell)
+            repairedCell = null
+        }
+        const appendRun = node => {
+            repairedCell ??= safe.createElementNS(namespace, 'td')
+            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE)
+                repairedCell.append(safe.createTextNode(node.data))
+            else appendInlineNode(node, repairedCell)
+        }
+        const consume = container => {
+            for (const node of container.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+                    appendRun(node)
+                    continue
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE || isDroppedElement(node)) continue
+                const name = fb2Name(node)
+                if (name === 'th' || name === 'td') {
+                    flush()
+                    result.append(copyCell(node, name))
+                } else if (name === 'br') {
+                    appendRun(node)
+                } else if (name === 'a' || FB2_INLINE_ELEMENTS.has(name)) {
+                    appendRun(node)
+                } else {
+                    consume(node)
+                }
+            }
+            flush()
+        }
+        consume(sourceElement)
+        return result
+    }
+    function copyTable(sourceElement) {
+        const result = safe.createElementNS(namespace, 'table')
+        copyID(sourceElement, result)
+        let repairedRow = null
+        let repairedCell = null
+        const flush = () => {
+            if (repairedRow) {
+                if (repairedCell) repairedRow.append(repairedCell)
+                result.append(repairedRow)
+            }
+            repairedRow = null
+            repairedCell = null
+        }
+        const appendRun = node => {
+            repairedRow ??= safe.createElementNS(namespace, 'tr')
+            repairedCell ??= safe.createElementNS(namespace, 'td')
+            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE)
+                repairedCell.append(safe.createTextNode(node.data))
+            else appendInlineNode(node, repairedCell)
+        }
+        const consume = container => {
+            for (const node of container.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+                    appendRun(node)
+                    continue
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE || isDroppedElement(node)) continue
+                const name = fb2Name(node)
+                if (name === 'tr') {
+                    flush()
+                    result.append(copyTableRow(node))
+                } else if (name === 'th' || name === 'td') {
+                    flush()
+                    const row = safe.createElementNS(namespace, 'tr')
+                    row.append(copyCell(node, name))
+                    result.append(row)
+                } else if (name === 'br' || name === 'a' || FB2_INLINE_ELEMENTS.has(name)) {
+                    appendRun(node)
+                } else {
+                    consume(node)
+                }
+            }
+            flush()
+        }
+        consume(sourceElement)
+        return result
+    }
+    function makeRepairPoem(sourceElement) {
+        const result = safe.createElementNS(namespace, 'poem')
+        const stanza = fb2Name(sourceElement) === 'stanza'
+            ? copyStanza(sourceElement) : safe.createElementNS(namespace, 'stanza')
+        if (fb2Name(sourceElement) === 'v') stanza.append(copyV(sourceElement))
+        result.append(stanza)
+        return result
+    }
+    function makeRepairTable(sourceElement) {
+        const result = safe.createElementNS(namespace, 'table')
+        const name = fb2Name(sourceElement)
+        if (name === 'tr') result.append(copyTableRow(sourceElement))
+        else {
+            const row = safe.createElementNS(namespace, 'tr')
+            row.append(copyCell(sourceElement, name === 'th' ? 'th' : 'td'))
+            result.append(row)
+        }
+        return result
+    }
+    function copyFlowBlock(sourceElement) {
+        const name = fb2Name(sourceElement)
+        if (name === 'section') return copySection(sourceElement)
+        if (name === 'title') return copyTitle(sourceElement)
+        if (name === 'epigraph') return copyEpigraph(sourceElement)
+        if (name === 'image') return makeImage(sourceElement)
+        if (name === 'annotation') return copyAnnotation(sourceElement)
+        if (name === 'p') return makeParagraph(sourceElement)
+        if (name === 'poem') return copyPoem(sourceElement)
+        if (name === 'subtitle' || name === 'text-author')
+            return copySimpleInlineBlock(name, sourceElement)
+        if (name === 'cite') return copyCite(sourceElement)
+        if (name === 'empty-line') return copyEmptyLine(sourceElement)
+        if (name === 'table') return copyTable(sourceElement)
+        if (name === 'date') return makeParagraph(sourceElement)
+        if (name === 'stanza' || name === 'v') return makeRepairPoem(sourceElement)
+        if (['tr', 'th', 'td'].includes(name)) return makeRepairTable(sourceElement)
+        return null
+    }
+    function appendFlowChildren(sourceElement, parent, { bodyBoundaries = false } = {}) {
+        let paragraph = null
+        let repairSection = null
+        const outputParent = () => {
+            if (!bodyBoundaries) return parent
+            repairSection ??= safe.createElementNS(namespace, 'section')
+            return repairSection
+        }
+        const flushRepair = () => {
+            if (!repairSection) return
+            if (hasUsableContent(repairSection)) parent.append(repairSection)
+            repairSection = null
+        }
+        const flushParagraph = () => {
+            if (paragraph && hasUsableContent(paragraph)) outputParent().append(paragraph)
+            paragraph = null
+        }
+        const appendRun = node => {
+            paragraph ??= safe.createElementNS(namespace, 'p')
+            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE)
+                paragraph.append(safe.createTextNode(node.data))
+            else appendInlineNode(node, paragraph)
+        }
+        const appendBlock = node => {
+            if (node) outputParent().append(node)
+        }
+        const consume = container => {
+            for (const node of container.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+                    appendRun(node)
+                    continue
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE || isDroppedElement(node)) continue
+                const name = fb2Name(node)
+                if (bodyBoundaries && FB2_BODY_BOUNDARIES.has(name)) {
+                    flushParagraph()
+                    flushRepair()
+                    const copied = copyFlowBlock(node)
+                    if (copied) parent.append(copied)
+                } else if (name === 'br') {
+                    flushParagraph()
+                    appendBlock(copyEmptyLine(node))
+                } else if (FB2_FLOW_BLOCKS.has(name)) {
+                    flushParagraph()
+                    appendBlock(copyFlowBlock(node))
+                } else if (['date', 'stanza', 'v', 'tr', 'th', 'td'].includes(name)) {
+                    flushParagraph()
+                    appendBlock(copyFlowBlock(node))
+                } else if (name === 'a' || FB2_INLINE_ELEMENTS.has(name)) {
+                    appendRun(node)
+                } else {
+                    consume(node)
+                }
+            }
+            flushParagraph()
+        }
+        consume(sourceElement)
+        flushRepair()
+    }
+    function copyBody(sourceElement) {
+        const result = safe.createElementNS(namespace, 'body')
+        copyID(sourceElement, result)
+        const bodyName = attributeText(sourceElement, 'name', 256)
+        if (bodyName && safeToken(bodyName)) result.setAttribute('name', bodyName)
+        appendFlowChildren(sourceElement, result, { bodyBoundaries: true })
         return result
     }
 
-    safeRoot.append(copyNode(descriptions[0], false))
-    for (const body of bodies) safeRoot.append(copyNode(body, true))
-    const rasterBudget = createRasterBudget()
-    for (const id of referenced) {
+    const titleInfoSources = descriptions.flatMap(description => direct(description, 'title-info'))
+    const sourceCover = elements => elements
+        .flatMap(element => direct(element, 'coverpage'))
+        .flatMap(coverpage => direct(coverpage, 'image'))
+        .find(image => {
+            const id = readFragment(image)
+            return id && candidateBinaries.has(id)
+        })
+    const makeCoverpage = elements => {
+        const sourceImage = sourceCover(elements)
+        if (!sourceImage) return null
+        const result = safe.createElementNS(namespace, 'coverpage')
+        const sourcePage = elements.flatMap(element => direct(element, 'coverpage'))
+            .find(coverpage => direct(coverpage, 'image').includes(sourceImage))
+        if (sourcePage) copyID(sourcePage, result)
+        const image = makeImage(sourceImage)
+        if (image) result.append(image)
+        return image ? result : null
+    }
+    const makeAnnotation = sourceElement => {
+        const result = copyAnnotation(sourceElement)
+        return hasUsableContent(result) ? result : null
+    }
+    const appendFirstAnnotation = (parent, elements) => {
+        for (const sourceElement of elements.flatMap(element => direct(element, 'annotation'))) {
+            const annotation = makeAnnotation(sourceElement)
+            if (!annotation) continue
+            parent.append(annotation)
+            break
+        }
+    }
+    const appendFirstDate = (parent, elements, name = 'date') => {
+        const sourceElement = elements.flatMap(element => direct(element, name))
+            .find(element => metadataText(element) || attributeText(element, 'value', 128))
+        if (!sourceElement) return null
+        const value = metadataText(sourceElement)
+        const attribute = attributeText(sourceElement, 'value', 128)
+        const result = safe.createElementNS(namespace, name)
+        copyID(sourceElement, result)
+        if (value) result.textContent = value
+        if (attribute) result.setAttribute('value', attribute)
+        parent.append(result)
+        return result
+    }
+    const appendSequences = (parent, elements) => {
+        for (const sourceElement of elements.flatMap(element => direct(element, 'sequence'))) {
+            const name = attributeText(sourceElement, 'name', 256)
+            const number = attributeText(sourceElement, 'number', 256)
+            if (!name && !number) continue
+            const result = safe.createElementNS(namespace, 'sequence')
+            copyID(sourceElement, result)
+            if (name) result.setAttribute('name', name)
+            if (number) result.setAttribute('number', number)
+            parent.append(result)
+        }
+    }
+    const makeTitleInfo = (elements, name, force = false) => {
+        if (!elements.length && !force) return null
+        const result = safe.createElementNS(namespace, name)
+        if (elements[0]) copyID(elements[0], result)
+        appendAllText(result, elements, 'genre')
+        appendPeople(result, elements, 'author')
+        appendFirstText(result, elements, 'book-title')
+        appendFirstAnnotation(result, elements)
+        appendFirstText(result, elements, 'keywords')
+        appendFirstDate(result, elements)
+        const cover = makeCoverpage(elements)
+        if (cover) result.append(cover)
+        appendFirstText(result, elements, 'lang', 64)
+        appendFirstText(result, elements, 'src-lang', 64)
+        appendPeople(result, elements, 'translator')
+        appendSequences(result, elements)
+        return result
+    }
+    const makeDocumentInfo = elements => {
+        const result = safe.createElementNS(namespace, 'document-info')
+        if (elements[0]) copyID(elements[0], result)
+        appendPeople(result, elements, 'author')
+        appendFirstText(result, elements, 'program-used')
+        appendAllText(result, elements, 'src-url')
+        appendFirstDate(result, elements)
+        appendFirstText(result, elements, 'src-ocr')
+        const identifier = firstSource(elements, 'id')
+        if (identifier) appendSafeText(result, 'id', identifier)
+        appendFirstText(result, elements, 'version')
+        const historySource = firstSource(elements, 'history')
+        if (historySource) {
+            const history = copySectionLike('history', historySource)
+            if (hasUsableContent(history)) result.append(history)
+        }
+        appendAllText(result, elements, 'publisher')
+        return result
+    }
+    const makePublishInfo = elements => {
+        if (!elements.length) return null
+        const result = safe.createElementNS(namespace, 'publish-info')
+        copyID(elements[0], result)
+        appendFirstText(result, elements, 'book-name')
+        appendFirstText(result, elements, 'publisher')
+        appendFirstText(result, elements, 'city')
+        appendFirstText(result, elements, 'year')
+        appendFirstText(result, elements, 'isbn')
+        appendSequences(result, elements)
+        return result.children.length ? result : null
+    }
+
+    const safeDescription = safe.createElementNS(namespace, 'description')
+    if (descriptions[0]) copyID(descriptions[0], safeDescription)
+    safeDescription.append(makeTitleInfo(titleInfoSources, 'title-info', true))
+    const sourceTitleInfoSources = descriptions.flatMap(
+        description => direct(description, 'src-title-info'))
+    const sourceTitleInfo = makeTitleInfo(sourceTitleInfoSources, 'src-title-info')
+    if (sourceTitleInfo?.children.length) safeDescription.append(sourceTitleInfo)
+    const documentInfoSources = descriptions.flatMap(
+        description => direct(description, 'document-info'))
+    safeDescription.append(makeDocumentInfo(documentInfoSources))
+    const publishInfoSources = descriptions.flatMap(
+        description => direct(description, 'publish-info'))
+    const publishInfo = makePublishInfo(publishInfoSources)
+    if (publishInfo) safeDescription.append(publishInfo)
+    safeRoot.append(safeDescription)
+
+    const canonicalBodies = []
+    for (const sourceBody of bodies) {
+        const body = copyBody(sourceBody)
+        if (!hasUsableContent(body)) continue
+        canonicalBodies.push(body)
+    }
+    if (!canonicalBodies.length)
+        fail('The FB2 publication has no usable body content.')
+    safeRoot.append(...canonicalBodies)
+
+    const encodeBase64 = bytes => {
+        let encoded = ''
+        for (let offset = 0; offset < bytes.length; offset += 0x8000)
+            encoded += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+        return btoa(encoded)
+    }
+    for (const id of retainedBinaries) {
         checkAbort(signal)
-        const decoded = await decodeFB2Binary(binaries.get(id), rasterBudget, signal)
-        checkAbort(signal)
+        const decoded = candidateBinaries.get(id)
         const binary = safe.createElementNS(namespace, 'binary')
         binary.setAttribute('id', id)
         binary.setAttribute('content-type', decoded.type)
-        binary.textContent = decoded.encoded
+        binary.textContent = encodeBase64(decoded.bytes)
         safeRoot.append(binary)
     }
+
     const serialized = new XMLSerializer().serializeToString(safe)
     const blob = new Blob([serialized], { type: MEDIA_TYPES.fb2 })
     let book

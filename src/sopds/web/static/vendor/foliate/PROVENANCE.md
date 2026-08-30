@@ -31,6 +31,9 @@ Security patches:
    reactivation and detached-document access during reader teardown.
 4. `paginator.js` gives every publication iframe the stable accessible title
    `Book content` before attaching it to the paginator.
+5. `fb2.js` revokes any section Blob URLs already created when construction
+   fails before returning a destroyable book.
+
 Reader behavior patch:
 
 - `paginator.js` supports switching between paginated and `flow=scrolled` layouts,

@@ -1261,10 +1261,20 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "(sourceElement.getAttribute('class') ?? '')" in book_adapter.text
     assert "(node.getAttribute('rel') ?? '').toLowerCase()" in book_adapter.text
     assert "createRasterBudget()" in book_adapter.text
+    assert "canonicalizeFB2RasterImage" in book_adapter.text
+    assert "candidateBinaries" in book_adapter.text
+    assert "retainedBinaries" in book_adapter.text
+    assert "if (!canonicalBodies.length)" in book_adapter.text
     assert "validateRasterImage(blob, item.mediaType, rasterBudget)" in book_adapter.text
-    text_elements = book_adapter.text.split("const FB2_TEXT_ELEMENTS", 1)[1].split("])\n", 1)[0]
-    assert "'v'" not in text_elements
+    assert "canonicalizeFB2RasterImage" in policy.text
+    assert "PNG_CANONICAL_CHUNKS" in policy.text
+    assert "'tRNS'" in policy.text
+    assert "fb2Nodes: 250_000" in policy.text
+    assert "imageChunks: 16_384" in policy.text
+    assert "canonicalBytes = bytes.slice(0, parsed.end)" in policy.text
+    assert "if (!canonicalize) invalidRaster()" in policy.text
     assert "validateFB2Person" not in book_adapter.text
+    assert foliate_fb2.text.count("for (const url of urls) URL.revokeObjectURL(url)") == 2
     assert "const converted = this.convert(item, STYLE)" in foliate_fb2.text
     assert "firstSection.insertBefore(content, firstSection.firstChild)" in foliate_fb2.text
     assert "mergedSectionTitles.set(firstSection" in foliate_fb2.text

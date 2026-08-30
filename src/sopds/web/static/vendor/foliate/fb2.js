@@ -336,7 +336,8 @@ export const makeFB2 = async blob => {
     })
 
     const urls = []
-    const sectionData = bodyData[0][0]
+    try {
+        const sectionData = bodyData[0][0]
         // make a separate section for each section in the first body
         .map(({ el, ids }) => {
             // set up titles for TOC
@@ -404,8 +405,12 @@ export const makeFB2 = async blob => {
     book.getTOCFragment = (doc, id) => doc.querySelector(`[${dataID}="${id}"]`)
     book.isExternal = uri => /^\w+:/i.test(uri)
 
-    book.destroy = () => {
+        book.destroy = () => {
+            for (const url of urls) URL.revokeObjectURL(url)
+        }
+        return book
+    } catch (error) {
         for (const url of urls) URL.revokeObjectURL(url)
+        throw error
     }
-    return book
 }

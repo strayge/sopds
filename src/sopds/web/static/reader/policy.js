@@ -13,6 +13,9 @@ export const LIMITS = Object.freeze({
     tocMarkupBytes: 256 * 1024,
     tocTextBytes: 256 * 1024,
     tocLabelBytes: 4096,
+    fb2Nodes: 250_000,
+    fb2Depth: 256,
+    imageChunks: 16_384,
     imageDimension: 16_384,
     imagePixels: 40_000_000,
     imageFrames: 256,
@@ -176,7 +179,7 @@ const rasterDimensions = (width, height) => {
     return { width, height }
 }
 
-const parseJPEG = bytes => {
+const parseJPEG = (bytes, allowTrailing = false) => {
     if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) invalidRaster()
     const startOfFrame = new Set([
         0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
@@ -191,9 +194,9 @@ const parseJPEG = bytes => {
         const marker = bytes[offset++]
         if (expectDNL && marker !== 0xdc) invalidRaster()
         if (marker === 0xd9) {
-            if (!dimensions || deferredWidth !== null || !sawScan || offset !== bytes.length)
-                invalidRaster()
-            return { ...dimensions, frames: 1 }
+            if (!dimensions || deferredWidth !== null || !sawScan
+                || (!allowTrailing && offset !== bytes.length)) invalidRaster()
+            return { ...dimensions, frames: 1, end: offset }
         }
         if (marker === 0x00 || marker === 0xd8
             || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) invalidRaster()
@@ -259,16 +262,37 @@ const pngCRC = (bytes, start, end) => {
     return (crc ^ 0xffffffff) >>> 0
 }
 
-const parsePNG = bytes => {
+const PNG_CANONICAL_CHUNKS = new Set([
+    'IHDR', 'PLTE', 'tRNS', 'acTL', 'fcTL', 'IDAT', 'fdAT', 'IEND',
+])
+const concatenateByteRanges = (prefix, source, ranges) => {
+    const size = prefix.length + ranges.reduce(
+        (total, [start, end]) => total + end - start, 0)
+    const result = new Uint8Array(size)
+    result.set(prefix)
+    let offset = prefix.length
+    for (const [start, end] of ranges) {
+        const part = source.subarray(start, end)
+        result.set(part, offset)
+        offset += part.length
+    }
+    return result
+}
+
+const parsePNG = (bytes, canonicalize = false) => {
     const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
     if (bytes.length < 45 || !signature.every((value, index) => bytes[index] === value))
         invalidRaster()
-    let offset = 8, dimensions, idatBytes = 0, sawIDAT = false, sawIEND = false
+    let offset = 8, dimensions, colorType, paletteEntries = 0
+    let sawPLTE = false, sawTRNS = false, chunkCount = 0
+    let idatBytes = 0, sawIDAT = false, sawIEND = false
     let idatEnded = false, animationFrames = null, frameControls = 0
     let animationSequence = 0, defaultImageIsSeparate = null, activeFrameHasData = false
     let activeFrameUsesIDAT = false
+    const canonicalChunks = []
     while (offset < bytes.length) {
-        if (offset + 12 > bytes.length) invalidRaster()
+        if (++chunkCount > LIMITS.imageChunks || offset + 12 > bytes.length)
+            invalidRaster()
         const length = uint32BE(bytes, offset)
         const typeOffset = offset + 4
         const type = ascii(bytes, typeOffset, 4)
@@ -291,6 +315,19 @@ const parsePNG = bytes => {
             if (!depths.get(color)?.includes(depth) || bytes[dataOffset + 10] !== 0
                 || bytes[dataOffset + 11] !== 0 || ![0, 1].includes(bytes[dataOffset + 12]))
                 invalidRaster()
+            colorType = color
+        } else if (type === 'PLTE') {
+            if (sawPLTE || sawIDAT || !length || length > 768 || length % 3)
+                invalidRaster()
+            sawPLTE = true
+            paletteEntries = length / 3
+        } else if (type === 'tRNS') {
+            if (sawTRNS || sawIDAT
+                || (colorType === 0 && length !== 2)
+                || (colorType === 2 && length !== 6)
+                || (colorType === 3 && (!sawPLTE || !length || length > paletteEntries))
+                || ![0, 2, 3].includes(colorType)) invalidRaster()
+            sawTRNS = true
         } else if (type === 'acTL') {
             if (!dimensions || animationFrames !== null || sawIDAT || length !== 8)
                 invalidRaster()
@@ -330,26 +367,36 @@ const parsePNG = bytes => {
                 || (frameControls && !activeFrameHasData)) invalidRaster()
             sawIEND = true
         } else if (type === 'iCCP' || type === 'zTXt') {
-            invalidRaster()
+            if (!canonicalize) invalidRaster()
         } else if (type === 'iTXt') {
-            const keywordEnd = bytes.indexOf(0, dataOffset)
-            if (keywordEnd <= dataOffset || keywordEnd - dataOffset > 79
-                || keywordEnd + 2 >= end || bytes[keywordEnd + 1] > 1
-                || bytes[keywordEnd + 2] !== 0) invalidRaster()
-            const languageEnd = bytes.indexOf(0, keywordEnd + 3)
-            const translatedEnd = languageEnd < 0 ? -1 : bytes.indexOf(0, languageEnd + 1)
-            if (languageEnd >= end || translatedEnd < 0 || translatedEnd >= end
-                || bytes[keywordEnd + 1] === 1) invalidRaster()
+            if (!canonicalize) {
+                const keywordEnd = bytes.indexOf(0, dataOffset)
+                if (keywordEnd <= dataOffset || keywordEnd - dataOffset > 79
+                    || keywordEnd + 2 >= end || bytes[keywordEnd + 1] > 1
+                    || bytes[keywordEnd + 2] !== 0) invalidRaster()
+                const languageEnd = bytes.indexOf(0, keywordEnd + 3)
+                const translatedEnd = languageEnd < 0 ? -1 : bytes.indexOf(0, languageEnd + 1)
+                if (languageEnd >= end || translatedEnd < 0 || translatedEnd >= end
+                    || bytes[keywordEnd + 1] === 1) invalidRaster()
+            }
         } else if (type[0] === type[0].toUpperCase()
             && !['PLTE'].includes(type)) invalidRaster()
+        if (canonicalize && PNG_CANONICAL_CHUNKS.has(type))
+            canonicalChunks.push([offset, end + 4])
         offset = end + 4
     }
     const frames = animationFrames === null
         ? 1 : animationFrames + (defaultImageIsSeparate ? 1 : 0)
     if (!dimensions || !sawIEND || frames > LIMITS.imageFrames
+        || (colorType === 3 && !sawPLTE)
         || (animationFrames !== null && (frameControls !== animationFrames
             || defaultImageIsSeparate === null))) invalidRaster()
-    return { ...dimensions, frames }
+    const result = { ...dimensions, frames }
+    if (canonicalize) {
+        result.bytes = concatenateByteRanges(
+            Uint8Array.from(signature), bytes, canonicalChunks)
+    }
+    return result
 }
 
 const skipGIFSubBlocks = (bytes, start, requireData = false) => {
@@ -511,6 +558,49 @@ const parseWebP = bytes => {
 }
 
 export const createRasterBudget = () => ({ pixelFrames: 0, frames: 0 })
+
+export const canonicalizeFB2RasterImage = async (source, _declaredMediaType, budget = null) => {
+    const sourceSize = source instanceof Uint8Array ? source.byteLength : source?.size
+    if (!Number.isSafeInteger(sourceSize) || sourceSize < 1) invalidRaster()
+    let bytes
+    try {
+        bytes = source instanceof Uint8Array
+            ? source : new Uint8Array(await source.arrayBuffer())
+    } catch (error) {
+        throw new PublicationError(
+            'A publication image is invalid or exceeds reader limits.', { cause: error })
+    }
+
+    let type, parsed, canonicalBytes
+    if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+        type = 'image/jpeg'
+        parsed = parseJPEG(bytes, true)
+        canonicalBytes = bytes.slice(0, parsed.end)
+    } else if ([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+        .every((value, index) => bytes[index] === value)) {
+        type = 'image/png'
+        parsed = parsePNG(bytes, true)
+        canonicalBytes = parsed.bytes
+    } else if (ascii(bytes, 0, 6) === 'GIF87a' || ascii(bytes, 0, 6) === 'GIF89a') {
+        type = 'image/gif'
+        parsed = parseGIF(bytes)
+        canonicalBytes = bytes
+    } else if (ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 4) === 'WEBP') {
+        type = 'image/webp'
+        parsed = parseWebP(bytes)
+        canonicalBytes = bytes
+    } else invalidRaster()
+
+    const pixelFrames = parsed.width * parsed.height * parsed.frames
+    if (!Number.isSafeInteger(pixelFrames)) invalidRaster()
+    if (budget) {
+        if (budget.pixelFrames + pixelFrames > LIMITS.publicationImagePixelFrames
+            || budget.frames + parsed.frames > LIMITS.publicationImageFrames) invalidRaster()
+        budget.pixelFrames += pixelFrames
+        budget.frames += parsed.frames
+    }
+    return { type, bytes: canonicalBytes, pixelFrames, frames: parsed.frames }
+}
 
 export const validateRasterImage = async (source, mediaType, budget) => {
     const type = normalizedMediaType(mediaType)
