@@ -46,11 +46,11 @@ reader in a new browser tab. The reader supports stored FB2 and reflowable EPUB
 2/3 without converting the book. Converted downloads and other source formats
 cannot be read there.
 
-The compact toolbar shows the book title, **Contents**, the current **Scroll** or
-**Pages** mode, reading progress, **Smaller text**, and **Larger text**. The first
-use defaults to Scroll mode; if you select Pages, that preference is reopened in
-this browser. Use the mode control to switch in place without losing your
-approximate position. Scroll mode is section-local: wheel or touch movement
+The compact toolbar shows the book title, **Contents**, a **Pages** or **Scroll**
+action, reading progress, **Smaller text**, and **Larger text**. The mode action
+names the view it will switch to. The first use defaults to Scroll mode; if you
+select Pages, that preference is reopened in this browser. Switching modes keeps
+your approximate position. Scroll mode is section-local: wheel or touch movement
 scrolls the current section, and an outward gesture at its edge automatically
 moves to the adjacent section. Pages mode provides **Previous** and **Next**
 controls, with a page dock generally available and edge controls on desktop.

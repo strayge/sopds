@@ -102,7 +102,7 @@ const applyModeUI = mode => {
     const pages = mode === 'pages'
     readerState.dataset.readerMode = mode
     modeToggle.dataset.readerMode = mode
-    modeToggle.textContent = pages ? 'Pages' : 'Scroll'
+    modeToggle.textContent = pages ? 'Scroll' : 'Pages'
     modeToggle.setAttribute('aria-label', pages
         ? 'Switch to scroll view' : 'Switch to pages view')
     progressOutput.hidden = pages
