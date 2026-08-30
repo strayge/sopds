@@ -163,6 +163,21 @@ const parseXML = (source, label, { allowXHTMLDoctype = false } = {}) => {
     return document
 }
 
+const parseFB2XML = source => {
+    try {
+        return parseXML(source, 'FB2', { allowXHTMLDoctype: false })
+    } catch (error) {
+        if (!(error instanceof PublicationError) || error.message !== 'FB2 is malformed XML.')
+            throw error
+        const repaired = source
+            .replace(/&(?!#\d+;|#x[\da-f]+;|amp;|apos;|gt;|lt;|quot;)/gi, '&amp;')
+            .replace(/<(?![!?/A-Z_:])/gi, '&lt;')
+            .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '\uFFFD')
+        if (repaired === source) throw error
+        return parseXML(repaired, 'FB2', { allowXHTMLDoctype: false })
+    }
+}
+
 const elementChildren = element => [...element.children]
 const child = (element, name, namespace = element.namespaceURI) => elementChildren(element)
     .find(item => item.localName === name && item.namespaceURI === namespace)
@@ -292,7 +307,7 @@ const makeSafeFB2 = async (file, signal) => {
     checkAbort(signal)
     const source = await decodeXMLBlob(file, 'FB2', signal)
     checkAbort(signal)
-    const original = parseXML(source, 'FB2', { allowXHTMLDoctype: false })
+    const original = parseFB2XML(source)
     const root = original.documentElement
     if (root.localName?.toLowerCase() !== 'fictionbook')
         fail('The publication does not have a recognizable FB2 root.')

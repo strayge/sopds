@@ -1221,6 +1221,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "(sourceElement.getAttribute('class') ?? '')" in book_adapter.text
     assert "(node.getAttribute('rel') ?? '').toLowerCase()" in book_adapter.text
     assert "createRasterBudget()" in book_adapter.text
+    assert "const parseFB2XML" in book_adapter.text
+    assert "error.message !== 'FB2 is malformed XML.'" in book_adapter.text
     assert "canonicalizeFB2RasterImage" in book_adapter.text
     assert "candidateBinaries" in book_adapter.text
     assert "retainedBinaries" in book_adapter.text
