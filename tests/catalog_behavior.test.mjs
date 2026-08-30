@@ -109,6 +109,10 @@ class FakeNode {
     for (const listener of this.listeners.get(name) || []) listener(event);
   }
 
+  focus() {
+    documentStub.activeElement = this;
+  }
+
   matches(selector) {
     if (selector.startsWith("#")) return this.id === selector.slice(1);
     if (selector.startsWith(".")) return this.className.split(/\s+/).includes(selector.slice(1));
@@ -186,6 +190,7 @@ const documentStub = {
     if (this.currentRoot?.matches(selector)) found.push(this.currentRoot);
     return found.concat(this.currentRoot?.querySelectorAll(selector) || []);
   },
+  activeElement: null,
   referrer: "",
 };
 const location = new URL("https://catalog.test/?q=book");
@@ -327,7 +332,34 @@ test("Unicode scalar and natural text helpers do not depend on ambient locale or
 test("natural series numbers follow every ascending bucket and deterministic suffix rule", () => {
   const values = [null, " ", "0.6", "0", "Part 2", "10", "3.5", "2", "1-A", "01a", "1"];
   values.sort((left, right) => behavior.compareSeriesNumberValues(left, right, "asc"));
-  assert.deepEqual(values, ["1", "1-A", "01a", "2", "3.5", "10", "Part 2", "0", "0.6", " ", null]);
+  assert.deepEqual(values, ["1", "1-A", "01a", "2", "3.5", "10", "Part 2", "0", "0.6", null, " "]);
+});
+
+test("all missing series-number representations compare equally in both directions", () => {
+  const missing = [null, undefined, "", " \t "];
+  for (const direction of ["asc", "desc"]) {
+    for (const left of missing) {
+      for (const right of missing) {
+        assert.equal(behavior.compareSeriesNumberValues(left, right, direction), 0);
+      }
+    }
+  }
+});
+
+test("missing series numbers reach title and ID tie-breakers in Flat, Tree, and Table chains", () => {
+  const values = books(
+    rawBook("delta", {titleSortKey: "delta", authorName: "A", seriesName: "S", seriesNumber: null}),
+    rawBook("alpha", {titleSortKey: "alpha", authorName: "A", seriesName: "S"}),
+    rawBook("same-b", {titleSortKey: "same", authorName: "A", seriesName: "S", seriesNumber: ""}),
+    rawBook("same-a", {titleSortKey: "same", authorName: "A", seriesName: "S", seriesNumber: "   "}),
+  );
+  values[1].series.number = undefined;
+  const expected = ["alpha", "delta", "same-a", "same-b"];
+
+  assert.deepEqual(plain(ids([...values].sort(behavior.flatComparator("author", "asc")))), expected);
+  assert.deepEqual(plain(ids([...values].sort(behavior.flatComparator("series", "asc")))), expected);
+  assert.deepEqual(plain(ids(behavior.buildTreeModel(values)[0].series[0].books)), expected);
+  assert.deepEqual(plain(ids([...values].sort(behavior.tableComparator("number", "asc")))), expected);
 });
 
 test("compatibility digits remain in the text series-number bucket in both directions", () => {
@@ -594,6 +626,70 @@ test("controller keeps exactly one active renderer and emits once per complete r
   assert.match(fixture.mount.children[0].className, /catalog-table-scroll/);
   assert.equal(fixture.mount.querySelectorAll("table").length, 1);
   assert.equal(dispatched.length, 2);
+});
+
+test("Flat and Table top-level sort controls restore focus after changing sort and direction", () => {
+  for (const {view, sortKey, directionKey, choice} of [
+    {view: "flat", sortKey: "flatSort", directionKey: "flatDir", choice: "author"},
+    {view: "table", sortKey: "tableSort", directionKey: "tableDir", choice: "number"},
+  ]) {
+    const fixture = controllerRoot();
+    const controller = new behavior.CatalogController(
+      fixture.root,
+      {books: books(rawBook("one"), rawBook("two")), truncated: false},
+      behavior.parseFragment(`#view=${view}`),
+    );
+    const sortMount = fixture.root.querySelector("[data-catalog-sort-controls]");
+
+    const initialSelect = sortMount.querySelector("[data-catalog-sort]");
+    initialSelect.value = choice;
+    initialSelect.focus();
+    sortMount.dispatch("change", {target: initialSelect});
+    const replacementSelect = sortMount.querySelector("[data-catalog-sort]");
+    assert.notEqual(replacementSelect, initialSelect);
+    assert.equal(documentStub.activeElement, replacementSelect);
+    assert.equal(controller.state[sortKey], choice);
+    assert.equal(
+      [...replacementSelect.querySelectorAll("option")].find((option) => option.selected)?.value,
+      choice,
+    );
+
+    const initialDirection = sortMount.querySelector("[data-catalog-direction]");
+    initialDirection.focus();
+    sortMount.dispatch("click", {target: initialDirection});
+    const replacementDirection = sortMount.querySelector("[data-catalog-direction]");
+    assert.notEqual(replacementDirection, initialDirection);
+    assert.equal(documentStub.activeElement, replacementDirection);
+    assert.equal(controller.state[directionKey], "desc");
+    assert.equal(replacementDirection.textContent, "Descending");
+    controller.destroy();
+  }
+});
+
+test("Table sorting restores focus to the replacement header and retains sort state", () => {
+  const fixture = controllerRoot();
+  const controller = new behavior.CatalogController(
+    fixture.root,
+    {books: books(rawBook("one"), rawBook("two")), truncated: false},
+    behavior.parseFragment("#view=table"),
+  );
+  const header = (name) => [...fixture.mount.querySelectorAll("[data-catalog-table-sort]")]
+    .find((button) => button.dataset.catalogTableSort === name);
+
+  const initial = header("title");
+  initial.focus();
+  initial.dispatch("click");
+  const ascending = header("title");
+  assert.notEqual(ascending, initial);
+  assert.equal(documentStub.activeElement, ascending);
+  assert.equal(ascending.parentNode.getAttribute("aria-sort"), "ascending");
+
+  ascending.dispatch("click");
+  const descending = header("title");
+  assert.notEqual(descending, ascending);
+  assert.equal(documentStub.activeElement, descending);
+  assert.equal(descending.parentNode.getAttribute("aria-sort"), "descending");
+  controller.destroy();
 });
 
 test("Tree leaves start lazy, authors start open, and opening one leaf emits one lazy event", () => {

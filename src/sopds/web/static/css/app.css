@@ -846,6 +846,7 @@ dd {
 }
 
 .catalog-table-scroll {
+  position: relative;
   width: 100%;
   min-width: 0;
   max-width: 100%;

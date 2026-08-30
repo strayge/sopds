@@ -171,7 +171,7 @@
 
   function parseSeriesNumber(value) {
     if (value === null || value === undefined || String(value).trim() === "") {
-      return {bucket: "missing", raw: "", digits: "", suffix: "", missingKind: value === null || value === undefined ? 1 : 0};
+      return {bucket: "missing", raw: "", digits: "", suffix: ""};
     }
     const raw = String(value).trim();
     const match = raw.match(/^([0-9]+)(.*)$/s);
@@ -190,7 +190,7 @@
     if (ranks[leftNumber.bucket] !== ranks[rightNumber.bucket]) {
       return ranks[leftNumber.bucket] - ranks[rightNumber.bucket];
     }
-    if (leftNumber.bucket === "missing") return leftNumber.missingKind - rightNumber.missingKind;
+    if (leftNumber.bucket === "missing") return 0;
     let compared = 0;
     if (leftNumber.bucket === "positive") {
       compared = compareIntegerValues(leftNumber.digits, rightNumber.digits);
@@ -618,6 +618,7 @@
         if (this.state.view === "table" && TABLE_SORTS.has(select.value)) this.state.tableSort = select.value;
         this.commit();
         this.render();
+        this.sortMount.querySelector("[data-catalog-sort]")?.focus();
       }, options);
       this.sortMount.addEventListener("click", (event) => {
         if (!event.target.closest("[data-catalog-direction]")) return;
@@ -625,6 +626,7 @@
         this.state[key] = this.state[key] === "asc" ? "desc" : "asc";
         this.commit();
         this.render();
+        this.sortMount.querySelector("[data-catalog-direction]")?.focus();
       }, options);
     }
 
@@ -776,6 +778,7 @@
         else {
           const button = element("button", "catalog-table__sort", name[0].toUpperCase() + name.slice(1));
           button.type = "button";
+          button.dataset.catalogTableSort = name;
           button.addEventListener("click", () => {
             if (this.state.tableSort === name) this.state.tableDir = this.state.tableDir === "asc" ? "desc" : "asc";
             else {
@@ -784,6 +787,9 @@
             }
             this.commit();
             this.render();
+            const replacement = [...this.mount.querySelectorAll("[data-catalog-table-sort]")]
+              .find((candidate) => candidate.dataset.catalogTableSort === name);
+            replacement?.focus();
           });
           cell.append(button);
           if (this.state.tableSort === name) {
