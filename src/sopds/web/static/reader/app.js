@@ -215,7 +215,8 @@ const keyboardNavigation = event => {
     if (event.key === 'ArrowLeft') navigation = turnLeft
     else if (event.key === 'ArrowRight') navigation = turnRight
     else if (event.key === 'PageUp') navigation = () => activeView.prev()
-    else if (event.key === 'PageDown') navigation = () => activeView.next()
+    else if (event.key === 'PageDown' || event.code === 'Space')
+        navigation = () => activeView.next()
     if (!navigation) return
     event.preventDefault()
     void navigation()

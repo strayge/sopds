@@ -1229,6 +1229,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "setReaderMode" in javascript.text
     assert "view.renderer.goTo(resolved)" in javascript.text
     assert "view.renderer.inert = true" in javascript.text
+    assert "event.code === 'Space'" in javascript.text
     assert "sopds.reader.v1" in state.text
     assert "export const getReaderMode" in state.text
     assert "export const setReaderMode" in state.text

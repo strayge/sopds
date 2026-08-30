@@ -54,7 +54,8 @@ your approximate position. Scroll mode is section-local: wheel or touch movement
 scrolls the current section, and an outward gesture at its edge automatically
 moves to the adjacent section. Pages mode provides **Previous** and **Next**
 controls, with a page dock generally available and edge controls on desktop.
-Arrow Left/Right, Page Up/Down, and touch navigation are also supported. The
+Arrow Left/Right, Page Up/Down, Space for the next page, and touch navigation
+are also supported. The
 reader follows the browser's light or dark appearance.
 
 The reader automatically resumes a saved position, remembers the selected reader
