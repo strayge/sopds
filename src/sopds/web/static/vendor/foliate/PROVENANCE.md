@@ -42,10 +42,11 @@ Reader behavior patch:
 
 Compatibility patches:
 
-- `fb2.js` folds a primary body's title and leading epigraphs into its first real
-  section without changing that section's contents label, while retaining a leading
-  cover image and additional note bodies. It omits empty contents entries and
-  preserves supported inline markup in verse lines.
+- `fb2.js` folds a primary body's title, leading epigraphs, bibliographic cover,
+  and non-duplicated annotation into its first real section without changing that
+  section's contents label, while retaining a leading body cover image and
+  additional note bodies. It omits empty contents entries and preserves supported
+  inline markup in verse lines.
 
 Formatting-only normalization:
 

@@ -1268,6 +1268,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "const converted = this.convert(item, STYLE)" in foliate_fb2.text
     assert "firstSection.insertBefore(content, firstSection.firstChild)" in foliate_fb2.text
     assert "mergedSectionTitles.set(firstSection" in foliate_fb2.text
+    assert "convertedCover.classList.add('cover')" in foliate_fb2.text
+    assert "frontMatter.push(converter.convert(annotation" in foliate_fb2.text
     assert ".filter(item => item.label)" in foliate_fb2.text
     assert "elements[0]?.localName === 'img'" in foliate_fb2.text
     assert "if (index === 0) mergeLeadingFrontMatter(converted)" in foliate_fb2.text

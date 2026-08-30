@@ -43,8 +43,9 @@ unchanged when AZW3 is selected. Other combinations are not offered.
 On a book's details page, **Read** is a secondary action for downloadable stored
 FB2 and EPUB sources; the original-format download remains primary. It opens the
 reader in a new browser tab. The reader supports stored FB2 and reflowable EPUB
-2/3 without converting the book. Converted downloads and other source formats
-cannot be read there.
+2/3 without converting the book. An FB2 cover and introductory annotation are
+shown at the start when the stored book provides them. Converted downloads and
+other source formats cannot be read there.
 
 The compact toolbar shows the book title, **Contents**, a **Pages** or **Scroll**
 action, reading progress, **Smaller text**, and **Larger text**. The mode action

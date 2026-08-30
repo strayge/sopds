@@ -179,6 +179,14 @@ body > img, section > img {
     display: block;
     margin: auto;
 }
+section > img.cover {
+    max-height: calc(100vh - 4em);
+    margin-bottom: 3em;
+    object-fit: contain;
+}
+section > aside.annotation {
+    margin: 0 0 3em;
+}
 .title h1 {
     text-align: center;
 }
@@ -272,22 +280,45 @@ export const makeFB2 = async blob => {
             { annotation: ['div', SECTION] }).innerHTML : null,
         subject: $$('title-info genre').map(getElementText),
     }
-    if ($('coverpage image')) {
-        const src = converter.getImageSrc($('coverpage image'))
+    const coverImage = $('title-info coverpage image')
+    if (coverImage) {
+        const src = converter.getImageSrc(coverImage)
         book.getCover = () => fetch(src).then(res => res.blob())
     } else book.getCover = () => null
 
     const mergedSectionTitles = new WeakMap()
     const mergeLeadingFrontMatter = body => {
         const elements = Array.from(body.children)
-        let index = elements[0]?.localName === 'img' ? 1 : 0
-        const frontMatter = []
-        if (elements[index]?.classList.contains('title')) frontMatter.push(elements[index++])
-        while (elements[index]?.classList.contains('epigraph')) frontMatter.push(elements[index++])
+        const leadingImage = elements[0]?.localName === 'img' ? elements[0] : null
+        let index = leadingImage ? 1 : 0
+        const bodyFrontMatter = []
+        if (elements[index]?.classList.contains('title'))
+            bodyFrontMatter.push(elements[index++])
+        while (elements[index]?.classList.contains('epigraph'))
+            bodyFrontMatter.push(elements[index++])
         const firstSection = elements[index]
-        if (!frontMatter.length || !firstSection?.classList.contains('section')) return
+        if (!firstSection?.classList.contains('section')) return
         mergedSectionTitles.set(firstSection, normalizeWhitespace(
             firstSection.querySelector('.title, .subtitle, p')?.textContent ?? ''))
+
+        const frontMatter = []
+        const coverSource = coverImage ? converter.getImageSrc(coverImage) : null
+        if (coverImage && leadingImage?.getAttribute('src') !== coverSource) {
+            const convertedCover = converter.image(coverImage)
+            convertedCover.classList.add('cover')
+            frontMatter.push(convertedCover)
+        }
+        const annotationText = normalizeWhitespace(annotation?.textContent)
+        const existingAnnotations = [firstSection, ...bodyFrontMatter].flatMap(element => [
+            ...(element.matches('.annotation') ? [element] : []),
+            ...element.querySelectorAll('.annotation'),
+        ])
+        const annotationAlreadyPresent = existingAnnotations.some(element =>
+            normalizeWhitespace(element.textContent) === annotationText)
+        if (annotation && annotationText && !annotationAlreadyPresent)
+            frontMatter.push(converter.convert(annotation, { annotation: ['aside', SECTION] }))
+        frontMatter.push(...bodyFrontMatter)
+        if (!frontMatter.length) return
         const content = converter.doc.createDocumentFragment()
         content.append(...frontMatter)
         firstSection.insertBefore(content, firstSection.firstChild)
