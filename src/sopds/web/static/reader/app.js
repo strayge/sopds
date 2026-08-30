@@ -1,6 +1,13 @@
 import '../vendor/foliate/view.js'
 import { openPublication } from './book.js'
 import {
+    formatReaderPercent,
+    readReaderI18n,
+    readerEdgeLabels,
+    readerModeControl,
+    safeReaderErrorMessage,
+} from './i18n.js'
+import {
     FONT_SCALE_RANGE,
     discardLocation,
     getReaderMode,
@@ -38,6 +45,7 @@ const retryLink = document.querySelector('[data-reader-retry]')
 const publicId = root?.dataset.publicId ?? ''
 const format = root?.dataset.sourceFormat ?? ''
 const sourceUrl = root?.dataset.sourceUrl ?? ''
+const readerI18n = readReaderI18n(root)
 const FONT_STEP = 0.1
 const BOOK_POSITION_MAX = 10_000
 
@@ -120,7 +128,7 @@ const getBookPositionChapter = progress => {
 
 const updateBookPosition = (progress, preview = false, chapter = '') => {
     const bounded = Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 0
-    const percent = `${Math.round(bounded * 100)}%`
+    const percent = formatReaderPercent(readerI18n, bounded)
     const label = chapter || getBookPositionChapter(bounded)
     const valueText = label ? `${percent}, ${label}` : percent
     bookPosition.value = String(Math.round(bounded * BOOK_POSITION_MAX))
@@ -138,9 +146,9 @@ const applyModeUI = mode => {
     const pages = mode === 'pages'
     readerState.dataset.readerMode = mode
     modeToggle.dataset.readerMode = mode
-    modeToggle.textContent = pages ? 'Scroll' : 'Pages'
-    modeToggle.setAttribute('aria-label', pages
-        ? 'Switch to scroll view' : 'Switch to pages view')
+    const control = readerModeControl(readerI18n, mode)
+    modeToggle.textContent = control.text
+    modeToggle.setAttribute('aria-label', control.ariaLabel)
     progressOutput.hidden = pages
     dockProgressOutput.hidden = !pages
     bookScrollbar.hidden = pages
@@ -197,7 +205,7 @@ const cleanup = async () => {
     nextButton.disabled = true
     decreaseButton.disabled = true
     increaseButton.disabled = true
-    progressOutput.value = '0%'
+    progressOutput.value = formatReaderPercent(readerI18n, 0)
     progressOutput.textContent = progressOutput.value
     dockProgressOutput.value = progressOutput.value
     dockProgressOutput.textContent = progressOutput.value
@@ -234,8 +242,9 @@ const updateNavigationControls = (view, switchingComplete = false) => {
     nextButton.disabled = atEnd
     previousEdgeButton.disabled = currentPageRTL ? atEnd : atStart
     nextEdgeButton.disabled = currentPageRTL ? atStart : atEnd
-    previousEdgeButton.setAttribute('aria-label', currentPageRTL ? 'Next page' : 'Previous page')
-    nextEdgeButton.setAttribute('aria-label', currentPageRTL ? 'Previous page' : 'Next page')
+    const edgeLabels = readerEdgeLabels(readerI18n, currentPageRTL)
+    previousEdgeButton.setAttribute('aria-label', edgeLabels.left)
+    nextEdgeButton.setAttribute('aria-label', edgeLabels.right)
 }
 
 const turnLeft = () => currentPageRTL ? activeView?.next() : activeView?.prev()
@@ -280,7 +289,7 @@ const updateProgress = detail => {
     if (typeof detail?.tocItem?.href === 'string')
         updateContentsHighlight(detail.tocItem.href)
     if (!bookSeeking) updateBookPosition(progress, false, lastChapter)
-    progressOutput.value = `${Math.round(progress * 100)}%`
+    progressOutput.value = formatReaderPercent(readerI18n, progress)
     progressOutput.textContent = progressOutput.value
     dockProgressOutput.value = progressOutput.value
     dockProgressOutput.textContent = progressOutput.value
@@ -528,8 +537,7 @@ const initializeView = async (publication, attempt) => {
     return view
 }
 
-const safeErrorMessage = error => error?.name === 'PublicationError'
-    ? error.message : 'The book could not be opened in the web reader.'
+const safeErrorMessage = error => safeReaderErrorMessage(readerI18n, error)
 
 const startFresh = async () => {
     await cleanup()

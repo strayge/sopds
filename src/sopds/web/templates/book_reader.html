@@ -1,63 +1,68 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ locale }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Read {{ book.title }} in SOPDS.">
-    <title>{{ book.title }} · SOPDS reader</title>
+    <meta name="description" content="{{ gettext('Read %(title)s in SOPDS.') % {'title': book.title} }}">
+    <title>{{ gettext('%(title)s · SOPDS reader') % {'title': book.title} }}</title>
     <link rel="stylesheet" href="/static/css/reader.css">
+    <script defer src="/static/locale.js"></script>
     {% if not reader_error %}<script type="module" src="/static/reader/app.js"></script>{% endif %}
   </head>
   <body
     data-reader-root
+    data-ui-locale="{{ locale }}"
+    data-reader-locale="{{ reader_locale }}"
+    data-reader-messages="{{ reader_messages|tojson|forceescape }}"
     data-public-id="{{ book.public_id }}"
     data-source-format="{{ source_format }}"
     data-source-url="{{ source_url }}"
   >
-    <a class="reader-skip-link" href="#reader-main">Skip to reader</a>
+    <a class="reader-skip-link" href="#reader-main">{{ gettext("Skip to reader") }}</a>
+    <div class="reader-language-control" role="group" aria-label="{{ gettext('Interface language') }}"><button type="button" data-locale-choice="en" aria-pressed="{{ 'true' if locale == 'en' else 'false' }}">EN</button><button type="button" data-locale-choice="ru" aria-pressed="{{ 'true' if locale == 'ru' else 'false' }}">RU</button></div>
     <main id="reader-main">
       <section class="reader-message" data-reader-state="loading" role="status" aria-live="polite"{% if reader_error %} hidden{% endif %}>
         <div>
           <h1>{{ book.title }}</h1>
-          <p>Preparing the book for reading…</p>
+          <p>{{ gettext("Preparing the book for reading…") }}</p>
         </div>
       </section>
 
-      <section data-reader-state="reader" data-reader-mode="scroll" aria-label="Book reader" hidden>
-        <header data-reader-toolbar role="toolbar" aria-label="Reading controls">
+      <section data-reader-state="reader" data-reader-mode="scroll" aria-label="{{ gettext('Book reader') }}" hidden>
+        <header data-reader-toolbar role="toolbar" aria-label="{{ gettext('Reading controls') }}">
           <strong data-reader-title title="{{ book.title }}">{{ book.title }}</strong>
-          <button type="button" data-reader-contents-button aria-controls="reader-contents" aria-expanded="false" disabled>Contents</button>
-          <button type="button" data-reader-mode-toggle data-reader-mode="scroll" aria-label="Switch to pages view" disabled>Pages</button>
-          <output data-reader-progress aria-label="Reading progress" aria-live="polite">0%</output>
-          <button type="button" data-reader-font-decrease aria-label="Decrease font size" disabled>Smaller text</button>
-          <button type="button" data-reader-font-increase aria-label="Increase font size" disabled>Larger text</button>
+          <button type="button" data-reader-contents-button aria-controls="reader-contents" aria-expanded="false" disabled>{{ gettext("Contents") }}</button>
+          <button type="button" data-reader-mode-toggle data-reader-mode="scroll" aria-label="{{ gettext('Switch to pages view') }}" disabled>{{ pgettext("reader mode", "Pages") }}</button>
+          <output data-reader-progress aria-label="{{ gettext('Reading progress') }}" aria-live="polite">0%</output>
+          <button type="button" data-reader-font-decrease aria-label="{{ gettext('Decrease font size') }}" disabled>{{ gettext("Smaller text") }}</button>
+          <button type="button" data-reader-font-increase aria-label="{{ gettext('Increase font size') }}" disabled>{{ gettext("Larger text") }}</button>
         </header>
-        <button type="button" class="reader-edge-control reader-edge-control--left" data-reader-edge-left data-reader-page-control aria-label="Previous page" hidden>‹</button>
-        <button type="button" class="reader-edge-control reader-edge-control--right" data-reader-edge-right data-reader-page-control aria-label="Next page" hidden>›</button>
+        <button type="button" class="reader-edge-control reader-edge-control--left" data-reader-edge-left data-reader-page-control aria-label="{{ gettext('Previous page') }}" hidden>‹</button>
+        <button type="button" class="reader-edge-control reader-edge-control--right" data-reader-edge-right data-reader-page-control aria-label="{{ gettext('Next page') }}" hidden>›</button>
         <dialog id="reader-contents" data-reader-contents aria-labelledby="reader-contents-title">
-          <h2 id="reader-contents-title">Contents</h2>
-          <nav aria-label="Book contents" data-reader-contents-navigation></nav>
+          <h2 id="reader-contents-title">{{ gettext("Contents") }}</h2>
+          <nav aria-label="{{ gettext('Book contents') }}" data-reader-contents-navigation></nav>
         </dialog>
-        <div data-reader-surface tabindex="0" aria-label="Reading surface"></div>
+        <div data-reader-surface tabindex="0" aria-label="{{ gettext('Reading surface') }}"></div>
         <div class="reader-book-scrollbar" data-reader-book-scrollbar hidden>
-          <input id="reader-book-position" type="range" min="0" max="10000" step="1" value="0" data-reader-book-position aria-label="Book position" aria-orientation="vertical" aria-valuetext="0%">
+          <input id="reader-book-position" type="range" min="0" max="10000" step="1" value="0" data-reader-book-position aria-label="{{ gettext('Book position') }}" aria-orientation="vertical" aria-valuetext="0%">
           <output class="reader-book-scrollbar__preview" for="reader-book-position" data-reader-seek-preview hidden>0%</output>
         </div>
-        <nav class="reader-page-dock" data-reader-page-dock data-reader-page-control hidden aria-label="Page navigation">
-          <button type="button" data-reader-previous aria-label="Previous page" disabled>Previous</button>
-          <output data-reader-dock-progress aria-label="Reading progress" aria-live="polite">0%</output>
-          <button type="button" data-reader-next aria-label="Next page" disabled>Next</button>
+        <nav class="reader-page-dock" data-reader-page-dock data-reader-page-control hidden aria-label="{{ gettext('Page navigation') }}">
+          <button type="button" data-reader-previous aria-label="{{ gettext('Previous page') }}" disabled>{{ pgettext("reader navigation", "Previous") }}</button>
+          <output data-reader-dock-progress aria-label="{{ gettext('Reading progress') }}" aria-live="polite">0%</output>
+          <button type="button" data-reader-next aria-label="{{ gettext('Next page') }}" disabled>{{ pgettext("reader navigation", "Next") }}</button>
         </nav>
       </section>
 
       <section class="reader-message reader-message--error" data-reader-state="error" role="alert"{% if not reader_error %} hidden{% endif %}>
         <div>
-          <h1>Unable to open {{ book.title }}</h1>
-          <p data-reader-error-message>{{ reader_error or "The book could not be opened in the web reader." }}</p>
-          <nav aria-label="Reader recovery actions">
-            <a data-testid="reader-retry" href="{{ retry_url }}" data-reader-retry>Retry</a>
-            <a data-testid="reader-download" href="{{ download_url }}" data-reader-download>Download original</a>
-            <a data-testid="reader-back" href="{{ detail_url }}" data-reader-back>Back to book</a>
+          <h1>{{ gettext('Unable to open %(title)s') % {'title': book.title} }}</h1>
+          <p data-reader-error-message>{{ reader_error or gettext("The book could not be opened in the web reader.") }}</p>
+          <nav aria-label="{{ gettext('Reader recovery actions') }}">
+            <a data-testid="reader-retry" href="{{ retry_url }}" data-reader-retry>{{ gettext("Retry") }}</a>
+            <a data-testid="reader-download" href="{{ download_url }}" data-reader-download>{{ gettext("Download original") }}</a>
+            <a data-testid="reader-back" href="{{ detail_url }}" data-reader-back>{{ gettext("Back to book") }}</a>
           </nav>
         </div>
       </section>

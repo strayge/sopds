@@ -1102,6 +1102,7 @@ def test_reader_route_rejects_ineligible_books_and_honors_availability_scopes() 
     app, catalog, _ = _app()
     with TestClient(app) as client:
         missing = client.get("/books/missing/read")
+        russian_missing = client.get("/books/missing/read", headers={"Accept-Language": "ru"})
 
         catalog.detail_downloadable = False
         unavailable = client.get("/books/public-1/read")
@@ -1116,14 +1117,17 @@ def test_reader_route_rejects_ineligible_books_and_honors_availability_scopes() 
         epub = client.get("/books/public-1/read")
         hidden = client.get("/books/public-1/read?include_hidden=true")
 
-    for response in (missing, unavailable, missed, unsupported):
+    for response in (missing, russian_missing, unavailable, missed, unsupported):
         assert response.status_code == 404
         assert response.headers["content-security-policy"] == routes._READER_CSP
         assert "book_reader.html" not in response.text
+    assert russian_missing.json() == {"detail": "Book not found"}
+    assert "vary" not in russian_missing.headers
     assert epub.status_code == 200
     assert 'data-source-format="epub"' in epub.text
     assert hidden.status_code == 200
     assert catalog.detail_requests == [
+        (False, False),
         (False, False),
         (False, False),
         (True, False),
@@ -1159,6 +1163,10 @@ def test_reader_shell_is_standalone_and_preserves_availability_context() -> None
     ):
         assert directive in response.headers["content-security-policy"]
     assert "data-reader-root" in response.text
+    assert '<html lang="en">' in response.text
+    assert 'data-ui-locale="en"' in response.text
+    assert 'data-reader-locale="en"' in response.text
+    assert 'data-reader-messages="' in response.text
     assert 'data-public-id="public-1"' in response.text
     assert 'data-source-format="fb2"' in response.text
     assert 'data-source-url="/books/public-1/download"' in response.text
@@ -1178,7 +1186,8 @@ def test_reader_shell_is_standalone_and_preserves_availability_context() -> None
     assert "data-reader-seek-preview" in response.text
     assert 'data-reader-contents aria-labelledby="reader-contents-title"' in response.text
     assert 'data-reader-state="error" role="alert" hidden' in response.text
-    assert response.text.count("<script") == 1
+    assert response.text.count("<script") == 2
+    assert '<script defer src="/static/locale.js"></script>' in response.text
     assert '<script type="module" src="/static/reader/app.js"></script>' in response.text
     assert response.text.count("<link") == 1
     assert '<link rel="stylesheet" href="/static/css/reader.css">' in response.text
@@ -1200,6 +1209,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     app, _, _ = _app()
     with TestClient(app) as client:
         javascript = client.get("/static/reader/app.js")
+        reader_i18n = client.get("/static/reader/i18n.js")
         stylesheet = client.get("/static/css/reader.css")
         book_adapter = client.get("/static/reader/book.js")
         foliate_fb2 = client.get("/static/vendor/foliate/fb2.js")
@@ -1208,6 +1218,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
         paginator = client.get("/static/vendor/foliate/paginator.js")
 
     assert javascript.status_code == 200
+    assert reader_i18n.status_code == 200
     assert stylesheet.status_code == 200
     assert book_adapter.status_code == 200
     assert foliate_fb2.status_code == 200
@@ -1216,6 +1227,10 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert paginator.status_code == 200
     assert "import '../vendor/foliate/view.js'" in javascript.text
     assert "import { openPublication } from './book.js'" in javascript.text
+    assert "from './i18n.js'" in javascript.text
+    assert "safeReaderErrorMessage(readerI18n, error)" in javascript.text
+    assert "new Intl.NumberFormat(locale" in reader_i18n.text
+    assert "error?.name === 'PublicationError'" in reader_i18n.text
     assert "view.renderer.setAttribute('max-column-count', '1')" in javascript.text
     assert "view.renderer.setStyles" in javascript.text
     assert "font-size: ${scale}em !important;" in javascript.text
@@ -1251,6 +1266,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     contents_css = stylesheet.text.split("[data-reader-contents] {", 1)[1].split("}", 1)[0]
     assert "overflow: hidden" in contents_css
     assert "data-reader-mode-toggle" in stylesheet.text
+    assert ".reader-language-control" in stylesheet.text
     assert "data-reader-book-position" in stylesheet.text
     assert "writing-mode: vertical-lr" in stylesheet.text
     assert "grid-column: 4 / 6" not in stylesheet.text
@@ -1337,12 +1353,62 @@ def test_reader_renders_known_size_limit() -> None:
     assert "larger than the 64 MiB web reader limit" in response.text
     assert "Preparing the book for reading" in response.text
     assert '<link rel="stylesheet" href="/static/css/reader.css">' in response.text
-    assert "<script" not in response.text
+    assert '<script defer src="/static/locale.js"></script>' in response.text
+    assert "/static/reader/app.js" not in response.text
     assert re.search(r'data-reader-state="loading"[^>]* hidden', response.text)
     assert re.search(r'data-reader-state="error" role="alert">', response.text)
     assert _link_href(response.text, "reader-retry") == ("/books/public-1/read?include_hidden=true")
     assert _link_href(response.text, "reader-download") == "/books/public-1/download"
     assert _link_href(response.text, "reader-back") == ("/books/public-1?include_hidden=true")
+
+
+def test_russian_reader_localizes_shell_switcher_payload_and_known_error() -> None:
+    app, catalog, _ = _app()
+    catalog.detail_title = 'Книга <unsafe> & "raw title"'
+    headers = {"Accept-Language": "ru"}
+    with TestClient(app) as client:
+        reader = client.get("/books/public-1/read", headers=headers)
+        catalog.detail_size = 64 * 1024 * 1024 + 1
+        over_limit = client.get("/books/public-1/read", headers=headers)
+
+    assert reader.status_code == over_limit.status_code == 200
+    assert reader.headers["content-security-policy"] == routes._READER_CSP
+    assert over_limit.headers["content-security-policy"] == routes._READER_CSP
+    assert reader.headers["vary"] == "Cookie, Accept-Language"
+    assert over_limit.headers["vary"] == "Cookie, Accept-Language"
+    assert "set-cookie" not in reader.headers
+    assert '<html lang="ru">' in reader.text
+    assert 'data-ui-locale="ru"' in reader.text
+    assert 'data-reader-locale="ru"' in reader.text
+    assert 'aria-label="Язык интерфейса"' in reader.text
+    assert 'data-locale-choice="ru" aria-pressed="true"' in reader.text
+    assert "Подготовка книги к чтению…" in reader.text
+    assert 'aria-label="Элементы управления чтением"' in reader.text
+    assert 'data-reader-mode-toggle data-reader-mode="scroll"' in reader.text
+    assert ">Страницы</button>" in reader.text
+    assert "Книга &lt;unsafe&gt; &amp; &#34;raw title&#34;" in reader.text
+    assert "Книга <unsafe>" not in reader.text
+
+    messages_match = re.search(r'data-reader-messages="([^"]*)"', reader.text)
+    assert messages_match is not None
+    messages = json.loads(html.unescape(messages_match.group(1)))
+    assert messages == {
+        "pages": "Страницы",
+        "scroll": "Прокрутка",
+        "switchToPagesView": "Переключиться на постраничный режим",
+        "switchToScrollView": "Переключиться на прокрутку",
+        "previousPage": "Предыдущая страница",
+        "nextPage": "Следующая страница",
+        "genericOpenError": "Не удалось открыть книгу в веб-читалке.",  # noqa: RUF001
+    }
+    assert len(messages) == 7
+    assert "Превышено ограничение веб-читалки в 64 MiB" in over_limit.text
+    assert "Исходный файл всё ещё можно скачать." in over_limit.text
+    assert ">Повторить</a>" in over_limit.text
+    assert ">Скачать исходный файл</a>" in over_limit.text
+    assert ">Назад к книге</a>" in over_limit.text
+    assert '<script defer src="/static/locale.js"></script>' in over_limit.text
+    assert "/static/reader/app.js" not in over_limit.text
 
 
 def test_book_detail_renders_present_metadata_and_availability_actions() -> None:
@@ -3278,6 +3344,7 @@ def test_localized_html_varies_without_setting_a_locale_cookie() -> None:
             client.get("/", headers={"Accept-Language": "ru"}),
             client.get("/catalog-fragment?q=book", headers={"Accept-Language": "ru"}),
             client.get("/books/public-1", headers={"Cookie": "sopds_ui_language=ru"}),
+            client.get("/books/public-1/read", headers={"Accept-Language": "ru"}),
             client.get("/selected", headers={"Accept-Language": "ru"}),
             client.get("/manage", headers={"Accept-Language": "ru"}),
             client.get("/imports/status", headers={"Accept-Language": "ru"}),
@@ -3287,9 +3354,9 @@ def test_localized_html_varies_without_setting_a_locale_cookie() -> None:
     for response in responses:
         assert response.headers["vary"] == "Cookie, Accept-Language"
         assert "set-cookie" not in response.headers
-    assert responses[3].headers["cache-control"] == "no-store"
     assert responses[4].headers["cache-control"] == "no-store"
-    assert responses[6].headers["x-sopds-csrf-expired"] == "true"
+    assert responses[5].headers["cache-control"] == "no-store"
+    assert responses[7].headers["x-sopds-csrf-expired"] == "true"
 
 
 def test_cookie_locale_precedes_header_across_full_pages_and_fragments() -> None:

@@ -168,6 +168,7 @@ def test_vendored_javascript_is_served_locally_and_revalidated(
         htmx = client.get("/static/vendor/htmx/htmx-2.0.10.min.js")
         locale = client.get("/static/locale.js")
         reader = client.get("/static/reader/app.js")
+        reader_i18n = client.get("/static/reader/i18n.js")
 
     assert htmx.status_code == 200
     assert "javascript" in htmx.headers["content-type"]
@@ -179,6 +180,11 @@ def test_vendored_javascript_is_served_locally_and_revalidated(
     assert "sopds_ui_language" in locale.text
     assert reader.status_code == 200
     assert reader.headers["cache-control"] == "no-cache"
+    assert "from './i18n.js'" in reader.text
+    assert reader_i18n.status_code == 200
+    assert "javascript" in reader_i18n.headers["content-type"]
+    assert reader_i18n.headers["cache-control"] == "no-cache"
+    assert "safeReaderErrorMessage" in reader_i18n.text
 
 
 def test_missing_inpx_stays_healthy_and_records_immediate_check(

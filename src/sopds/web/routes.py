@@ -77,6 +77,7 @@ from sopds.web.i18n import (
     import_state_label,
     import_trigger_label,
     known_html_message,
+    reader_browser_messages,
     request_translation_context,
     selection_browser_messages,
 )
@@ -1331,9 +1332,19 @@ async def book_reader(
         include_hidden=include_hidden,
     )
     over_limit = book.size > _READER_SOURCE_LIMIT
-    return templates.TemplateResponse(
-        request=request,
-        name="book_reader.html",
+    translations = request_translation_context(request)
+    reader_error = (
+        _known_html_message(
+            request,
+            "This book is larger than the 64 MiB web reader limit. "
+            "You can still download the original file.",
+        )
+        if over_limit
+        else None
+    )
+    return _localized_template_response(
+        request,
+        "book_reader.html",
         context={
             "book": book,
             "source_format": source_format,
@@ -1341,12 +1352,9 @@ async def book_reader(
             "retry_url": retry_url,
             "download_url": download_url,
             "detail_url": detail_url,
-            "reader_error": (
-                "This book is larger than the 64 MiB web reader limit. "
-                "You can still download the original file."
-                if over_limit
-                else None
-            ),
+            "reader_locale": translations.locale,
+            "reader_messages": reader_browser_messages(translations),
+            "reader_error": reader_error,
         },
         headers=_READER_HEADERS,
     )

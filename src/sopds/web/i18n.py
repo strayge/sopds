@@ -70,6 +70,10 @@ _KNOWN_HTML_MESSAGES = frozenset(
         N_("An import or database maintenance operation is already running"),
         N_("Database VACUUM completed"),
         N_("VACUUM skipped because catalog work is running"),
+        N_(
+            "This book is larger than the 64 MiB web reader limit. "
+            "You can still download the original file."
+        ),
     }
 )
 _IMPORT_STATE_MESSAGES = {
@@ -121,6 +125,16 @@ _CATALOG_BROWSER_MESSAGES = {
     "actions": N_("Actions"),
     "sortedAscending": N_(", sorted ascending"),
     "sortedDescending": N_(", sorted descending"),
+}
+
+_READER_BROWSER_MESSAGES = {
+    "pages": N_("Pages"),
+    "scroll": N_("Scroll"),
+    "switchToPagesView": N_("Switch to pages view"),
+    "switchToScrollView": N_("Switch to scroll view"),
+    "previousPage": N_("Previous page"),
+    "nextPage": N_("Next page"),
+    "genericOpenError": N_("The book could not be opened in the web reader."),
 }
 
 _SELECTION_BROWSER_MESSAGES = {
@@ -191,6 +205,11 @@ def catalog_browser_messages(context: TranslationContext) -> dict[str, object]:
 def selection_browser_messages(context: TranslationContext) -> dict[str, str]:
     """Return only the reviewed strings consumed by the selection script."""
     return _browser_messages(context, _SELECTION_BROWSER_MESSAGES)
+
+
+def reader_browser_messages(context: TranslationContext) -> dict[str, str]:
+    """Return only the reviewed strings changed dynamically by the reader."""
+    return _browser_messages(context, _READER_BROWSER_MESSAGES)
 
 
 def _is_ascii_alphanumeric(value: str) -> bool:
