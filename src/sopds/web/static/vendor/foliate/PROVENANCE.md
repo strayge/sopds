@@ -34,9 +34,11 @@ Security patches:
 Reader behavior patch:
 
 - `paginator.js` supports switching between paginated and `flow=scrolled` layouts,
-  forwards wheel input from publication documents to the native section scroller,
-  changes sections only for thresholded outward boundary swipes, and aligns
-  keyboard screen advances to a visible text line with a small overlap.
+  forwards wheel input from publication documents to the section scroller,
+  hides that section-local native scrollbar when the application provides its
+  whole-book control, changes sections only for thresholded outward boundary
+  swipes, and aligns keyboard screen advances to a visible text line with a
+  small overlap.
 
 Compatibility patches:
 

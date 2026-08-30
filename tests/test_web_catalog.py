@@ -1239,6 +1239,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "activeView.renderer.nextScreen()" in javascript.text
     assert "await view.goToFraction(fraction)" in javascript.text
     assert "BOOK_POSITION_MAX = 10_000" in javascript.text
+    assert "configureBookPositionMarkers" in javascript.text
+    assert "previewText = label" in javascript.text
     assert "sopds.reader.v1" in state.text
     assert "export const getReaderMode" in state.text
     assert "export const setReaderMode" in state.text
@@ -1257,6 +1259,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert 'flow="scrolled"' in paginator.text
     assert "#adjacentIndex(direction)" in paginator.text
     assert "async nextScreen()" in paginator.text
+    assert "scrollbar-width: none" in paginator.text
     assert "this.#container.addEventListener('wheel', this.#boundWheel" in paginator.text
     assert "this.addEventListener('wheel'" not in paginator.text
     assert "min-width: 20rem" not in stylesheet.text

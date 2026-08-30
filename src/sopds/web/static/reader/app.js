@@ -56,6 +56,8 @@ let modeSwitch = Promise.resolve()
 let modeSwitching = false
 let bookSeeking = false
 let lastProgress = 0
+let lastChapter = ''
+let bookPositionMarkers = []
 
 const publicationStyles = scale => `
 @font-face {
@@ -104,15 +106,27 @@ const applyPageControlState = (visible, disabled = false) => {
     }
 }
 
-const updateBookPosition = (progress, preview = false) => {
+const getBookPositionChapter = progress => {
+    let chapter = ''
+    for (const marker of bookPositionMarkers) {
+        if (marker.fraction > progress + Number.EPSILON) break
+        chapter = marker.label
+    }
+    return chapter
+}
+
+const updateBookPosition = (progress, preview = false, chapter = '') => {
     const bounded = Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 0
     const percent = `${Math.round(bounded * 100)}%`
+    const label = chapter || getBookPositionChapter(bounded)
+    const valueText = label ? `${percent}, ${label}` : percent
     bookPosition.value = String(Math.round(bounded * BOOK_POSITION_MAX))
-    bookPosition.setAttribute('aria-valuetext', percent)
+    bookPosition.setAttribute('aria-valuetext', valueText)
     bookScrollbar.style.setProperty('--reader-seek-position', `${bounded * 100}%`)
     if (preview) {
-        seekPreview.value = percent
-        seekPreview.textContent = percent
+        const previewText = label ? `${percent} · ${label}` : percent
+        seekPreview.value = previewText
+        seekPreview.textContent = previewText
         seekPreview.hidden = false
     }
 }
@@ -183,6 +197,8 @@ const cleanup = async () => {
     dockProgressOutput.textContent = progressOutput.value
     bookSeeking = false
     lastProgress = 0
+    lastChapter = ''
+    bookPositionMarkers = []
     updateBookPosition(0)
     bookPosition.disabled = true
     bookScrollbar.hidden = true
@@ -224,7 +240,9 @@ const updateProgress = detail => {
     const progress = Number.isFinite(fraction)
         ? Math.min(1, Math.max(0, fraction)) : 0
     lastProgress = progress
-    if (!bookSeeking) updateBookPosition(progress)
+    lastChapter = typeof detail?.tocItem?.label === 'string'
+        ? detail.tocItem.label.trim() : ''
+    if (!bookSeeking) updateBookPosition(progress, false, lastChapter)
     progressOutput.value = `${Math.round(progress * 100)}%`
     progressOutput.textContent = progressOutput.value
     dockProgressOutput.value = progressOutput.value
@@ -287,6 +305,100 @@ const renderContents = (items, view) => {
     contentsButton.disabled = !available
 }
 
+const configureBookPositionMarkers = async book => {
+    bookPositionMarkers = []
+    const sections = Array.isArray(book.sections) ? book.sections : []
+    const sizes = sections.map(section => section.linear !== 'no' && section.size > 0
+        ? section.size : 0)
+    const total = sizes.reduce((sum, size) => sum + size, 0)
+    if (!total || typeof book.splitTOCHref !== 'function') return
+
+    const starts = []
+    let sizeBefore = 0
+    for (const size of sizes) {
+        starts.push(sizeBefore / total)
+        sizeBefore += size
+    }
+    const sectionIndexes = new Map(sections.map((section, index) =>
+        [String(section.id), index]))
+    const entriesBySection = new Map()
+    const firstLabels = new Map()
+
+    const visit = async (items, parentLabel = '') => {
+        for (const item of Array.isArray(items) ? items : []) {
+            const label = typeof item?.label === 'string' ? item.label.trim() : ''
+            const markerLabel = parentLabel && label
+                ? `${parentLabel} — ${label}` : label
+            if (markerLabel && typeof item.href === 'string') {
+                try {
+                    const [id, fragment] = await book.splitTOCHref(item.href) ?? []
+                    const index = sectionIndexes.get(String(id))
+                    if (index !== undefined && sizes[index]) {
+                        firstLabels.set(index, firstLabels.get(index) ?? markerLabel)
+                        const entries = entriesBySection.get(index) ?? []
+                        entries.push({ fragment, label: markerLabel })
+                        entriesBySection.set(index, entries)
+                    }
+                } catch { /* A usable section label is optional seek metadata. */ }
+            }
+            await visit(item?.subitems, label || parentLabel)
+        }
+    }
+    await visit(book.toc)
+
+    const addMarker = (index, localFraction, label) => bookPositionMarkers.push({
+        fraction: starts[index] + localFraction * sizes[index] / total,
+        label,
+    })
+    for (const [index, entries] of entriesBySection) {
+        const anchored = []
+        for (const entry of entries) {
+            const { fragment } = entry
+            if (fragment === undefined || fragment === null || fragment === '')
+                addMarker(index, 0, entry.label)
+            else anchored.push(entry)
+        }
+        const section = sections[index]
+        if (!anchored.length || typeof section.createDocument !== 'function'
+            || typeof book.getTOCFragment !== 'function') continue
+        try {
+            const document = section.createDocument()
+            const body = document.body
+            if (!body) continue
+            const targets = new Map()
+            for (const entry of anchored) {
+                const node = book.getTOCFragment(document, entry.fragment)
+                if (!node || !body.contains(node)) continue
+                const entriesAtNode = targets.get(node) ?? []
+                entriesAtNode.push(entry)
+                targets.set(node, entriesAtNode)
+            }
+            const offsets = new Map(targets.has(body) ? [[body, 0]] : [])
+            let textLength = 0
+            const walker = document.createTreeWalker(body,
+                NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+                | NodeFilter.SHOW_CDATA_SECTION)
+            while (walker.nextNode()) {
+                const node = walker.currentNode
+                if (node.nodeType === Node.TEXT_NODE
+                    || node.nodeType === Node.CDATA_SECTION_NODE)
+                    textLength += node.data.length
+                else if (targets.has(node)) offsets.set(node, textLength)
+            }
+            for (const [node, nodeEntries] of targets) {
+                const offset = offsets.get(node)
+                if (offset === undefined) continue
+                const localFraction = textLength ? offset / textLength : 0
+                for (const entry of nodeEntries)
+                    addMarker(index, localFraction, entry.label)
+            }
+        } catch { /* Fall back to the section-level contents label. */ }
+    }
+    for (const [index, label] of firstLabels)
+        addMarker(index, 0, label)
+    bookPositionMarkers.sort((a, b) => a.fraction - b.fraction)
+}
+
 const configureView = async (publication, attempt) => {
     const view = document.createElement('foliate-view')
     activeView = view
@@ -326,6 +438,8 @@ const configureView = async (publication, attempt) => {
     addViewListener(document, 'keydown', keyboardNavigation)
 
     await view.open(publication.book)
+    if (attempt !== attemptNumber) throw new DOMException('Reader attempt replaced', 'AbortError')
+    await configureBookPositionMarkers(publication.book)
     if (attempt !== attemptNumber) throw new DOMException('Reader attempt replaced', 'AbortError')
     if (readerMode === 'scroll') view.renderer.setAttribute('flow', 'scrolled')
     else view.renderer.removeAttribute('flow')
@@ -529,7 +643,7 @@ const cancelBookSeek = () => {
     if (!bookSeeking || bookPosition.disabled) return
     bookSeeking = false
     seekPreview.hidden = true
-    updateBookPosition(lastProgress)
+    updateBookPosition(lastProgress, false, lastChapter)
     if (activeView && !unloading) modeToggle.disabled = false
 }
 
@@ -561,7 +675,8 @@ const seekToBookPosition = async () => {
             bookSeeking = false
             seekPreview.hidden = true
             const actual = Number(view.lastLocation?.fraction)
-            updateBookPosition(Number.isFinite(actual) ? actual : lastProgress)
+            updateBookPosition(
+                Number.isFinite(actual) ? actual : lastProgress, false, lastChapter)
             contentsButton.disabled = !contentsNavigation.querySelector('button')
             updateFontControls()
             modeToggle.disabled = false
