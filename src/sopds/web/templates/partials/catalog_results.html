@@ -11,26 +11,28 @@
       <p id="catalog-loaded-summary" class="catalog-results__summary" role="status" aria-live="polite">Loaded {{ page.books|length|integer }} {% if page.books|length == 1 %}book{% else %}books{% endif %} in title order.</p>
     {% endif %}
 
-    <div class="catalog-view-switcher" role="group" aria-label="Result view">
-      <button type="button" data-catalog-view="flat" aria-pressed="true">Flat</button>
-      <button type="button" data-catalog-view="tree" aria-pressed="false">Tree</button>
-      <button type="button" data-catalog-view="table" aria-pressed="false">Table</button>
+    <div class="catalog-local-toolbar">
+      <div class="catalog-view-switcher" role="group" aria-label="Result view">
+        <button type="button" data-catalog-view="flat" aria-pressed="true">Flat</button>
+        <button type="button" data-catalog-view="tree" aria-pressed="false">Tree</button>
+        <button type="button" data-catalog-view="table" aria-pressed="false">Table</button>
+      </div>
+
+      <div class="catalog-local-filters" role="group" aria-label="Filter loaded books">
+        <label for="catalog-local-title">Title
+          <input id="catalog-local-title" type="search" maxlength="200" autocomplete="off" data-catalog-filter="title">
+        </label>
+        <label for="catalog-local-author">Author
+          <input id="catalog-local-author" type="search" maxlength="200" autocomplete="off" data-catalog-filter="author">
+        </label>
+        <label for="catalog-local-series">Series
+          <input id="catalog-local-series" type="search" maxlength="200" autocomplete="off" data-catalog-filter="series">
+        </label>
+        <button type="button" data-catalog-clear-filters>Clear</button>
+      </div>
     </div>
 
-    <div class="catalog-local-filters" role="group" aria-label="Filter loaded books">
-      <label for="catalog-local-title">Title
-        <input id="catalog-local-title" type="search" maxlength="200" autocomplete="off" data-catalog-filter="title">
-      </label>
-      <label for="catalog-local-author">Author
-        <input id="catalog-local-author" type="search" maxlength="200" autocomplete="off" data-catalog-filter="author">
-      </label>
-      <label for="catalog-local-series">Series
-        <input id="catalog-local-series" type="search" maxlength="200" autocomplete="off" data-catalog-filter="series">
-      </label>
-      <button type="button" data-catalog-clear-filters>Clear local filters</button>
-    </div>
-
-    <div class="catalog-sort-controls" data-catalog-sort-controls></div>
+    <div data-catalog-sort-controls hidden></div>
     <div class="catalog-result-view" data-catalog-result-view></div>
     <script id="catalog-result-payload" type="application/json" data-catalog-payload>{{ catalog_payload|tojson }}</script>
     <noscript><p class="catalog-results__message">JavaScript is required to display catalog results. Enable JavaScript, then reload this page.</p></noscript>

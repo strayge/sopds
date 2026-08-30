@@ -417,16 +417,6 @@
     return branches;
   }
 
-  function filterExpansionTransition(expansion, snapshot, wasFiltering, isFiltering) {
-    if (!wasFiltering && isFiltering) {
-      return {expansion, snapshot: new Map(expansion)};
-    }
-    if (wasFiltering && !isFiltering) {
-      return {expansion: snapshot ? new Map(snapshot) : expansion, snapshot: null};
-    }
-    return {expansion, snapshot};
-  }
-
   function element(tag, className = "", text = "") {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -480,6 +470,17 @@
     return label;
   }
 
+  function buildTreeSelectionControl(books, label) {
+    const publicIds = [...new Set(books.filter((book) => book.selectable).map((book) => book.publicId))];
+    if (!publicIds.length) return null;
+    const checkbox = element("input", "catalog-tree-select");
+    checkbox.type = "checkbox";
+    checkbox.dataset.selectionGroup = "";
+    checkbox.dataset.publicIds = JSON.stringify(publicIds);
+    checkbox.setAttribute("aria-label", `Select all books in ${label}`);
+    return checkbox;
+  }
+
   function buildActions(book, includeSelection = true) {
     const actions = element("div", "result-row__actions");
     const selection = includeSelection ? buildSelectionControl(book) : null;
@@ -497,7 +498,7 @@
       split.append(original);
       if (book.conversions.length) {
         const menu = element("details", "download-menu");
-        const summary = element("summary", "", "Formats");
+        const summary = element("summary", "", "▼");
         summary.setAttribute("aria-label", `More download formats for ${book.title}`);
         const items = element("div", "download-menu__items");
         for (const conversion of book.conversions) {
@@ -568,8 +569,6 @@
       this.summary = root.querySelector("#catalog-loaded-summary");
       this.loadedSummary = this.summary?.textContent || "";
       this.expansion = new Map();
-      this.expansionSnapshot = null;
-      this.wasFiltering = false;
       this.treeScroll = 0;
       this.bind();
       this.applyStateToControls();
@@ -714,28 +713,27 @@
     }
 
     renderTree(books) {
-      const filtering = Boolean(this.state.title || this.state.author || this.state.series);
-      const transitioned = filterExpansionTransition(this.expansion, this.expansionSnapshot, this.wasFiltering, filtering);
-      this.expansion = transitioned.expansion;
-      this.expansionSnapshot = transitioned.snapshot;
-      this.wasFiltering = filtering;
       const tree = element("div", "catalog-tree-view");
       const branches = buildTreeModel(books);
       for (const branch of branches) {
         const author = element("details", "catalog-tree-author");
-        author.open = filtering || (this.expansion.has(branch.key) ? this.expansion.get(branch.key) : true);
+        author.open = this.expansion.get(branch.key) || false;
         const authorSummary = element("summary", "catalog-tree-author__summary");
+        const authorSelection = buildTreeSelectionControl(branch.books, `author ${branch.label}`);
+        if (authorSelection) authorSummary.append(authorSelection);
         if (branch.author) authorSummary.append(metadataLink(branch.label, branch.author.scopeUrl));
         else authorSummary.append(document.createTextNode(branch.label));
         authorSummary.append(element("span", "catalog-tree-count", ` (${branch.count})`));
         author.append(authorSummary);
         author.addEventListener("toggle", () => {
-          if (!filtering) this.expansion.set(branch.key, author.open);
+          this.expansion.set(branch.key, author.open);
         });
         for (const leaf of branch.series) {
           const details = element("details", "catalog-tree-series");
-          details.open = filtering || (this.expansion.has(leaf.key) ? this.expansion.get(leaf.key) : false);
+          details.open = this.expansion.get(leaf.key) || false;
           const summary = element("summary", "catalog-tree-series__summary");
+          const seriesSelection = buildTreeSelectionControl(leaf.books, `series ${leaf.label}`);
+          if (seriesSelection) summary.append(seriesSelection);
           if (leaf.scopeUrl) summary.append(metadataLink(leaf.label, leaf.scopeUrl));
           else summary.append(document.createTextNode(leaf.label));
           summary.append(element("span", "catalog-tree-count", ` (${new Set(leaf.books.map((book) => book.publicId)).size})`));
@@ -752,7 +750,7 @@
           };
           if (details.open) renderLeaf(false);
           details.addEventListener("toggle", () => {
-            if (!filtering) this.expansion.set(leaf.key, details.open);
+            this.expansion.set(leaf.key, details.open);
             renderLeaf(true);
           });
           author.append(details);
@@ -771,10 +769,11 @@
       const caption = element("caption", "visually-hidden", "Loaded catalog books");
       const head = element("thead");
       const headerRow = element("tr");
-      for (const name of ["author", "title", "series", "number", "actions"]) {
+      for (const name of ["select", "author", "title", "series", "number", "actions"]) {
         const cell = element("th");
         cell.scope = "col";
-        if (name === "actions") cell.textContent = "Actions";
+        if (name === "select") cell.append(element("span", "visually-hidden", "Select"));
+        else if (name === "actions") cell.textContent = "Actions";
         else {
           const button = element("button", "catalog-table__sort", name[0].toUpperCase() + name.slice(1));
           button.type = "button";
@@ -804,6 +803,9 @@
       for (const book of sorted) {
         const row = element("tr");
         row.dataset.publicId = book.publicId;
+        const selection = element("td", "catalog-table__selection");
+        const selectionControl = buildSelectionControl(book);
+        if (selectionControl) selection.append(selectionControl);
         const authors = element("td");
         appendAuthors(authors, book, 2);
         const title = element("td");
@@ -813,8 +815,8 @@
         if (book.series) series.append(metadataLink(book.series.name, book.series.scopeUrl));
         const number = element("td", "", book.series?.number || "");
         const actions = element("td");
-        actions.append(buildActions(book));
-        row.append(authors, title, series, number, actions);
+        actions.append(buildActions(book, false));
+        row.append(selection, authors, title, series, number, actions);
         body.append(row);
       }
       table.append(caption, head, body);

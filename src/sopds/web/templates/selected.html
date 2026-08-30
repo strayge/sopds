@@ -40,6 +40,11 @@
 
     <section class="selected-preview-section" aria-labelledby="selected-preview-heading">
       <h2 id="selected-preview-heading" class="visually-hidden">Selection preview</h2>
+      <div class="catalog-view-switcher selected-view-switcher" role="group" aria-label="Selected books view">
+        <button type="button" data-selected-view="flat" aria-pressed="true">Flat</button>
+        <button type="button" data-selected-view="tree" aria-pressed="false">Tree</button>
+        <button type="button" data-selected-view="table" aria-pressed="false">Table</button>
+      </div>
       <div id="selected-preview" data-selected-preview-target aria-live="polite" aria-busy="true">
         <p class="selected-loading">Loading selection…</p>
       </div>

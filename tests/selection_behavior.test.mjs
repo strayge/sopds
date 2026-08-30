@@ -9,6 +9,11 @@ const exportHook = `
   globalThis.selectionBehavior = {
     mergeSelectedPreview,
     syncFormatSelector,
+    compareSelectedMetadata,
+    selectedGroupKey,
+    mergeSelectedSearchUrls,
+    selectionGroupIds,
+    syncGroupCheckboxes,
     initialize,
     setState(ids, previewIds) {
       selectedIds = ids;
@@ -138,6 +143,7 @@ function makeContent(entries, archiveFormat = "epub") {
 const documentListeners = new Map();
 const windowListeners = new Map();
 let documentCheckboxes = [];
+let documentGroups = [];
 let storedSelection = null;
 const documentStub = {
   readyState: "loading",
@@ -149,7 +155,9 @@ const documentStub = {
     for (const listener of documentListeners.get(name) || []) listener(event);
   },
   querySelectorAll(selector) {
-    return selector === "[data-selection-checkbox]" ? documentCheckboxes : [];
+    if (selector === "[data-selection-checkbox]") return documentCheckboxes;
+    if (selector === "[data-selection-group]") return documentGroups;
+    return [];
   },
   querySelector() {
     return null;
@@ -182,6 +190,8 @@ const context = vm.createContext({
   document: documentStub,
   globalThis: null,
   Set,
+  URL,
+  URLSearchParams,
   window: windowStub,
 });
 context.globalThis = context;
@@ -235,6 +245,18 @@ function makePage(selector, rows) {
   };
 }
 
+function makeSelectionGroup(publicIds) {
+  return {
+    checked: false,
+    indeterminate: false,
+    disabled: true,
+    dataset: {publicIds: JSON.stringify(publicIds), selectionGroup: ""},
+    closest(selector) {
+      return selector === "[data-selection-group]" ? this : null;
+    },
+  };
+}
+
 function makeSelectionCheckbox(publicId, checked = false) {
   const control = {hidden: true};
   return {
@@ -248,6 +270,38 @@ function makeSelectionCheckbox(publicId, checked = false) {
     control,
   };
 }
+
+test("selected Tree metadata groups visible names and merges availability searches", () => {
+  assert.equal(behavior.selectedGroupKey("author", "Ａuthor"), "author:author");
+  assert.equal(behavior.selectedGroupKey("series", "Saga"), "series:saga");
+  assert.equal(
+    behavior.mergeSelectedSearchUrls([
+      "/?q=Writer&search_field=author",
+      "/?q=Writer&search_field=author&include_hidden=true",
+      "/?q=Writer&search_field=author&include_missed=true",
+    ]),
+    "/?q=Writer&search_field=author&include_hidden=true&include_missed=true",
+  );
+  assert.equal(behavior.mergeSelectedSearchUrls([]), null);
+});
+
+test("selected Table metadata sorting supports three columns and both directions", () => {
+  const values = [
+    {publicId: "b", title: "Beta", authors: [{label: "Alpha"}], series: {label: "Series 2"}},
+    {publicId: "a", title: "Alpha", authors: [{label: "Beta"}], series: null},
+    {publicId: "c", title: "Gamma", authors: [{label: "Alpha"}], series: {label: "Series 1"}},
+  ];
+  const sorted = (sort, direction) => [...values]
+    .sort((left, right) => behavior.compareSelectedMetadata(left, right, sort, direction))
+    .map((value) => value.publicId);
+
+  assert.deepEqual(sorted("author", "asc"), ["c", "b", "a"]);
+  assert.deepEqual(sorted("author", "desc"), ["a", "b", "c"]);
+  assert.deepEqual(sorted("title", "asc"), ["a", "b", "c"]);
+  assert.deepEqual(sorted("title", "desc"), ["c", "b", "a"]);
+  assert.deepEqual(sorted("series", "asc"), ["c", "b", "a"]);
+  assert.deepEqual(sorted("series", "desc"), ["a", "b", "c"]);
+});
 
 test("a re-included preserved row takes the authoritative format state", () => {
   const stale = makeEntry("book-1", {
@@ -323,6 +377,35 @@ test("a delayed replacement preview does not prematurely reset the chosen target
   assert.equal(selector.value, "original", "an authoritative preview can still reset the target");
 });
 
+test("Tree group selection uses the native checked and indeterminate states", () => {
+  storedSelection = '["one"]';
+  documentCheckboxes = [];
+  const group = makeSelectionGroup(["one", "two"]);
+  documentGroups = [group];
+  behavior.initialize();
+
+  assert.equal(group.checked, false);
+  assert.equal(group.indeterminate, true);
+  let stopped = false;
+  documentStub.dispatch("click", {
+    target: group,
+    stopPropagation() { stopped = true; },
+  });
+  assert.equal(stopped, true);
+  assert.equal(storedSelection, '["one","two"]');
+  assert.equal(group.checked, true);
+  assert.equal(group.indeterminate, false);
+
+  documentStub.dispatch("click", {
+    target: group,
+    stopPropagation() {},
+  });
+  assert.equal(storedSelection, "[]");
+  assert.equal(group.checked, false);
+  assert.equal(group.indeterminate, false);
+  documentGroups = [];
+});
+
 test("dynamic catalog renders stay root-scoped while duplicate and cross-tab selection stays authoritative", () => {
   storedSelection = "[]";
   documentCheckboxes = [];
@@ -363,7 +446,7 @@ test("dynamic catalog renders stay root-scoped while duplicate and cross-tab sel
 
   const lazy = makeSelectionCheckbox("other");
   documentStub.dispatch("sopds:catalog-rendered", {
-    detail: {root: {querySelectorAll: () => [lazy]}},
+    detail: {root: {querySelectorAll: (selector) => selector === "[data-selection-checkbox]" ? [lazy] : []}},
   });
   assert.equal(lazy.checked, true, "lazy and rerendered controls receive current state");
   assert.equal(lazy.disabled, false);

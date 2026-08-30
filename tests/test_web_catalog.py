@@ -465,8 +465,8 @@ def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
         ignored_cursor = client.get("/?q=book&cursor=next-token")
         detail = client.get("/books/public-1")
         missing = client.get("/books/missing")
-        author_page = client.get("/", params={"author": "Тестов,Тест,"})
-        series_page = client.get("/", params={"series": "Series"})
+        author_page = client.get("/", params={"q": "Тестов Тест", "search_field": "author"})
+        series_page = client.get("/", params={"q": "Series", "search_field": "series"})
 
     assert page.status_code == 200
     payload = _catalog_payload(page.text)
@@ -481,20 +481,30 @@ def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
                     "raw": "Тестов,Тест,",
                     "display": "Тестов Тест",
                     "sortKey": "тестов,тест,",
-                    "scopeUrl": "/?author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C",
+                    "scopeUrl": (
+                        "/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2+%D0%A2%D0%B5%D1%81%D1%82"
+                        "&search_field=author&language=en&genre=sf&original_format=fb2"
+                    ),
                 },
                 {
                     "raw": " Примеров,Пример,Примерович",
                     "display": "Примеров Пример Примерович",
                     "sortKey": " примеров,пример,примерович",
-                    "scopeUrl": "/?author=+%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80%D0%BE%D0%B2%2C%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80%2C%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80%D0%BE%D0%B2%D0%B8%D1%87",
+                    "scopeUrl": (
+                        "/?q=%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80%D0%BE%D0%B2+"
+                        "%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80+"
+                        "%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80%D0%BE%D0%B2%D0%B8%D1%87"
+                        "&search_field=author&language=en&genre=sf&original_format=fb2"
+                    ),
                 },
             ],
             "series": {
                 "name": "Series",
                 "sortKey": "series",
                 "number": "1",
-                "scopeUrl": "/?series=Series",
+                "scopeUrl": (
+                    "/?q=Series&search_field=series&language=en&genre=sf&original_format=fb2"
+                ),
             },
             "language": "en",
             "sourceFormat": {"key": "fb2", "label": "FB2"},
@@ -533,8 +543,14 @@ def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
     assert author_page.status_code == 200
     assert series_page.status_code == 200
     assert all(request.cursor is None for request in catalog.requests)
-    assert CatalogRequest(author="Тестов,Тест,", page_size=1_000) in catalog.requests
-    assert CatalogRequest(series="Series", page_size=1_000) in catalog.requests
+    assert (
+        CatalogRequest(query="Тестов Тест", search_field=SearchField.AUTHOR, page_size=1_000)
+        in catalog.requests
+    )
+    assert (
+        CatalogRequest(query="Series", search_field=SearchField.SERIES, page_size=1_000)
+        in catalog.requests
+    )
     assert catalog.requests[0] == CatalogRequest(
         query="book",
         search_field=SearchField.TITLE,
@@ -829,9 +845,9 @@ def test_htmx_catalog_response_replaces_complete_current_form_out_of_band() -> N
     assert 'id="catalog-search-form"' in initial.text
     assert 'hx-swap-oob="outerHTML"' not in initial.text
     assert active.status_code == 200
-    assert active.headers["HX-Push-Url"].endswith(
-        "&author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"
-        "&series=Series&include_missed=true&include_hidden=true"
+    assert active.headers["HX-Push-Url"] == (
+        "/?q=book&search_field=title&language=en&genre=sf&original_format=fb2"
+        "&include_missed=true&include_hidden=true"
     )
     form = active.text[active.text.index("<form") : active.text.index("</form>")]
     assert 'id="catalog-search-form"' in form
@@ -841,10 +857,9 @@ def test_htmx_catalog_response_replaces_complete_current_form_out_of_band() -> N
     assert '<option value="en" selected>en</option>' in form
     assert '<option value="sf" selected>Science fiction</option>' in form
     assert '<option value="fb2" selected>fb2</option>' in form
-    assert 'type="hidden" name="author" value="Тестов,Тест,"' in form
-    assert 'type="hidden" name="series" value="Series"' in form
-    assert "Author: Тестов Тест" in form
-    assert "Series: Series" in form
+    assert 'name="author"' not in form
+    assert 'name="series"' not in form
+    assert "Searching within" not in form
     assert 'name="include_missed" value="true" checked' in form
     assert 'name="include_hidden" value="true" checked' in form
     assert "catalog-more-filters" not in form
@@ -896,7 +911,7 @@ def test_missing_selected_filter_options_are_retained_in_full_and_oob_forms() ->
     assert '<option value="mobi" selected>mobi</option>' in form
 
 
-def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
+def test_metadata_search_links_preserve_optional_missed_and_hidden_filters() -> None:
     app, catalog, _ = _app()
     with TestClient(app) as client:
         page = client.get("/?q=hidden&include_missed=true&include_hidden=true")
@@ -915,12 +930,14 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
         "/books/public-1/read?include_missed=true&include_hidden=true"
     )
     assert parse_qs(urlsplit(hidden_book["authors"][0]["scopeUrl"]).query) == {
-        "author": ["Тестов,Тест,"],
+        "q": ["Тестов Тест"],
+        "search_field": ["author"],
         "include_missed": ["true"],
         "include_hidden": ["true"],
     }
     assert parse_qs(urlsplit(hidden_book["series"]["scopeUrl"]).query) == {
-        "series": ["Series"],
+        "q": ["Series"],
+        "search_field": ["series"],
         "include_missed": ["true"],
         "include_hidden": ["true"],
     }
@@ -987,10 +1004,13 @@ def test_result_detail_link_is_clean_and_preserves_only_availability_flags() -> 
     assert "Back to results" in detail.text
     assert catalog.detail_requests[-1] == (True, True)
     assert (
-        'href="/?author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C'
-        '&amp;include_missed=true&amp;include_hidden=true"' in detail.text
+        'href="/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%20%D0%A2%D0%B5%D1%81%D1%82'
+        '&amp;search_field=author&amp;include_missed=true&amp;include_hidden=true"' in detail.text
     )
-    assert 'href="/?series=Series&amp;include_missed=true&amp;include_hidden=true"' in detail.text
+    assert (
+        'href="/?q=Series&amp;search_field=series&amp;include_missed=true'
+        '&amp;include_hidden=true"' in detail.text
+    )
 
 
 def test_book_detail_ignores_obsolete_return_context() -> None:
@@ -1332,15 +1352,15 @@ def test_book_detail_renders_present_metadata_and_availability_actions() -> None
     assert 'availability-badge--hidden">Hidden</span>' in hidden.text
     assert "Original file · 123 KB" in hidden.text
     assert ">FB2</a>" in hidden.text
-    assert 'href="/?series=Series&amp;include_hidden=true"' in hidden.text
+    assert 'href="/?q=Series&amp;search_field=series&amp;include_hidden=true"' in hidden.text
     assert 'availability-badge--missed">Missed</span>' in missed.text
     assert "Original file unavailable" in missed.text
     assert "Download original" not in missed.text
     assert 'href="/books/public-1/download"' not in missed.text
 
 
-def test_active_scopes_are_visible_preserved_and_removable_without_cursor() -> None:
-    app, _, _ = _app()
+def test_obsolete_exact_scope_params_are_ignored_without_scope_ui() -> None:
+    app, catalog, _ = _app()
     with TestClient(app) as client:
         page = client.get(
             "/",
@@ -1353,21 +1373,12 @@ def test_active_scopes_are_visible_preserved_and_removable_without_cursor() -> N
         )
 
     assert page.status_code == 200
-    assert 'type="hidden" name="author" value="Тестов,Тест,"' in page.text
-    assert 'type="hidden" name="series" value="Series"' in page.text
-    assert "Author: Тестов Тест" in page.text
-    assert "Series: Series" in page.text
-    assert 'aria-label="Remove author scope Тестов Тест"' in page.text
-    assert 'aria-label="Remove series scope Series"' in page.text
-    assert (
-        'href="/?q=book&amp;search_field=all&amp;language=&amp;genre=&amp;original_format=&amp;series=Series"'
-        in page.text
-    )
-    assert (
-        'href="/?q=book&amp;search_field=all&amp;language=&amp;genre=&amp;original_format=&amp;author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"'
-        in page.text
-    )
+    assert 'name="author"' not in page.text
+    assert 'name="series"' not in page.text
+    assert "Searching within" not in page.text
+    assert "scope-chip" not in page.text
     assert 'name="cursor"' not in page.text
+    assert catalog.requests[-1] == CatalogRequest(query="book", page_size=1_000)
     assert (
         'class="catalog-clear" href="/" data-catalog-criteria-link '
         'aria-label="Clear search and filters">Clear all</a>' in page.text
@@ -1433,7 +1444,10 @@ def test_utility_workspace_structure_keeps_catalog_and_management_separate() -> 
     assert toolbar_start < catalog.text.index('id="catalog-loading"') < form_end
     assert toolbar_start < catalog.text.index('id="catalog-clear-action"') < form_end
     assert "catalog-search__footer" not in catalog.text
-    assert "data-catalog-sort-controls" in catalog.text
+    assert "data-catalog-sort-controls hidden" in catalog.text
+    assert 'class="catalog-local-toolbar"' in catalog.text
+    assert ">Clear</button>" in catalog.text
+    assert "Clear local filters" not in catalog.text
     assert "data-catalog-result-view" in catalog.text
     assert "data-catalog-payload" in catalog.text
     assert "result-row__body" not in catalog.text
@@ -1451,7 +1465,6 @@ def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() 
         stylesheet = client.get("/static/css/app.css")
 
     assert stylesheet.status_code == 200
-    assert re.search(r"\.scope-chip a \{[^}]*min-height: 2\.75rem;", stylesheet.text, re.S)
     assert re.search(
         r"\.author-overflow summary \{[^}]*min-height: 1rem;",
         stylesheet.text,
@@ -1459,6 +1472,40 @@ def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() 
     )
     assert re.search(
         r"\.result-row__action,\s*\.result-row__download \{[^}]*min-height: 2\.125rem;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-tree-view \.result-row__actions \{[^}]*flex-wrap: nowrap;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-tree-author > summary > input\.catalog-tree-select,[^{]*"
+        r"\.catalog-tree-series > summary > input\.catalog-tree-select \{[^}]*"
+        r"margin: 0 var\(--space-3\);",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-table th:has\(> \.catalog-table__sort\) \{[^}]*padding: 0;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-table__sort \{[^}]*width: 100%;[^}]*justify-content: flex-start;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-table td:not\(:last-child\) a \{[^}]*text-decoration: none;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-table td:not\(:last-child\) a:hover,[^{]*"
+        r"\.catalog-table td:not\(:last-child\) a:focus-visible \{[^}]*"
+        r"text-decoration: underline;",
         stylesheet.text,
         re.S,
     )
@@ -1503,6 +1550,12 @@ def test_narrow_navigation_uses_two_touch_safe_rows_without_count_overflow() -> 
         re.S,
     )
     assert re.search(r"\.site-navigation a \{[^}]*min-height: 2\.75rem;", stylesheet.text, re.S)
+    assert re.search(
+        r"\.selected-tree-view \.result-row,\s*\.result-row \{[^}]*"
+        r"grid-template-columns: 2rem minmax\(0, 1fr\);",
+        narrow_rules,
+        re.S,
+    )
 
 
 def test_selected_page_preview_and_download_use_strict_matching_requests() -> None:
@@ -1529,6 +1582,9 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert page.headers["cache-control"] == "no-store"
     assert "set-cookie" not in page.headers
     assert "data-selected-preview-target" in page.text
+    assert 'data-selected-view="flat"' in page.text
+    assert 'data-selected-view="tree"' in page.text
+    assert 'data-selected-view="table"' in page.text
     assert "data-selection-clear" in page.text
     assert "data-selected-request-status" in page.text
     assert "data-selected-download disabled" in page.text

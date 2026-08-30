@@ -41,12 +41,17 @@ search to reach books outside the loaded collection.
 
 Choose **Flat**, **Tree**, or **Table** to explore the loaded books. **Flat** is
 the reader-oriented list, **Tree** groups books by author and series, and
-**Table** provides compact sortable columns. Use the **Title**, **Author**, and
-**Series** fields to apply local phrase filters; they apply only to the books
-already loaded and can be combined. **Clear local filters** removes them.
-Sorting with **Sort by** is also local and does not reload the catalog. If a
-local filter finds no book in an overflowed collection, additional catalog
-matches may simply not have been loaded.
+**Table** provides compact columns that can be sorted from their headings. Tree
+authors start collapsed. Author and series checkboxes select their currently
+visible matching books and show a mixed state when only some are selected. Use
+the **Title**, **Author**, and **Series** fields to apply local phrase filters;
+they apply only to the books already loaded and can be combined. Filtering does
+not change expanded Tree branches. Click an author or series name to run an
+ordinary catalog search with **Search in** set to **Author** or **Series**; the
+current Language, Genre, Format, and availability filters remain selected.
+**Clear** removes the local filters. If a local filter finds no book in an
+overflowed collection, additional catalog matches may simply not have been
+loaded.
 
 Open a result to see its full metadata, or use the source-format button, such as
 **FB2** or **EPUB**, to get the stored file unchanged. When more formats are
@@ -121,6 +126,7 @@ entry in the navigation shows how many books are currently selected.
 
 On the selected-books page you can:
 
+- switch the selected books between **Flat**, **Tree**, and **Table** views and sort the Table by its **Author**, **Title**, or **Series** heading;
 - uncheck books that should not be included in the next ZIP;
 - remove individual books or clear the selection;
 - review unavailable, unsupported, and conflicting books;

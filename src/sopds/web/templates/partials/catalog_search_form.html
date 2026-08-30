@@ -9,27 +9,6 @@
   hx-disabled-elt="#catalog-submit"
   {% if include_catalog_form_oob %}hx-swap-oob="outerHTML"{% endif %}
 >
-  {% if catalog_request.author %}<input type="hidden" name="author" value="{{ catalog_request.author }}">{% endif %}
-  {% if catalog_request.series %}<input type="hidden" name="series" value="{{ catalog_request.series }}">{% endif %}
-
-  {% if catalog_request.author or catalog_request.series %}
-    <div class="catalog-scopes" aria-label="Active catalog scopes">
-      <span class="catalog-scopes__label">Searching within — main searches stay in these scopes</span>
-      {% if catalog_request.author %}
-        <span class="scope-chip">
-          Author: {{ catalog_request.author|author_name }}
-          <a href="{{ author_removal_href }}" data-catalog-criteria-link aria-label="Remove author scope {{ catalog_request.author|author_name }}">Remove</a>
-        </span>
-      {% endif %}
-      {% if catalog_request.series %}
-        <span class="scope-chip">
-          Series: {{ catalog_request.series }}
-          <a href="{{ series_removal_href }}" data-catalog-criteria-link aria-label="Remove series scope {{ catalog_request.series }}">Remove</a>
-        </span>
-      {% endif %}
-    </div>
-  {% endif %}
-
   <div class="catalog-search__primary">
     <label class="visually-hidden" for="catalog-query">Search the library</label>
     <div class="catalog-search__row">

@@ -26,7 +26,6 @@ const exportHook = `
     filterBooks,
     validatePayload,
     buildTreeModel,
-    filterExpansionTransition,
     buildBookRow,
     buildActions,
     detailHistoryContext,
@@ -231,13 +230,13 @@ function rawBook(id, overrides = {}) {
       raw: authorName,
       display: authorName,
       sortKey: authorName.toLowerCase(),
-      scopeUrl: `/?author=${encodeURIComponent(authorName)}`,
+      scopeUrl: `/?q=${encodeURIComponent(authorName)}&search_field=author`,
     }]),
     series: seriesName === null ? null : {
       name: seriesName,
       sortKey: seriesName.toLowerCase(),
       number: seriesNumber,
-      scopeUrl: `/?series=${encodeURIComponent(seriesName)}`,
+      scopeUrl: `/?q=${encodeURIComponent(seriesName)}&search_field=series`,
     },
     language: "en",
     sourceFormat: {key: "fb2", label: "FB2"},
@@ -293,8 +292,8 @@ test("fragment state is bounded, allowlisted, canonical, and fresh criteria clea
 
 test("criteria and HTMX history paths receive only validated view and sort state", () => {
   const state = behavior.parseFragment("#view=table&flatSort=series&flatDir=desc&tableSort=number&tableDir=desc&title=typed");
-  const path = behavior.appendPresentationFragment("/?author=A%26B", state, "https://catalog.test/?q=old");
-  assert.match(path, /^\/\?author=A%26B#view=table/);
+  const path = behavior.appendPresentationFragment("/?q=A%26B&search_field=author", state, "https://catalog.test/?q=old");
+  assert.match(path, /^\/\?q=A%26B&search_field=author#view=table/);
   const restored = behavior.parseFragment(new URL(path, "https://catalog.test").hash);
   assert.equal(restored.view, "table");
   assert.equal(restored.tableSort, "number");
@@ -317,7 +316,7 @@ test("phrase normalization is NFKC, case-insensitive, ё/е equivalent, and punc
 
 test("author filtering checks all authors rather than only displayed overflow authors", () => {
   const authors = ["A", "B", "C", "D", "E", "Hidden Sixth"].map((name) => ({
-    raw: name, display: name, sortKey: name.toLowerCase(), scopeUrl: `/?author=${name}`,
+    raw: name, display: name, sortKey: name.toLowerCase(), scopeUrl: `/?q=${name}&search_field=author`,
   }));
   const [book] = books(rawBook("many", {authors}));
   assert.equal(behavior.matchesFilters(book, {author: "hidden sixth"}), true);
@@ -446,7 +445,7 @@ test("Tree grouping applies no-author, one, duplicate 2–5, and Many authors 6+
     raw: `${prefix}${index}`,
     display: `${prefix}${index}`,
     sortKey: `${prefix.toLowerCase()}${index}`,
-    scopeUrl: `/?author=${prefix}${index}`,
+    scopeUrl: `/?q=${prefix}${index}&search_field=author`,
   }));
   const values = books(
     rawBook("unknown", {authors: [], seriesName: null}),
@@ -466,7 +465,7 @@ test("Tree grouping applies no-author, one, duplicate 2–5, and Many authors 6+
 });
 
 test("Tree branch counts are unique, named series sort naturally by name, and no-series is last", () => {
-  const duplicateAuthor = [{raw: "A", display: "A", sortKey: "a", scopeUrl: "/?author=A"}];
+  const duplicateAuthor = [{raw: "A", display: "A", sortKey: "a", scopeUrl: "/?q=A&search_field=author"}];
   const tree = behavior.buildTreeModel(books(
     rawBook("two", {authors: duplicateAuthor, seriesName: "B", seriesNumber: "10"}),
     rawBook("one", {authors: duplicateAuthor, seriesName: "A", seriesNumber: "2"}),
@@ -499,18 +498,6 @@ test("a named none series and Books without series retain independent expansion 
   assert.equal(leaves[0].open, true);
   assert.equal(leaves[1].open, false);
   controller.destroy();
-});
-
-test("filter expansion snapshots once and restores the user's state", () => {
-  const expansion = new Map([["author:A", false], ["author:A|series:S", true]]);
-  const started = behavior.filterExpansionTransition(expansion, null, false, true);
-  expansion.set("author:A", true);
-  const continued = behavior.filterExpansionTransition(expansion, started.snapshot, true, true);
-  assert.equal(continued.snapshot.get("author:A"), false);
-  const cleared = behavior.filterExpansionTransition(expansion, continued.snapshot, true, false);
-  assert.equal(cleared.expansion.get("author:A"), false);
-  assert.equal(cleared.expansion.get("author:A|series:S"), true);
-  assert.equal(cleared.snapshot, null);
 });
 
 test("payload validation deduplicates IDs and rejects unsafe actions without trusting markup", () => {
@@ -575,7 +562,9 @@ test("shared actions expose selection/read/download/conversions/details only whe
   assert.equal(eligibleActions.querySelectorAll("[data-selection-checkbox]").length, 1);
   assert.match(eligibleActions.textContent, /Read/);
   assert.match(eligibleActions.textContent, /FB2/);
-  assert.match(eligibleActions.textContent, /Formats/, "download choices remain visibly text-identifiable");
+  const formatMenu = eligibleActions.querySelector("summary");
+  assert.equal(formatMenu.textContent, "▼");
+  assert.match(formatMenu.getAttribute("aria-label"), /More download formats/);
   assert.match(eligibleActions.textContent, /EPUB/);
   assert.match(eligibleActions.textContent, /Details/);
   const missedActions = behavior.buildActions(missed);
@@ -692,17 +681,20 @@ test("Table sorting restores focus to the replacement header and retains sort st
   controller.destroy();
 });
 
-test("Tree leaves start lazy, authors start open, and opening one leaf emits one lazy event", () => {
+test("Tree authors start collapsed, leaves stay lazy, and filters preserve expansion", () => {
   dispatched.length = 0;
   const fixture = controllerRoot();
   const values = books(rawBook("one"));
   const controller = new behavior.CatalogController(fixture.root, {books: values, truncated: false}, behavior.parseFragment("#view=tree"));
-  const author = fixture.mount.querySelector(".catalog-tree-author");
-  const leaf = fixture.mount.querySelector(".catalog-tree-series");
-  assert.equal(author.open, true);
+  let author = fixture.mount.querySelector(".catalog-tree-author");
+  let leaf = fixture.mount.querySelector(".catalog-tree-series");
+  assert.equal(author.open, false);
   assert.equal(leaf.open, false);
   assert.equal(fixture.mount.querySelectorAll(".catalog-tree-books").length, 0);
   assert.equal(dispatched.length, 1);
+
+  author.open = true;
+  author.dispatch("toggle");
   leaf.open = true;
   leaf.dispatch("toggle");
   const lazyRows = fixture.mount.querySelector(".catalog-tree-books");
@@ -710,9 +702,58 @@ test("Tree leaves start lazy, authors start open, and opening one leaf emits one
   const lazyCriteriaLink = lazyRows.querySelector("a[data-catalog-criteria-link]");
   const lazyState = behavior.parseFragment(new URL(lazyCriteriaLink.href, location.href).hash);
   assert.equal(lazyState.view, "tree");
-  assert.equal(lazyState.title, "");
   assert.equal(dispatched.length, 2);
-  assert.equal(dispatched[1].detail.root, fixture.mount);
+
+  controller.state.title = "title";
+  controller.render();
+  author = fixture.mount.querySelector(".catalog-tree-author");
+  leaf = fixture.mount.querySelector(".catalog-tree-series");
+  assert.equal(author.open, true);
+  assert.equal(leaf.open, true);
+  controller.state.title = "";
+  controller.render();
+  assert.equal(fixture.mount.querySelector(".catalog-tree-author").open, true);
+  assert.equal(fixture.mount.querySelector(".catalog-tree-series").open, true);
+  controller.destroy();
+});
+
+test("Tree parent checkboxes contain unique visible selectable IDs", () => {
+  const fixture = controllerRoot();
+  const values = books(
+    rawBook("one"),
+    rawBook("two"),
+    rawBook("missed", {availability: "missed", selectable: false, downloadable: false}),
+  );
+  const controller = new behavior.CatalogController(
+    fixture.root,
+    {books: values, truncated: false},
+    behavior.parseFragment("#view=tree"),
+  );
+  const groups = fixture.mount.querySelectorAll("[data-selection-group]");
+  assert.equal(groups.length, 2);
+  for (const group of groups) {
+    assert.deepEqual(JSON.parse(group.dataset.publicIds), ["one", "two"]);
+    assert.match(group.getAttribute("aria-label"), /^Select all books in (author|series)/);
+  }
+  controller.state.title = "one";
+  controller.render();
+  for (const group of fixture.mount.querySelectorAll("[data-selection-group]")) {
+    assert.deepEqual(JSON.parse(group.dataset.publicIds), ["one"], "filtered groups affect visible matches only");
+  }
+  controller.destroy();
+});
+
+test("Table places book selection in the first column and excludes it from actions", () => {
+  const fixture = controllerRoot();
+  const controller = new behavior.CatalogController(
+    fixture.root,
+    {books: books(rawBook("one")), truncated: false},
+    behavior.parseFragment("#view=table"),
+  );
+  const row = fixture.mount.querySelector("tbody").children[0];
+  assert.equal(row.children[0].className, "catalog-table__selection");
+  assert.equal(row.children[0].querySelectorAll("[data-selection-checkbox]").length, 1);
+  assert.equal(row.children.at(-1).querySelectorAll("[data-selection-checkbox]").length, 0);
   controller.destroy();
 });
 
@@ -810,7 +851,7 @@ test("real HTMX event sequence preserves presentation state and separates fresh 
 
   const criteriaLink = new FakeNode("a", "Author");
   criteriaLink.dataset.catalogCriteriaLink = "";
-  criteriaLink.href = "/?author=Author";
+  criteriaLink.href = "/?q=Author&search_field=author";
   documentStub.dispatchEvent({type: "click", target: criteriaLink, defaultPrevented: false});
   const criteriaState = behavior.parseFragment(new URL(criteriaLink.href, location.href).hash);
   assert.equal(criteriaState.view, "table");

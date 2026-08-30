@@ -8,6 +8,9 @@
     {value: "epub", label: "EPUB"},
     {value: "azw3", label: "AZW3"},
   ];
+  const SELECTED_VIEWS = new Set(["flat", "tree", "table"]);
+  const SELECTED_TABLE_SORTS = new Set(["author", "title", "series"]);
+  const SORT_DIRECTIONS = new Set(["asc", "desc"]);
 
   let selectedIds = [];
   let storageReady = false;
@@ -15,6 +18,9 @@
   let previewGeneration = 0;
   let pendingPreviewFocus = null;
   let authoritativePreviewIds = null;
+  let selectedView = "flat";
+  let selectedTableSort = "author";
+  let selectedTableDirection = "asc";
 
   function isValidId(value) {
     return typeof value === "string" && value.length > 0 && value.length <= 64 && !INVALID_ID.test(value);
@@ -92,6 +98,25 @@
     });
   }
 
+  function selectionGroupIds(checkbox) {
+    try {
+      return normalizeIds(JSON.parse(checkbox.dataset.publicIds || "[]"));
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function syncGroupCheckboxes(root = document) {
+    const includedIds = new Set(selectedIds);
+    root.querySelectorAll("[data-selection-group]").forEach((checkbox) => {
+      const publicIds = selectionGroupIds(checkbox);
+      const includedCount = publicIds.filter((publicId) => includedIds.has(publicId)).length;
+      checkbox.checked = publicIds.length > 0 && includedCount === publicIds.length;
+      checkbox.indeterminate = includedCount > 0 && includedCount < publicIds.length;
+      checkbox.disabled = !storageReady || publicIds.length === 0;
+    });
+  }
+
   function syncCheckboxes(root = document) {
     const includedIds = new Set(selectedIds);
     root.querySelectorAll("[data-selection-checkbox]").forEach((checkbox) => {
@@ -103,14 +128,15 @@
       if (control) {
         control.hidden = !storageReady;
       }
-      const selectedEntry = checkbox.closest("[data-selected-entry]");
+      const selectedEntry = checkbox.closest("[data-selected-entry]") || checkbox.closest("[data-selected-view-entry]");
       if (selectedEntry) {
         selectedEntry.dataset.included = String(included);
-        if (!included) {
+        if (!included && selectedEntry.matches("[data-selected-entry]")) {
           clearCollisionState(selectedEntry);
         }
       }
     });
+    syncGroupCheckboxes(root);
   }
 
   function hasAuthoritativePreviewRows(page) {
@@ -378,6 +404,319 @@
     return emptyState;
   }
 
+  function selectedElement(tag, className = "", text = "") {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text) node.textContent = text;
+    return node;
+  }
+
+  function selectedTextCompare(left, right) {
+    const normalizedLeft = String(left).normalize("NFKC").toLowerCase();
+    const normalizedRight = String(right).normalize("NFKC").toLowerCase();
+    if (normalizedLeft === normalizedRight) return left < right ? -1 : left > right ? 1 : 0;
+    return normalizedLeft < normalizedRight ? -1 : 1;
+  }
+
+  function selectedOptionalTextCompare(left, right) {
+    if (!left || !right) {
+      if (!left && !right) return 0;
+      return left ? -1 : 1;
+    }
+    return selectedTextCompare(left, right);
+  }
+
+  function compareSelectedMetadata(left, right, sort, direction = "asc") {
+    const leftAuthor = left.authors[0]?.label || null;
+    const rightAuthor = right.authors[0]?.label || null;
+    const leftSeries = left.series?.label || null;
+    const rightSeries = right.series?.label || null;
+    let compared;
+    if (sort === "title") {
+      compared = selectedTextCompare(left.title, right.title);
+    } else if (sort === "series") {
+      compared = selectedOptionalTextCompare(leftSeries, rightSeries)
+        || selectedTextCompare(left.title, right.title)
+        || selectedOptionalTextCompare(leftAuthor, rightAuthor);
+    } else {
+      compared = selectedOptionalTextCompare(leftAuthor, rightAuthor)
+        || selectedOptionalTextCompare(leftSeries, rightSeries)
+        || selectedTextCompare(left.title, right.title);
+    }
+    if (!compared) compared = selectedTextCompare(left.publicId, right.publicId);
+    return direction === "desc" ? -compared : compared;
+  }
+
+  function selectedEntryComparator(sort, direction) {
+    return (left, right) => compareSelectedMetadata(
+      selectedEntryMetadata(left),
+      selectedEntryMetadata(right),
+      sort,
+      direction,
+    );
+  }
+
+  function selectedGroupKey(type, label) {
+    return `${type}:${String(label).normalize("NFKC").toLowerCase()}`;
+  }
+
+  function mergeSelectedSearchUrls(urls) {
+    if (!urls.length) return null;
+    const merged = new URL(urls[0], "http://localhost/");
+    for (const value of urls.slice(1)) {
+      const candidate = new URL(value, "http://localhost/");
+      for (const name of ["include_hidden", "include_missed"]) {
+        if (candidate.searchParams.get(name) === "true") merged.searchParams.set(name, "true");
+      }
+    }
+    return `${merged.pathname}${merged.search}`;
+  }
+
+  function selectedMetadataLink(label, urls) {
+    const href = mergeSelectedSearchUrls(urls);
+    if (!href) return document.createTextNode(label);
+    const link = selectedElement("a", "", label);
+    link.href = href;
+    return link;
+  }
+
+  function selectedEntryMetadata(entry) {
+    const authorLinks = [...entry.querySelectorAll(".result-row__authors a")];
+    let authors = authorLinks.map((link) => ({
+      key: selectedGroupKey("author", link.textContent),
+      label: link.textContent,
+      searchUrl: link.getAttribute("href"),
+    }));
+    if (authors.length === 0) {
+      authors = [{key: "synthetic-author:unknown", label: "Unknown author", searchUrl: null}];
+    } else if (authors.length >= 6) {
+      authors = [{key: "synthetic-author:many", label: "Many authors (6+)", searchUrl: null}];
+    }
+    const seriesLink = entry.querySelector(".result-row__series a");
+    return {
+      publicId: entry.dataset.publicId,
+      title: entry.querySelector(".result-row__title")?.textContent.trim() || "Unknown selection",
+      authors,
+      series: seriesLink ? {
+        key: selectedGroupKey("series", seriesLink.textContent),
+        label: seriesLink.textContent,
+        searchUrl: seriesLink.getAttribute("href"),
+      } : null,
+    };
+  }
+
+  function cloneSelectedEntry(entry) {
+    const clone = entry.cloneNode(true);
+    clone.removeAttribute("data-selected-entry");
+    clone.dataset.selectedViewEntry = "";
+    return clone;
+  }
+
+  function selectedGroupCheckbox(entries, label) {
+    const publicIds = [...new Set(entries.map((entry) => entry.dataset.publicId).filter(isValidId))];
+    const checkbox = selectedElement("input", "catalog-tree-select");
+    checkbox.type = "checkbox";
+    checkbox.dataset.selectionGroup = "";
+    checkbox.dataset.publicIds = JSON.stringify(publicIds);
+    checkbox.setAttribute("aria-label", `Select all books in ${label}`);
+    return checkbox;
+  }
+
+  function renderSelectedFlat(entries) {
+    const list = selectedElement("div", "result-list selected-result-list selected-flat-view");
+    entries.forEach((entry) => list.append(cloneSelectedEntry(entry)));
+    return list;
+  }
+
+  function renderSelectedTree(entries) {
+    const groups = new Map();
+    for (const entry of entries) {
+      const metadata = selectedEntryMetadata(entry);
+      for (const author of metadata.authors) {
+        let branch = groups.get(author.key);
+        if (!branch) {
+          branch = {label: author.label, entries: [], searchUrls: [], series: new Map()};
+          groups.set(author.key, branch);
+        }
+        branch.entries.push(entry);
+        if (author.searchUrl) branch.searchUrls.push(author.searchUrl);
+        const seriesKey = metadata.series?.key || "synthetic-series:without-series";
+        let leaf = branch.series.get(seriesKey);
+        if (!leaf) {
+          leaf = {
+            label: metadata.series?.label || "Books without series",
+            entries: [],
+            searchUrls: [],
+          };
+          branch.series.set(seriesKey, leaf);
+        }
+        leaf.entries.push(entry);
+        if (metadata.series?.searchUrl) leaf.searchUrls.push(metadata.series.searchUrl);
+      }
+    }
+    const tree = selectedElement("div", "catalog-tree-view selected-tree-view");
+    const branches = [...groups.values()].sort((left, right) => selectedTextCompare(left.label, right.label));
+    for (const branch of branches) {
+      const author = selectedElement("details", "catalog-tree-author");
+      const authorSummary = selectedElement("summary", "catalog-tree-author__summary");
+      authorSummary.append(selectedGroupCheckbox(branch.entries, `author ${branch.label}`));
+      authorSummary.append(selectedMetadataLink(branch.label, branch.searchUrls));
+      authorSummary.append(selectedElement("span", "catalog-tree-count", ` (${new Set(branch.entries.map((entry) => entry.dataset.publicId)).size})`));
+      author.append(authorSummary);
+      const leaves = [...branch.series.values()].sort((left, right) => selectedTextCompare(left.label, right.label));
+      for (const leaf of leaves) {
+        const series = selectedElement("details", "catalog-tree-series");
+        const summary = selectedElement("summary", "catalog-tree-series__summary");
+        summary.append(selectedGroupCheckbox(leaf.entries, `series ${leaf.label}`));
+        summary.append(selectedMetadataLink(leaf.label, leaf.searchUrls));
+        summary.append(selectedElement("span", "catalog-tree-count", ` (${new Set(leaf.entries.map((entry) => entry.dataset.publicId)).size})`));
+        const books = selectedElement("div", "catalog-tree-books");
+        [...leaf.entries]
+          .sort((left, right) => selectedTextCompare(selectedEntryMetadata(left).title, selectedEntryMetadata(right).title))
+          .forEach((entry) => books.append(cloneSelectedEntry(entry)));
+        series.append(summary, books);
+        author.append(series);
+      }
+      tree.append(author);
+    }
+    return tree;
+  }
+
+  function selectedTableCell(row, content, className = "") {
+    const cell = selectedElement("td", className);
+    if (content) cell.append(content);
+    row.append(cell);
+  }
+
+  function renderSelectedTable(entries) {
+    const wrapper = selectedElement("div", "catalog-table-scroll");
+    const table = selectedElement("table", "catalog-table selected-table");
+    table.append(selectedElement("caption", "visually-hidden", "Selected books"));
+    const head = selectedElement("thead");
+    const header = selectedElement("tr");
+    for (const {key, label} of [
+      {key: null, label: "Select"},
+      {key: "author", label: "Author"},
+      {key: "title", label: "Title"},
+      {key: "series", label: "Series"},
+      {key: null, label: "Status"},
+      {key: null, label: "Actions"},
+    ]) {
+      const cell = selectedElement("th");
+      cell.scope = "col";
+      if (!key) cell.textContent = label;
+      else {
+        const button = selectedElement("button", "catalog-table__sort", label);
+        button.type = "button";
+        button.dataset.selectedTableSort = key;
+        button.addEventListener("click", () => {
+          if (selectedTableSort === key) {
+            selectedTableDirection = selectedTableDirection === "asc" ? "desc" : "asc";
+          } else {
+            selectedTableSort = key;
+            selectedTableDirection = "asc";
+          }
+          commitSelectedViewState();
+          renderSelectedView();
+          const replacement = [...document.querySelectorAll("[data-selected-table-sort]")]
+            .find((candidate) => candidate.dataset.selectedTableSort === key);
+          replacement?.focus();
+        });
+        cell.append(button);
+        if (selectedTableSort === key) {
+          cell.setAttribute("aria-sort", selectedTableDirection === "asc" ? "ascending" : "descending");
+          button.append(selectedElement("span", "visually-hidden", `, sorted ${selectedTableDirection === "asc" ? "ascending" : "descending"}`));
+        }
+      }
+      header.append(cell);
+    }
+    head.append(header);
+    const body = selectedElement("tbody");
+    const sortedEntries = [...entries].sort(selectedEntryComparator(selectedTableSort, selectedTableDirection));
+    for (const entry of sortedEntries) {
+      const row = selectedElement(
+        "tr",
+        `selected-table__row selected-table__row--${entry.dataset.status || "unknown"}${entry.dataset.collision === "true" ? " selected-table__row--collision" : ""}`,
+      );
+      row.dataset.selectedViewEntry = "";
+      row.dataset.publicId = entry.dataset.publicId;
+      row.dataset.included = entry.dataset.included || "true";
+      selectedTableCell(row, entry.querySelector("[data-selection-control]")?.cloneNode(true), "catalog-table__selection");
+      selectedTableCell(row, entry.querySelector(".result-row__authors")?.cloneNode(true));
+      selectedTableCell(row, entry.querySelector(".result-row__heading")?.cloneNode(true));
+      selectedTableCell(row, entry.querySelector(".result-row__series")?.cloneNode(true));
+      const status = selectedElement("div", "selected-table__status");
+      const statusValue = entry.dataset.status || "unknown";
+      status.append(selectedElement(
+        "strong",
+        "selected-table__status-label",
+        statusValue[0].toUpperCase() + statusValue.slice(1),
+      ));
+      status.append(entry.querySelector(".result-metadata")?.cloneNode(true) || document.createTextNode("Unknown"));
+      const note = entry.querySelector(".selected-entry-note")?.cloneNode(true);
+      if (note) status.append(note);
+      selectedTableCell(row, status);
+      selectedTableCell(row, entry.querySelector(".result-row__actions")?.cloneNode(true));
+      body.append(row);
+    }
+    table.append(head, body);
+    wrapper.append(table);
+    return wrapper;
+  }
+
+  function syncSelectedViewButtons() {
+    document.querySelectorAll("[data-selected-view]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.selectedView === selectedView));
+    });
+  }
+
+  function commitSelectedViewState() {
+    const values = new URLSearchParams((window.location?.hash || "").replace(/^#/, ""));
+    values.set("view", selectedView);
+    values.set("selectedSort", selectedTableSort);
+    values.set("selectedDir", selectedTableDirection);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}#${values.toString()}`,
+    );
+  }
+
+  function renderSelectedView(target = document.querySelector("[data-selected-preview-target]")) {
+    const content = target?.querySelector("#selected-preview-content");
+    const entriesContainer = content?.querySelector("[data-selected-entries]");
+    content?.querySelector("[data-selected-view-mount]")?.remove();
+    if (!content || !entriesContainer) return;
+    const entries = [...entriesContainer.querySelectorAll("[data-selected-entry]")];
+    entriesContainer.hidden = true;
+    const mount = selectedElement("div", "selected-view-mount");
+    mount.dataset.selectedViewMount = "";
+    if (selectedView === "tree") mount.append(renderSelectedTree(entries));
+    else if (selectedView === "table") mount.append(renderSelectedTable(entries));
+    else mount.append(renderSelectedFlat(entries));
+    content.append(mount);
+    syncCheckboxes(mount);
+  }
+
+  function initializeSelectedViewSwitcher() {
+    const values = new URLSearchParams((window.location?.hash || "").replace(/^#/, ""));
+    selectedView = SELECTED_VIEWS.has(values.get("view")) ? values.get("view") : "flat";
+    selectedTableSort = SELECTED_TABLE_SORTS.has(values.get("selectedSort"))
+      ? values.get("selectedSort") : "author";
+    selectedTableDirection = SORT_DIRECTIONS.has(values.get("selectedDir"))
+      ? values.get("selectedDir") : "asc";
+    syncSelectedViewButtons();
+    document.querySelectorAll("[data-selected-view]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!SELECTED_VIEWS.has(button.dataset.selectedView)) return;
+        selectedView = button.dataset.selectedView;
+        commitSelectedViewState();
+        syncSelectedViewButtons();
+        renderSelectedView();
+      });
+    });
+  }
+
   function replacePreviewHeader(currentContent, currentEntries, incomingContent) {
     for (const child of [...currentContent.children]) {
       if (child !== currentEntries) {
@@ -553,6 +892,7 @@
       if (!successful) {
         if (keepEntries) {
           showPreservedPreviewError(target, incomingContent);
+          renderSelectedView(target);
         } else {
           target.innerHTML = markup;
         }
@@ -573,6 +913,7 @@
         syncCheckboxes(target);
       }
       authoritativePreviewIds = new Set(requestIds);
+      renderSelectedView(target);
       applySuccessfulPreviewState(page, content);
       if (syncFormatSelector(page)) {
         refreshSelectedPreview({preserveEntries: hasExcludedDisplayedEntries()});
@@ -590,6 +931,7 @@
       resetPreviewState(page);
       if (keepEntries) {
         showPreservedPreviewError(target);
+        renderSelectedView(target);
       } else {
         showPreviewError(target);
       }
@@ -607,7 +949,9 @@
     if (!checkbox) {
       return;
     }
-    const preserveEntries = Boolean(checkbox.closest("[data-selected-entry]"));
+    const preserveEntries = Boolean(
+      checkbox.closest("[data-selected-entry]") || checkbox.closest("[data-selected-view-entry]"),
+    );
     if (checkbox.checked) {
       appendId(checkbox.dataset.publicId, preserveEntries);
     } else {
@@ -616,9 +960,44 @@
   }
 
   function handleClick(event) {
+    const group = event.target.closest("[data-selection-group]");
+    if (group) {
+      event.stopPropagation();
+      const publicIds = selectionGroupIds(group);
+      const selected = new Set(selectedIds);
+      const include = publicIds.some((publicId) => !selected.has(publicId));
+      const preserveEntries = Boolean(group.closest(".selected-tree-view"));
+      if (include) {
+        const nextIds = [...new Set([...selectedIds, ...publicIds])];
+        if (nextIds.length > MAX_SELECTED) {
+          showSelectionStatus("The selection is limited to 10,000 books.", true);
+          syncInterface();
+          return;
+        }
+        saveSelection(nextIds, null, preserveEntries);
+      } else {
+        const removed = new Set(publicIds);
+        saveSelection(
+          selectedIds.filter((publicId) => !removed.has(publicId)),
+          null,
+          preserveEntries,
+        );
+      }
+      return;
+    }
     const remove = event.target.closest("[data-selection-remove]");
     if (remove) {
-      removeSelectedId(remove.dataset.publicId, remove.closest("[data-selected-entry]"));
+      let entry = remove.closest("[data-selected-entry]");
+      if (!entry && remove.closest("[data-selected-view-entry]")) {
+        for (const candidate of document.querySelectorAll("[data-selected-entry]")) {
+          if (candidate.dataset.publicId === remove.dataset.publicId) {
+            entry = candidate;
+            break;
+          }
+        }
+      }
+      removeSelectedId(remove.dataset.publicId, entry || remove.closest("[data-selected-view-entry]"));
+      renderSelectedView();
       return;
     }
     if (event.target.closest("[data-selection-clear]")) {
@@ -668,6 +1047,7 @@
         refreshSelectedPreview({preserveEntries: hasExcludedDisplayedEntries()});
       });
     }
+    initializeSelectedViewSwitcher();
     refreshSelectedPreview();
   }
 

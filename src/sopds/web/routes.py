@@ -218,8 +218,6 @@ def _catalog_request(
     language: str | None,
     genre: str | None,
     original_format: str | None,
-    author: str | None,
-    series: str | None,
     include_missed: bool,
     include_hidden: bool,
 ) -> CatalogRequest:
@@ -229,8 +227,6 @@ def _catalog_request(
         language=language or None,
         genre=genre or None,
         original_format=original_format or None,
-        author=author or None,
-        series=series or None,
         include_missed=include_missed,
         include_hidden=include_hidden,
         cursor=None,
@@ -246,10 +242,6 @@ def _catalog_url(path: str, catalog_request: CatalogRequest) -> str:
         "genre": catalog_request.genre or "",
         "original_format": catalog_request.original_format or "",
     }
-    if catalog_request.author is not None:
-        values["author"] = catalog_request.author
-    if catalog_request.series is not None:
-        values["series"] = catalog_request.series
     if catalog_request.include_missed:
         values["include_missed"] = "true"
     if catalog_request.include_hidden:
@@ -266,8 +258,6 @@ def _catalog_filter_state_context(catalog_request: CatalogRequest) -> dict[str, 
                 catalog_request.language is not None,
                 catalog_request.genre is not None,
                 catalog_request.original_format is not None,
-                catalog_request.author is not None,
-                catalog_request.series is not None,
                 catalog_request.include_missed,
                 catalog_request.include_hidden,
             )
@@ -304,36 +294,7 @@ async def _catalog_form_context(
     return {
         **_catalog_filter_state_context(catalog_request),
         "filters": form_filters,
-        "author_removal_href": (
-            _scope_removal_url(catalog_request, "author")
-            if catalog_request.author is not None
-            else None
-        ),
-        "series_removal_href": (
-            _scope_removal_url(catalog_request, "series")
-            if catalog_request.series is not None
-            else None
-        ),
     }
-
-
-def _scope_removal_url(catalog_request: CatalogRequest, scope: Literal["author", "series"]) -> str:
-    values = {
-        "q": catalog_request.query,
-        "search_field": catalog_request.search_field.value,
-        "language": catalog_request.language or "",
-        "genre": catalog_request.genre or "",
-        "original_format": catalog_request.original_format or "",
-    }
-    if scope != "author" and catalog_request.author is not None:
-        values["author"] = catalog_request.author
-    if scope != "series" and catalog_request.series is not None:
-        values["series"] = catalog_request.series
-    if catalog_request.include_missed:
-        values["include_missed"] = "true"
-    if catalog_request.include_hidden:
-        values["include_hidden"] = "true"
-    return f"/?{urlencode(values)}"
 
 
 def _availability_query(include_missed: bool, include_hidden: bool) -> str:
@@ -354,17 +315,21 @@ def _availability_suffix(include_missed: bool, include_hidden: bool) -> str:
     return f"?{query}" if query else ""
 
 
-def _exact_scope_url(
-    scope: Literal["author", "series"],
-    value: str,
-    *,
-    include_missed: bool,
-    include_hidden: bool,
+def _metadata_search_url(
+    search_field: Literal["author", "series"],
+    query: str,
+    catalog_request: CatalogRequest,
 ) -> str:
-    values: dict[str, str] = {scope: value}
-    if include_missed:
+    values = {
+        "q": query,
+        "search_field": search_field,
+        "language": catalog_request.language or "",
+        "genre": catalog_request.genre or "",
+        "original_format": catalog_request.original_format or "",
+    }
+    if catalog_request.include_missed:
         values["include_missed"] = "true"
-    if include_hidden:
+    if catalog_request.include_hidden:
         values["include_hidden"] = "true"
     return f"/?{urlencode(values)}"
 
@@ -415,11 +380,10 @@ def _catalog_book_payload(
                 "raw": author,
                 "display": _format_author_name(author),
                 "sortKey": normalize_text(author),
-                "scopeUrl": _exact_scope_url(
+                "scopeUrl": _metadata_search_url(
                     "author",
-                    author,
-                    include_missed=catalog_request.include_missed,
-                    include_hidden=catalog_request.include_hidden,
+                    _format_author_name(author),
+                    catalog_request,
                 ),
             }
             for author in book.authors
@@ -429,11 +393,10 @@ def _catalog_book_payload(
                 "name": book.series,
                 "sortKey": normalize_text(book.series),
                 "number": book.series_number,
-                "scopeUrl": _exact_scope_url(
+                "scopeUrl": _metadata_search_url(
                     "series",
                     book.series,
-                    include_missed=catalog_request.include_missed,
-                    include_hidden=catalog_request.include_hidden,
+                    catalog_request,
                 ),
             }
             if book.series is not None
@@ -522,8 +485,6 @@ async def index(
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
-    author: str | None = None,
-    series: str | None = None,
     include_missed: bool = False,
     include_hidden: bool = False,
 ) -> Response:
@@ -533,8 +494,6 @@ async def index(
         language,
         genre,
         original_format,
-        author,
-        series,
         include_missed,
         include_hidden,
     )
@@ -546,8 +505,6 @@ async def index(
             "language",
             "genre",
             "original_format",
-            "author",
-            "series",
             "include_missed",
             "include_hidden",
         )
@@ -1099,8 +1056,6 @@ async def catalog_fragment(
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
-    author: str | None = None,
-    series: str | None = None,
     include_missed: bool = False,
     include_hidden: bool = False,
 ) -> Response:
@@ -1110,8 +1065,6 @@ async def catalog_fragment(
         language,
         genre,
         original_format,
-        author,
-        series,
         include_missed,
         include_hidden,
     )
