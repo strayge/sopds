@@ -1048,7 +1048,7 @@ def test_book_detail_accepts_catalog_root_without_a_query() -> None:
     assert "Back to results" in response.text
 
 
-def test_book_detail_read_action_is_secondary_and_preserves_reader_context() -> None:
+def test_book_detail_read_action_is_secondary_and_omits_return_context() -> None:
     app, catalog, _ = _app()
     return_to = "/?q=book&search_field=title&cursor=opaque%2Ftoken"
     with TestClient(app) as client:
@@ -1082,9 +1082,8 @@ def test_book_detail_read_action_is_secondary_and_preserves_reader_context() -> 
     hidden_href = _link_href(hidden.text, "detail-read-link")
     assert active_href is not None
     assert urlsplit(active_href).path == "/books/public-1/read"
-    assert parse_qs(urlsplit(active_href).query) == {"return_to": [return_to]}
+    assert parse_qs(urlsplit(active_href).query) == {}
     assert parse_qs(urlsplit(hidden_href).query) == {
-        "return_to": [return_to],
         "include_missed": ["true"],
         "include_hidden": ["true"],
     }
@@ -1132,16 +1131,12 @@ def test_reader_route_rejects_ineligible_books_and_honors_availability_scopes() 
     ]
 
 
-def test_reader_shell_is_standalone_and_preserves_validated_detail_context() -> None:
+def test_reader_shell_is_standalone_and_preserves_availability_context() -> None:
     app, catalog, _ = _app()
-    return_to = "/?q=book&search_field=title&cursor=opaque%2Ftoken"
     with TestClient(app) as client:
         response = client.get(
             "/books/public-1/read",
-            params={
-                "include_hidden": "true",
-                "return_to": return_to,
-            },
+            params={"include_hidden": "true"},
         )
 
     assert response.status_code == 200
@@ -1192,14 +1187,8 @@ def test_reader_shell_is_standalone_and_preserves_validated_detail_context() -> 
     assert _link_href(response.text, "reader-download") == "/books/public-1/download"
     retry = _link_href(response.text, "reader-retry")
     detail = _link_href(response.text, "reader-back")
-    assert parse_qs(urlsplit(retry).query) == {
-        "return_to": [return_to],
-        "include_hidden": ["true"],
-    }
-    assert parse_qs(urlsplit(detail).query) == {
-        "return_to": [return_to],
-        "include_hidden": ["true"],
-    }
+    assert parse_qs(urlsplit(retry).query) == {"include_hidden": ["true"]}
+    assert parse_qs(urlsplit(detail).query) == {"include_hidden": ["true"]}
     assert urlsplit(retry).path == "/books/public-1/read"
     assert urlsplit(detail).path == "/books/public-1"
     assert catalog.detail_requests == [(False, True)]
@@ -1308,16 +1297,13 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert title_at < attachment_at
 
 
-def test_reader_rejects_unsafe_return_context_and_renders_known_size_limit() -> None:
+def test_reader_renders_known_size_limit() -> None:
     app, catalog, _ = _app()
     catalog.detail_size = 64 * 1024 * 1024 + 1
     with TestClient(app) as client:
         response = client.get(
             "/books/public-1/read",
-            params={
-                "include_hidden": "true",
-                "return_to": "https://example.invalid/catalog",
-            },
+            params={"include_hidden": "true"},
         )
 
     assert response.status_code == 200
@@ -1331,7 +1317,6 @@ def test_reader_rejects_unsafe_return_context_and_renders_known_size_limit() -> 
     assert _link_href(response.text, "reader-retry") == ("/books/public-1/read?include_hidden=true")
     assert _link_href(response.text, "reader-download") == "/books/public-1/download"
     assert _link_href(response.text, "reader-back") == ("/books/public-1?include_hidden=true")
-    assert "example.invalid" not in response.text
 
 
 def test_book_detail_renders_present_metadata_and_availability_actions() -> None:

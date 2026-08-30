@@ -1109,12 +1109,9 @@ def _reader_book_urls(
     *,
     include_missed: bool,
     include_hidden: bool,
-    return_to: str | None,
 ) -> tuple[str, str, str]:
     path_id = quote(public_id, safe="")
     values: dict[str, str] = {}
-    if return_to is not None:
-        values["return_to"] = return_to
     if include_missed:
         values["include_missed"] = "true"
     if include_hidden:
@@ -1167,7 +1164,6 @@ async def book_detail(
             book.public_id,
             include_missed=include_missed,
             include_hidden=include_hidden,
-            return_to=validated_return_url,
         )
     return templates.TemplateResponse(
         request=request,
@@ -1194,7 +1190,6 @@ async def book_reader(
     public_id: str,
     include_missed: bool = False,
     include_hidden: bool = False,
-    return_to: str | None = None,
 ) -> Response:
     book = await _catalog(request).details(
         public_id,
@@ -1214,12 +1209,10 @@ async def book_reader(
             headers=_READER_HEADERS,
         )
 
-    validated_return_url = _validated_return_url(return_to)
     retry_url, download_url, detail_url = _reader_book_urls(
         book.public_id,
         include_missed=include_missed,
         include_hidden=include_hidden,
-        return_to=validated_return_url,
     )
     over_limit = book.size > _READER_SOURCE_LIMIT
     return templates.TemplateResponse(
