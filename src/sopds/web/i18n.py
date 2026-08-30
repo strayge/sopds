@@ -1,5 +1,7 @@
 """Request-bound localization and translation catalog preparation."""
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass
 from functools import cache
@@ -80,6 +82,115 @@ _IMPORT_TRIGGER_MESSAGES = {
     ImportTrigger.SCHEDULED: N_("scheduled"),
     ImportTrigger.MANUAL: N_("manual"),
 }
+
+_CATALOG_BROWSER_MESSAGES = {
+    "unknownAuthor": N_("Unknown author"),
+    "manyAuthors": N_("Many authors (6+)"),
+    "booksWithoutSeries": N_("Books without series"),
+    "moreAuthors": N_("+{count} more"),
+    "selectBook": N_("Select {title}"),
+    "selectAllAuthor": N_("Select all books by {label}"),
+    "selectAllSeries": N_("Select all books in series {label}"),
+    "read": N_("Read"),
+    "details": N_("Details"),
+    "missed": N_("Missed"),
+    "hidden": N_("Hidden"),
+    "authors": N_("Authors: "),
+    "series": N_("Series: "),
+    "bookMetadata": N_("Book metadata"),
+    "downloadOriginal": N_("Download original {format} file for {title}"),
+    "moreDownloadFormats": N_("More download formats for {title}"),
+    "downloadConversion": N_("Download {format} conversion for {title}"),
+    "filteredOverflow": N_("0 of {total} loaded · More match — refine search"),
+    "sortBy": N_("Sort by "),
+    "title": N_("Title"),
+    "author": N_("Author"),
+    "seriesColumn": N_("Series"),
+    "number": N_("Number"),
+    "ascending": N_("Ascending"),
+    "descending": N_("Descending"),
+    "sortAscending": N_("Sort ascending"),
+    "sortDescending": N_("Sort descending"),
+    "noLoadedBooksMatch": N_("No loaded books match"),
+    "emptyOverflow": N_(
+        "Additional catalog matches were not loaded. Refine the catalog search to search beyond this loaded set."
+    ),
+    "emptyFiltered": N_("Clear a local filter or try a broader phrase."),
+    "loadedCatalogBooks": N_("Loaded catalog books"),
+    "select": N_("Select"),
+    "actions": N_("Actions"),
+    "sortedAscending": N_(", sorted ascending"),
+    "sortedDescending": N_(", sorted descending"),
+}
+
+_SELECTION_BROWSER_MESSAGES = {
+    "savedSelectionRepaired": N_("Saved selection was repaired."),
+    "selectionUnavailable": N_("Book selection is unavailable in this browser."),
+    "couldNotSaveSelection": N_("Could not save the book selection."),
+    "selectionLimit": N_("The selection is limited to 10 000 books."),
+    "original": N_("Original"),
+    "size": N_("Size"),
+    "sourceSize": N_("Source size"),
+    "couldNotLoadPreview": N_("Could not load the selection preview."),
+    "noBooksSelected": N_("No books selected"),
+    "selectBooksForZip": N_("Select downloadable books from the catalog to build a ZIP."),
+    "browseCatalog": N_("Browse the catalog"),
+    "unknownAuthor": N_("Unknown author"),
+    "manyAuthors": N_("Many authors (6+)"),
+    "booksWithoutSeries": N_("Books without series"),
+    "unknownSelection": N_("Unknown selection"),
+    "selectAllAuthor": N_("Select all books by {label}"),
+    "selectAllSeries": N_("Select all books in series {label}"),
+    "selectedBooks": N_("Selected books"),
+    "select": N_("Select"),
+    "author": N_("Author"),
+    "title": N_("Title"),
+    "series": N_("Series"),
+    "status": N_("Status"),
+    "actions": N_("Actions"),
+    "sortedAscending": N_(", sorted ascending"),
+    "sortedDescending": N_(", sorted descending"),
+    "downloadable": N_("Downloadable"),
+    "unsupported": N_("Unsupported"),
+    "unavailable": N_("Unavailable"),
+    "unknown": N_("Unknown"),
+    "loadingSelection": N_("Loading selection…"),
+    "loadingPreview": N_("Loading preview…"),
+    "previewNeedsAttention": N_("Preview needs attention."),
+    "couldNotRefreshPreview": N_("Could not refresh the selection preview."),
+}
+
+
+def _browser_messages(
+    context: TranslationContext,
+    sources: dict[str, str],
+) -> dict[str, str]:
+    return {key: context.gettext(source) for key, source in sources.items()}
+
+
+def catalog_browser_messages(context: TranslationContext) -> dict[str, object]:
+    """Return only the reviewed strings consumed by the catalog script."""
+    messages: dict[str, object] = {**_browser_messages(context, _CATALOG_BROWSER_MESSAGES)}
+    messages["filteredLoaded"] = {
+        "one": context.pgettext(
+            "catalog filtered count: one", "{count} book loaded out of {total}."
+        ),
+        "few": context.pgettext(
+            "catalog filtered count: few", "{count} books loaded out of {total}."
+        ),
+        "many": context.pgettext(
+            "catalog filtered count: many", "{count} books loaded out of {total}."
+        ),
+        "other": context.pgettext(
+            "catalog filtered count: other", "{count} books loaded out of {total}."
+        ),
+    }
+    return messages
+
+
+def selection_browser_messages(context: TranslationContext) -> dict[str, str]:
+    """Return only the reviewed strings consumed by the selection script."""
+    return _browser_messages(context, _SELECTION_BROWSER_MESSAGES)
 
 
 def _is_ascii_alphanumeric(value: str) -> bool:

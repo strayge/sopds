@@ -125,10 +125,8 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
     assert "Application is healthy" in response.text
     assert "/health-fragment" not in response.text
     assert 'hx-trigger="load, every 30s"' not in response.text
-    assert "function localizeCatalogTimes(root)" in response.text
-    assert 'addEventListener("htmx:afterSwap"' in response.text
-    assert "localizeCatalogTimes(event.detail.elt || event.target)" in response.text
-    assert 'hourCycle: "h23"' in response.text
+    assert "function localizeCatalogTimes(root)" not in response.text
+    assert "/static/locale.js" in response.text
     assert "/static/css/app.css" in response.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
     assert "<style>" not in response.text
@@ -168,12 +166,17 @@ def test_vendored_javascript_is_served_locally_and_revalidated(
 ) -> None:
     with TestClient(create_app(migrated_app_config)) as client:
         htmx = client.get("/static/vendor/htmx/htmx-2.0.10.min.js")
+        locale = client.get("/static/locale.js")
         reader = client.get("/static/reader/app.js")
 
     assert htmx.status_code == 200
     assert "javascript" in htmx.headers["content-type"]
     assert htmx.headers["cache-control"] == "no-cache"
     assert htmx.text.startswith("var htmx=")
+    assert locale.status_code == 200
+    assert "javascript" in locale.headers["content-type"]
+    assert locale.headers["cache-control"] == "no-cache"
+    assert "sopds_ui_language" in locale.text
     assert reader.status_code == 200
     assert reader.headers["cache-control"] == "no-cache"
 

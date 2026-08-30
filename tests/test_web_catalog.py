@@ -612,6 +612,28 @@ def test_catalog_payload_is_script_safe_and_complete_status_is_truthful() -> Non
     assert _catalog_payload(response.text)["truncated"] is False
 
 
+def test_browser_message_payloads_are_compact_localized_and_attribute_escaped() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        response = client.get("/?q=book", headers={"Accept-Language": "ru"})
+
+    assert response.status_code == 200
+    assert 'data-ui-locale="ru"' in response.text
+    catalog_match = re.search(r'data-catalog-messages="([^"]*)"', response.text)
+    selection_match = re.search(r'data-selection-messages="([^"]*)"', response.text)
+    assert catalog_match is not None
+    assert selection_match is not None
+    catalog_messages = json.loads(html.unescape(catalog_match.group(1)))
+    selection_messages = json.loads(html.unescape(selection_match.group(1)))
+    assert catalog_messages["unknownAuthor"] == "Неизвестный автор"
+    assert catalog_messages["filteredLoaded"]["many"] == ("Загружено {count} книг из {total}.")
+    assert selection_messages["couldNotLoadPreview"] == (
+        "Не удалось загрузить предпросмотр выбранного."  # noqa: RUF001
+    )
+    assert "<script" not in catalog_match.group(1)
+    assert "<script" not in selection_match.group(1)
+
+
 def test_catalog_no_results_preserves_server_rendered_recovery_copy() -> None:
     app, _, _ = _app()
     with TestClient(app) as client:
@@ -1951,18 +1973,18 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         "authoritativePreviewIds.has(publicId) && displayedIds.has(publicId)",
         "updateSelectedEntry(entry, incoming)",
         'data-included="true"][data-source-downloadable="true"]',
-        'sourceFormats.size === 1 ? [...sourceFormats][0] : "Original"',
+        'sourceFormats.size === 1 ? [...sourceFormats][0] : selectionMessage("original")',
         "availableTargets.has(value)",
         'selector.value = "original"',
         "format: selectedFormat.value",
         'selectedFormat.addEventListener("change"',
-        'content.dataset.archiveFormat === "original" ? "Size" : "Source size"',
+        'selectionMessage(content.dataset.archiveFormat === "original" ? "size" : "sourceSize")',
         'window.fetch("/selected/preview"',
         '"Content-Type": "application/json"',
         "response.text()",
     ):
         assert contract in script.text
-    loading_markup = "target.innerHTML = '<p class=\"selected-loading\">Loading selection…</p>';"
+    loading_markup = 'target.replaceChildren(selectedElement("p", "selected-loading", selectionMessage("loadingSelection")));'
     fetch_start = 'const response = await window.fetch("/selected/preview"'
     assert "if (!keepEntries) {" in script.text
     assert loading_markup in script.text
@@ -1976,7 +1998,7 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
     assert "event.key !== STORAGE_KEY && event.key !== null" in storage_handler.group(1)
     assert "selectedIds = readSelection();" in storage_handler.group(1)
     assert "event.newValue" not in storage_handler.group(1)
-    assert "count.textContent = String(selectedIds.length);" in script.text
+    assert "count.textContent = formatInteger(selectedIds.length);" in script.text
     assert script.text.count("restorePreviewFocus(target, requestIds);") == 3
     refresh_body = script.text.split("async function refreshSelectedPreview(", 1)[1].split(
         "function handleChange", 1
@@ -1990,7 +2012,10 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         < catch_body.index("showPreviewError(target);")
         < catch_body.index("restorePreviewFocus(target, requestIds);")
     )
-    assert 'data-selected-preview-error role="alert" tabindex="-1"' in script.text
+    assert 'error.dataset.selectedPreviewError = "";' in script.text
+    assert 'error.setAttribute("role", "alert");' in script.text
+    assert 'error.setAttribute("tabindex", "-1");' in script.text
+    assert 'selectionMessage("couldNotLoadPreview")' in script.text
     assert "querySelector(`[data-public-id=" not in script.text
     assert "Blob" not in script.text
     assert 'document.addEventListener("htmx:responseError"' in csrf_script.text
@@ -2069,7 +2094,7 @@ def test_selected_download_rejects_extra_duplicate_missing_and_malformed_form(
 
     assert response.status_code == 400
     assert "Invalid selected-books request" in response.text
-    assert len(response.content) < 3_200
+    assert len(response.content) < 5_000
     assert app.state.archive.download_requests == []
 
 
@@ -2117,7 +2142,7 @@ def test_selected_download_rejects_invalid_token_before_parsing_or_building(
 
     assert response.status_code == 403
     assert routes._CSRF_ERROR_MESSAGE in response.text
-    assert len(response.content) < 3_200
+    assert len(response.content) < 5_000
     assert archive.download_requests == []
 
 
@@ -2197,7 +2222,7 @@ def test_selected_download_status_mappings_are_bounded_and_path_free(
         )
 
     assert response.status_code == status_code
-    assert len(response.content) < 3_200
+    assert len(response.content) < 5_000
     assert "/private/" not in response.text
     assert "secret-public-id" not in response.text
     assert "/private/" not in caplog.text

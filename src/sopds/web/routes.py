@@ -72,11 +72,13 @@ from sopds.conversion.service import ConversionService
 from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
 from sopds.web.csrf import issue_csrf_token, validate_csrf_token
 from sopds.web.i18n import (
+    catalog_browser_messages,
     catalog_error_message,
     import_state_label,
     import_trigger_label,
     known_html_message,
     request_translation_context,
+    selection_browser_messages,
 )
 
 router = APIRouter()
@@ -273,10 +275,12 @@ def _shell_context(
     opds_url = (
         str(config.server.base_url).rstrip("/") + "/opds/" if config is not None else "/opds/"
     )
+    translations = request_translation_context(request)
     return {
         "request": request,
         "opds_url": opds_url,
         "active_navigation": active_navigation,
+        "selection_messages": selection_browser_messages(translations),
     }
 
 
@@ -508,6 +512,7 @@ async def _results_context(
         if searched
         else CatalogPage(books=(), next_cursor=None)
     )
+    translations = request_translation_context(request)
     return {
         "request": request,
         "page": page,
@@ -516,6 +521,8 @@ async def _results_context(
             "books": [_catalog_book_payload(request, book, catalog_request) for book in page.books],
             "truncated": page.next_cursor is not None,
         },
+        "catalog_locale": translations.locale,
+        "catalog_messages": catalog_browser_messages(translations),
         "truncated": page.next_cursor is not None,
         "searched": searched,
     }

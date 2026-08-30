@@ -4,7 +4,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: SOPDS 0.1.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-30 19:55+0600\n"
+"POT-Creation-Date: 2026-08-30 20:31+0600\n"
 "PO-Revision-Date: 2026-08-30 00:00+0000\n"
 "Last-Translator: \n"
 "Language: ru\n"
@@ -16,188 +16,467 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
-#: src/sopds/web/i18n.py:38 src/sopds/web/i18n.py:59
+#: src/sopds/web/i18n.py:40 src/sopds/web/i18n.py:61
 msgid "Catalog changed while loading; retry the request"
 msgstr "Каталог изменился во время загрузки. Повторите запрос."
 
-#: src/sopds/web/i18n.py:39
+#: src/sopds/web/i18n.py:41
 msgid "Invalid catalog search"
 msgstr "Некорректный поиск по каталогу"
 
-#: src/sopds/web/i18n.py:40
+#: src/sopds/web/i18n.py:42
 msgid "Invalid search field"
 msgstr "Некорректное поле поиска"
 
-#: src/sopds/web/i18n.py:41
+#: src/sopds/web/i18n.py:43
 msgid "Invalid catalog filter"
 msgstr "Некорректный фильтр каталога"
 
-#: src/sopds/web/i18n.py:42
+#: src/sopds/web/i18n.py:44
 msgid "Invalid catalog cursor"
 msgstr "Некорректная позиция в каталоге"
 
-#: src/sopds/web/i18n.py:45
+#: src/sopds/web/i18n.py:47
 msgid "The catalog request could not be completed"
 msgstr "Не удалось выполнить запрос к каталогу"
 
-#: src/sopds/web/i18n.py:48
+#: src/sopds/web/i18n.py:50
 msgid "This page has expired. Reload it and try again."
 msgstr "Срок действия страницы истёк. Обновите её и повторите попытку."
 
-#: src/sopds/web/i18n.py:49
+#: src/sopds/web/i18n.py:51
 msgid "Selected-books request is too large"
 msgstr "Запрос выбранных книг слишком велик"
 
-#: src/sopds/web/i18n.py:50
+#: src/sopds/web/i18n.py:52
 msgid "Invalid selected-books request"
 msgstr "Некорректный запрос выбранных книг"
 
-#: src/sopds/web/i18n.py:51
+#: src/sopds/web/i18n.py:53
 msgid "Invalid archive preset"
 msgstr "Некорректная структура архива"
 
-#: src/sopds/web/i18n.py:52
+#: src/sopds/web/i18n.py:54
 msgid "Invalid archive format"
 msgstr "Некорректный формат архива"
 
-#: src/sopds/web/i18n.py:53
+#: src/sopds/web/i18n.py:55
 msgid "Invalid archive request"
 msgstr "Некорректный запрос архива"
 
-#: src/sopds/web/i18n.py:54
+#: src/sopds/web/i18n.py:56
 msgid "Invalid selected book IDs"
 msgstr "Некорректные идентификаторы выбранных книг"
 
-#: src/sopds/web/i18n.py:55
+#: src/sopds/web/i18n.py:57
 msgid "Invalid public book ID"
 msgstr "Некорректный идентификатор книги"
 
-#: src/sopds/web/i18n.py:56
+#: src/sopds/web/i18n.py:58
 msgid "Too many selected books"
 msgstr "Выбрано слишком много книг"
 
-#: src/sopds/web/i18n.py:57
+#: src/sopds/web/i18n.py:59
 msgid "Selected books exceed the source-size limit"
 msgstr "Исходный размер выбранных книг превышает ограничение"
 
-#: src/sopds/web/i18n.py:58
+#: src/sopds/web/i18n.py:60
 msgid "No selected books are available for download"
 msgstr "Нет выбранных книг, доступных для скачивания"
 
-#: src/sopds/web/i18n.py:60
+#: src/sopds/web/i18n.py:62
 msgid "The selected-books preview is unavailable"
 msgstr "Предпросмотр выбранных книг недоступен"
 
-#: src/sopds/web/i18n.py:61
+#: src/sopds/web/i18n.py:63
 msgid "Service is shutting down"
 msgstr "Сервис завершает работу"
 
-#: src/sopds/web/i18n.py:62
+#: src/sopds/web/i18n.py:64
 msgid "The selected books archive could not be created"
 msgstr "Не удалось создать архив выбранных книг"
 
-#: src/sopds/web/i18n.py:63
+#: src/sopds/web/i18n.py:65
 msgid "Catalog import is starting"
 msgstr "Запускается импорт каталога"
 
-#: src/sopds/web/i18n.py:64
+#: src/sopds/web/i18n.py:66
 msgid "No catalog changes found"
 msgstr "Изменений каталога не найдено"
 
-#: src/sopds/web/i18n.py:65
+#: src/sopds/web/i18n.py:67
 msgid "Manual import is starting"
 msgstr "Запускается ручной импорт"
 
-#: src/sopds/web/i18n.py:66
+#: src/sopds/web/i18n.py:68
 msgid "Import check is starting"
 msgstr "Запускается проверка импорта"
 
-#: src/sopds/web/i18n.py:67
+#: src/sopds/web/i18n.py:69
 msgid "Force import is starting"
 msgstr "Запускается полный импорт"
 
-#: src/sopds/web/i18n.py:68
+#: src/sopds/web/i18n.py:70
 msgid "An import or database maintenance operation is already running"
 msgstr "Уже выполняется импорт или обслуживание базы данных"
 
-#: src/sopds/web/i18n.py:69
+#: src/sopds/web/i18n.py:71
 msgid "Database VACUUM completed"
 msgstr "Очистка базы данных завершена"
 
-#: src/sopds/web/i18n.py:70
+#: src/sopds/web/i18n.py:72
 msgid "VACUUM skipped because catalog work is running"
 msgstr "Очистка пропущена: выполняется операция с каталогом"
 
-#: src/sopds/web/i18n.py:74
+#: src/sopds/web/i18n.py:76
 msgid "running"
 msgstr "Выполняется"
 
-#: src/sopds/web/i18n.py:75
+#: src/sopds/web/i18n.py:77
 msgid "succeeded"
 msgstr "Завершено"
 
-#: src/sopds/web/i18n.py:76
+#: src/sopds/web/i18n.py:78
 msgid "failed"
 msgstr "Ошибка"
 
-#: src/sopds/web/i18n.py:77
+#: src/sopds/web/i18n.py:79
 msgid "interrupted"
 msgstr "Прервано"
 
-#: src/sopds/web/i18n.py:80
+#: src/sopds/web/i18n.py:82
 msgid "scheduled"
 msgstr "По расписанию"
 
-#: src/sopds/web/i18n.py:81
+#: src/sopds/web/i18n.py:83
 msgid "manual"
 msgstr "Вручную"
+
+#: src/sopds/web/i18n.py:87 src/sopds/web/i18n.py:138
+msgid "Unknown author"
+msgstr "Неизвестный автор"
+
+#: src/sopds/web/i18n.py:88 src/sopds/web/i18n.py:139
+msgid "Many authors (6+)"
+msgstr "Много авторов (6+)"
+
+#: src/sopds/web/i18n.py:89 src/sopds/web/i18n.py:140
+msgid "Books without series"
+msgstr "Книги без серии"
+
+#: src/sopds/web/i18n.py:90
+#, python-brace-format
+msgid "+{count} more"
+msgstr "+ещё {count}"
+
+#: src/sopds/web/i18n.py:91
+#, python-brace-format
+msgid "Select {title}"
+msgstr "Выбрать «{title}»"
+
+#: src/sopds/web/i18n.py:92 src/sopds/web/i18n.py:142
+#, python-brace-format
+msgid "Select all books by {label}"
+msgstr "Выбрать все книги автора {label}"
+
+#: src/sopds/web/i18n.py:93 src/sopds/web/i18n.py:143
+#, python-brace-format
+msgid "Select all books in series {label}"
+msgstr "Выбрать все книги серии {label}"
+
+#: src/sopds/web/i18n.py:94
+msgid "Read"
+msgstr "Читать"
+
+#: src/sopds/web/i18n.py:95 src/sopds/web/templates/partials/book_row.html:25
+msgid "Details"
+msgstr "Сведения"
+
+#: src/sopds/web/i18n.py:96 src/sopds/web/templates/book_detail.html:18
+#: src/sopds/web/templates/partials/book_row.html:11
+msgid "Missed"
+msgstr "Отсутствует"
+
+#: src/sopds/web/i18n.py:97 src/sopds/web/templates/book_detail.html:18
+#: src/sopds/web/templates/partials/book_row.html:11
+msgid "Hidden"
+msgstr "Скрыта"
+
+#: src/sopds/web/i18n.py:98
+msgid "Authors: "
+msgstr "Авторы: "
+
+#: src/sopds/web/i18n.py:99
+msgid "Series: "
+msgstr "Серия: "
+
+#: src/sopds/web/i18n.py:100 src/sopds/web/templates/partials/book_row.html:19
+msgid "Book metadata"
+msgstr "Метаданные книги"
+
+#: src/sopds/web/i18n.py:101
+#, python-brace-format
+msgid "Download original {format} file for {title}"
+msgstr "Скачать исходный файл {format} книги «{title}»"
+
+#: src/sopds/web/i18n.py:102
+#, python-brace-format
+msgid "More download formats for {title}"
+msgstr "Другие форматы скачивания книги «{title}»"
+
+#: src/sopds/web/i18n.py:103
+#, python-brace-format
+msgid "Download {format} conversion for {title}"
+msgstr "Скачать книгу «{title}» в формате {format}"
+
+#: src/sopds/web/i18n.py:104
+#, python-brace-format
+msgid "0 of {total} loaded · More match — refine search"
+msgstr "Загружено 0 из {total} · Есть другие совпадения — уточните поиск"
+
+#: src/sopds/web/i18n.py:105
+msgid "Sort by "
+msgstr "Сортировать по "
+
+#: src/sopds/web/i18n.py:106 src/sopds/web/i18n.py:147
+#: src/sopds/web/templates/partials/catalog_results.html:23
+#: src/sopds/web/templates/partials/catalog_search_form.html:23
+msgid "Title"
+msgstr "Название"
+
+#: src/sopds/web/i18n.py:107 src/sopds/web/i18n.py:146
+#: src/sopds/web/templates/partials/catalog_results.html:24
+#: src/sopds/web/templates/partials/catalog_search_form.html:24
+msgid "Author"
+msgstr "Автор"
+
+#: src/sopds/web/i18n.py:108 src/sopds/web/i18n.py:148
+#: src/sopds/web/templates/book_detail.html:26
+#: src/sopds/web/templates/partials/catalog_results.html:25
+#: src/sopds/web/templates/partials/catalog_search_form.html:25
+msgid "Series"
+msgstr "Серия"
+
+#: src/sopds/web/i18n.py:109
+msgid "Number"
+msgstr "Номер"
+
+#: src/sopds/web/i18n.py:110
+msgid "Ascending"
+msgstr "По возрастанию"
+
+#: src/sopds/web/i18n.py:111
+msgid "Descending"
+msgstr "По убыванию"
+
+#: src/sopds/web/i18n.py:112
+msgid "Sort ascending"
+msgstr "Сортировать по возрастанию"
+
+#: src/sopds/web/i18n.py:113
+msgid "Sort descending"
+msgstr "Сортировать по убыванию"
+
+#: src/sopds/web/i18n.py:114
+msgid "No loaded books match"
+msgstr "Среди загруженных книг нет совпадений"
+
+#: src/sopds/web/i18n.py:116
+msgid ""
+"Additional catalog matches were not loaded. Refine the catalog search to "
+"search beyond this loaded set."
+msgstr ""
+"Дополнительные совпадения не загружены. Уточните поиск по каталогу, чтобы"
+" найти книги за пределами загруженного набора."
+
+#: src/sopds/web/i18n.py:118
+msgid "Clear a local filter or try a broader phrase."
+msgstr "Очистите локальный фильтр или введите более общую фразу."
+
+#: src/sopds/web/i18n.py:119
+msgid "Loaded catalog books"
+msgstr "Загруженные книги каталога"
+
+#: src/sopds/web/i18n.py:120 src/sopds/web/i18n.py:145
+msgid "Select"
+msgstr "Выбор"
+
+#: src/sopds/web/i18n.py:121 src/sopds/web/i18n.py:150
+msgid "Actions"
+msgstr "Действия"
+
+#: src/sopds/web/i18n.py:122 src/sopds/web/i18n.py:151
+msgid ", sorted ascending"
+msgstr ", сортировка по возрастанию"
+
+#: src/sopds/web/i18n.py:123 src/sopds/web/i18n.py:152
+msgid ", sorted descending"
+msgstr ", сортировка по убыванию"
+
+#: src/sopds/web/i18n.py:127
+msgid "Saved selection was repaired."
+msgstr "Сохранённый выбор исправлен."
+
+#: src/sopds/web/i18n.py:128
+msgid "Book selection is unavailable in this browser."
+msgstr "Выбор книг недоступен в этом браузере."
+
+#: src/sopds/web/i18n.py:129
+msgid "Could not save the book selection."
+msgstr "Не удалось сохранить выбор книг."
+
+#: src/sopds/web/i18n.py:130
+msgid "The selection is limited to 10 000 books."
+msgstr "Можно выбрать не более 10 000 книг."
+
+#: src/sopds/web/i18n.py:131 src/sopds/web/templates/selected.html:22
+msgid "Original"
+msgstr "Исходный"
+
+#: src/sopds/web/i18n.py:132 src/sopds/web/templates/selected.html:15
+msgid "Size"
+msgstr "Размер"
+
+#: src/sopds/web/i18n.py:133
+msgid "Source size"
+msgstr "Исходный размер"
+
+#: src/sopds/web/i18n.py:134
+msgid "Could not load the selection preview."
+msgstr "Не удалось загрузить предпросмотр выбранного."
+
+#: src/sopds/web/i18n.py:135
+#: src/sopds/web/templates/partials/selected_preview.html:28
+msgid "No books selected"
+msgstr "Книги не выбраны"
+
+#: src/sopds/web/i18n.py:136
+#: src/sopds/web/templates/partials/selected_preview.html:28
+msgid "Select downloadable books from the catalog to build a ZIP."
+msgstr "Выберите в каталоге доступные книги, чтобы создать ZIP."
+
+#: src/sopds/web/i18n.py:137
+#: src/sopds/web/templates/partials/selected_preview.html:28
+msgid "Browse the catalog"
+msgstr "Открыть каталог"
+
+#: src/sopds/web/i18n.py:141
+#: src/sopds/web/templates/partials/selected_preview.html:22
+msgid "Unknown selection"
+msgstr "Неизвестный элемент"
+
+#: src/sopds/web/i18n.py:144 src/sopds/web/templates/selected.html:5
+#: src/sopds/web/templates/selected_error.html:5
+msgid "Selected books"
+msgstr "Выбранные книги"
+
+#: src/sopds/web/i18n.py:149
+msgid "Status"
+msgstr "Статус"
+
+#: src/sopds/web/i18n.py:153
+msgid "Downloadable"
+msgstr "Доступна для скачивания"
+
+#: src/sopds/web/i18n.py:154 src/sopds/web/templates/partials/book_row.html:12
+msgid "Unsupported"
+msgstr "Не поддерживается"
+
+#: src/sopds/web/i18n.py:155 src/sopds/web/templates/partials/book_row.html:12
+msgid "Unavailable"
+msgstr "Недоступна"
+
+#: src/sopds/web/i18n.py:156
+#: src/sopds/web/templates/partials/selected_preview.html:22
+msgid "Unknown"
+msgstr "Неизвестно"
+
+#: src/sopds/web/i18n.py:157 src/sopds/web/templates/selected.html:45
+msgid "Loading selection…"
+msgstr "Загрузка выбранного…"
+
+#: src/sopds/web/i18n.py:158
+msgid "Loading preview…"
+msgstr "Загрузка предпросмотра…"
+
+#: src/sopds/web/i18n.py:159
+msgid "Preview needs attention."
+msgstr "Предпросмотр требует внимания."
+
+#: src/sopds/web/i18n.py:160
+msgid "Could not refresh the selection preview."
+msgstr "Не удалось обновить предпросмотр выбранного."
+
+#: src/sopds/web/i18n.py:176
+#, python-brace-format
+msgctxt "catalog filtered count: one"
+msgid "{count} book loaded out of {total}."
+msgstr "Загружена {count} книга из {total}."
+
+#: src/sopds/web/i18n.py:179
+#, python-brace-format
+msgctxt "catalog filtered count: few"
+msgid "{count} books loaded out of {total}."
+msgstr "Загружено {count} книги из {total}."
+
+#: src/sopds/web/i18n.py:182
+#, python-brace-format
+msgctxt "catalog filtered count: many"
+msgid "{count} books loaded out of {total}."
+msgstr "Загружено {count} книг из {total}."
+
+#: src/sopds/web/i18n.py:185
+#, python-brace-format
+msgctxt "catalog filtered count: other"
+msgid "{count} books loaded out of {total}."
+msgstr "Загружено {count} книги из {total}."
 
 #: src/sopds/web/templates/base.html:6
 msgid "Browse and manage the SOPDS private library catalog."
 msgstr "Просмотр и управление личным каталогом SOPDS."
 
-#: src/sopds/web/templates/base.html:7 src/sopds/web/templates/base.html:35
+#: src/sopds/web/templates/base.html:7 src/sopds/web/templates/base.html:36
 #: src/sopds/web/templates/index.html:3
 msgid "SOPDS catalog"
 msgstr "Каталог SOPDS"
 
-#: src/sopds/web/templates/base.html:17
+#: src/sopds/web/templates/base.html:18
 msgid "Skip to main content"
 msgstr "Перейти к основному содержимому"
 
-#: src/sopds/web/templates/base.html:20
+#: src/sopds/web/templates/base.html:21
 msgid "SOPDS catalog home"
 msgstr "Главная каталога SOPDS"
 
-#: src/sopds/web/templates/base.html:22
+#: src/sopds/web/templates/base.html:23
 msgid "INPX-backed catalog"
 msgstr "Каталог на основе INPX"
 
-#: src/sopds/web/templates/base.html:24
+#: src/sopds/web/templates/base.html:25
 msgid "Primary navigation"
 msgstr "Основная навигация"
 
-#: src/sopds/web/templates/base.html:25
+#: src/sopds/web/templates/base.html:26
 msgid "Catalog"
 msgstr "Каталог"
 
-#: src/sopds/web/templates/base.html:26
+#: src/sopds/web/templates/base.html:27
 msgid "Selected"
 msgstr "Выбранное"
 
-#: src/sopds/web/templates/base.html:28
+#: src/sopds/web/templates/base.html:29
 msgid "Manage"
 msgstr "Управление"
 
-#: src/sopds/web/templates/base.html:30
+#: src/sopds/web/templates/base.html:31
 msgid "Interface language"
 msgstr "Язык интерфейса"
 
-#: src/sopds/web/templates/base.html:36
+#: src/sopds/web/templates/base.html:37
 msgid "Browse your private library."
 msgstr "Просматривайте личную библиотеку."
 
-#: src/sopds/web/templates/base.html:38
+#: src/sopds/web/templates/base.html:39
 msgid "Application is healthy"
 msgstr "Приложение работает"
 
@@ -213,26 +492,10 @@ msgstr "Навигационная цепочка"
 msgid "Back to results"
 msgstr "Назад к результатам"
 
-#: src/sopds/web/templates/book_detail.html:18
-#: src/sopds/web/templates/partials/book_row.html:11
-msgid "Hidden"
-msgstr "Скрыта"
-
-#: src/sopds/web/templates/book_detail.html:18
-#: src/sopds/web/templates/partials/book_row.html:11
-msgid "Missed"
-msgstr "Отсутствует"
-
 #: src/sopds/web/templates/book_detail.html:21
 #: src/sopds/web/templates/partials/book_row.html:14
 msgid "Authors:"
 msgstr "Авторы:"
-
-#: src/sopds/web/templates/book_detail.html:26
-#: src/sopds/web/templates/partials/catalog_results.html:25
-#: src/sopds/web/templates/partials/catalog_search_form.html:25
-msgid "Series"
-msgstr "Серия"
 
 #: src/sopds/web/templates/book_detail.html:35
 msgid "Book details"
@@ -399,11 +662,6 @@ msgstr "Состояние импорта"
 msgid "Selected books · SOPDS"
 msgstr "Выбранные книги · SOPDS"
 
-#: src/sopds/web/templates/selected.html:5
-#: src/sopds/web/templates/selected_error.html:5
-msgid "Selected books"
-msgstr "Выбранные книги"
-
 #: src/sopds/web/templates/selected.html:6
 msgid ""
 "Uncheck books to exclude them from this ZIP. Unchecked rows disappear "
@@ -421,18 +679,10 @@ msgstr "Параметры архива"
 msgid "downloadable"
 msgstr "доступно для скачивания"
 
-#: src/sopds/web/templates/selected.html:15
-msgid "Size"
-msgstr "Размер"
-
 #: src/sopds/web/templates/partials/catalog_search_form.html:29
 #: src/sopds/web/templates/selected.html:21
 msgid "Format"
 msgstr "Формат"
-
-#: src/sopds/web/templates/selected.html:22
-msgid "Original"
-msgstr "Исходный"
 
 #: src/sopds/web/templates/selected.html:24
 msgid "ZIP layout"
@@ -482,10 +732,6 @@ msgstr "Дерево"
 msgid "Table"
 msgstr "Таблица"
 
-#: src/sopds/web/templates/selected.html:45
-msgid "Loading selection…"
-msgstr "Загрузка выбранного…"
-
 #: src/sopds/web/templates/selected_error.html:3
 msgid "Selected books error · SOPDS"
 msgstr "Ошибка выбранных книг · SOPDS"
@@ -512,14 +758,6 @@ msgstr "Добавить «%(title)s» в архив"
 msgid "Select %(title)s"
 msgstr "Выбрать «%(title)s»"
 
-#: src/sopds/web/templates/partials/book_row.html:12
-msgid "Unsupported"
-msgstr "Не поддерживается"
-
-#: src/sopds/web/templates/partials/book_row.html:12
-msgid "Unavailable"
-msgstr "Недоступна"
-
 #: src/sopds/web/templates/partials/book_row.html:15
 #, python-format
 msgid "+%(count)s more"
@@ -544,10 +782,6 @@ msgstr "Исключена: исходный формат нельзя прео�
 msgid "Excluded because its original file is unavailable."
 msgstr "Исключена: исходный файл недоступен."
 
-#: src/sopds/web/templates/partials/book_row.html:19
-msgid "Book metadata"
-msgstr "Метаданные книги"
-
 #: src/sopds/web/templates/partials/book_row.html:20
 msgid "Format:"
 msgstr "Формат:"
@@ -567,10 +801,6 @@ msgstr "Размер:"
 #: src/sopds/web/templates/partials/book_row.html:24
 msgid "Open details"
 msgstr "Открыть сведения"
-
-#: src/sopds/web/templates/partials/book_row.html:25
-msgid "Details"
-msgstr "Сведения"
 
 #: src/sopds/web/templates/partials/catalog_results.html:3
 msgid "Start with a book you have in mind"
@@ -604,16 +834,6 @@ msgstr[2] "Загружено %(count)s книг."
 #: src/sopds/web/templates/partials/catalog_results.html:22
 msgid "Filter loaded books"
 msgstr "Фильтр загруженных книг"
-
-#: src/sopds/web/templates/partials/catalog_results.html:23
-#: src/sopds/web/templates/partials/catalog_search_form.html:23
-msgid "Title"
-msgstr "Название"
-
-#: src/sopds/web/templates/partials/catalog_results.html:24
-#: src/sopds/web/templates/partials/catalog_search_form.html:24
-msgid "Author"
-msgstr "Автор"
 
 #: src/sopds/web/templates/partials/catalog_results.html:26
 msgid "Clear"
@@ -830,14 +1050,6 @@ msgid "Include unknown selection %(id)s in archive"
 msgstr "Добавить неизвестный элемент %(id)s в архив"
 
 #: src/sopds/web/templates/partials/selected_preview.html:22
-msgid "Unknown selection"
-msgstr "Неизвестный элемент"
-
-#: src/sopds/web/templates/partials/selected_preview.html:22
-msgid "Unknown"
-msgstr "Неизвестно"
-
-#: src/sopds/web/templates/partials/selected_preview.html:22
 #, python-format
 msgid "No current catalog record matches %(id)s."
 msgstr "В текущем каталоге нет записи для %(id)s."
@@ -845,15 +1057,3 @@ msgstr "В текущем каталоге нет записи для %(id)s."
 #: src/sopds/web/templates/partials/selected_preview.html:23
 msgid "Not included in the ZIP"
 msgstr "Не добавлено в ZIP"
-
-#: src/sopds/web/templates/partials/selected_preview.html:28
-msgid "No books selected"
-msgstr "Книги не выбраны"
-
-#: src/sopds/web/templates/partials/selected_preview.html:28
-msgid "Select downloadable books from the catalog to build a ZIP."
-msgstr "Выберите в каталоге доступные книги, чтобы создать ZIP."
-
-#: src/sopds/web/templates/partials/selected_preview.html:28
-msgid "Browse the catalog"
-msgstr "Открыть каталог"

@@ -20,6 +20,115 @@
   const RENDER_EVENT = "sopds:catalog-rendered";
   const INVALID_URL_TEXT = /[\u0000-\u001f\u007f]/;
   const NATURAL_CHUNKS = /[0-9]+|[^0-9]+/g;
+  const CATALOG_MESSAGE_FALLBACKS = Object.freeze({
+    unknownAuthor: "Unknown author",
+    manyAuthors: "Many authors (6+)",
+    booksWithoutSeries: "Books without series",
+    moreAuthors: "+{count} more",
+    selectBook: "Select {title}",
+    selectAllAuthor: "Select all books by {label}",
+    selectAllSeries: "Select all books in series {label}",
+    read: "Read",
+    details: "Details",
+    missed: "Missed",
+    hidden: "Hidden",
+    authors: "Authors: ",
+    series: "Series: ",
+    bookMetadata: "Book metadata",
+    downloadOriginal: "Download original {format} file for {title}",
+    moreDownloadFormats: "More download formats for {title}",
+    downloadConversion: "Download {format} conversion for {title}",
+    filteredOverflow: "0 of {total} loaded · More match — refine search",
+    sortBy: "Sort by ",
+    title: "Title",
+    author: "Author",
+    seriesColumn: "Series",
+    number: "Number",
+    ascending: "Ascending",
+    descending: "Descending",
+    sortAscending: "Sort ascending",
+    sortDescending: "Sort descending",
+    noLoadedBooksMatch: "No loaded books match",
+    emptyOverflow: "Additional catalog matches were not loaded. Refine the catalog search to search beyond this loaded set.",
+    emptyFiltered: "Clear a local filter or try a broader phrase.",
+    loadedCatalogBooks: "Loaded catalog books",
+    select: "Select",
+    actions: "Actions",
+    sortedAscending: ", sorted ascending",
+    sortedDescending: ", sorted descending",
+  });
+  const CATALOG_PLURAL_FALLBACKS = Object.freeze({
+    one: "{count} book loaded out of {total}.",
+    few: "{count} books loaded out of {total}.",
+    many: "{count} books loaded out of {total}.",
+    other: "{count} books loaded out of {total}.",
+  });
+
+  function templatePlaceholders(value) {
+    const placeholders = [];
+    let position = 0;
+    for (const match of value.matchAll(/\{([a-z][a-zA-Z0-9]*)\}/g)) {
+      if (/[{}]/.test(value.slice(position, match.index))) return null;
+      placeholders.push(match[1]);
+      position = match.index + match[0].length;
+    }
+    return /[{}]/.test(value.slice(position)) ? null : placeholders;
+  }
+
+  function validMessage(value, fallback) {
+    if (typeof value !== "string" || value.trim().length === 0 || value.length > 500) return false;
+    const placeholders = templatePlaceholders(value);
+    const expected = templatePlaceholders(fallback);
+    if (placeholders === null || expected === null || placeholders.length !== expected.length) return false;
+    placeholders.sort();
+    expected.sort();
+    return expected.every((name, index) => placeholders[index] === name);
+  }
+
+  function readCatalogI18n(root) {
+    const configuredLocale = root?.dataset?.catalogLocale;
+    const locale = ["en", "ru"].includes(configuredLocale) ? configuredLocale : "en";
+    let configured = {};
+    if (configuredLocale === locale) {
+      try {
+        configured = JSON.parse(root?.dataset?.catalogMessages || "{}");
+        if (!configured || typeof configured !== "object" || Array.isArray(configured)) configured = {};
+      } catch (_error) {
+        configured = {};
+      }
+    }
+    const messages = {};
+    for (const [key, fallback] of Object.entries(CATALOG_MESSAGE_FALLBACKS)) {
+      messages[key] = validMessage(configured[key], fallback) ? configured[key] : fallback;
+    }
+    const forms = configured.filteredLoaded;
+    messages.filteredLoaded = {};
+    for (const [category, fallback] of Object.entries(CATALOG_PLURAL_FALLBACKS)) {
+      messages.filteredLoaded[category] = validMessage(forms?.[category], fallback)
+        ? forms[category] : fallback;
+    }
+    return {locale, messages, plurals: new Intl.PluralRules(locale)};
+  }
+
+  const DEFAULT_CATALOG_I18N = readCatalogI18n(null);
+
+  function message(i18n, key, values = {}) {
+    let text = i18n?.messages?.[key] || CATALOG_MESSAGE_FALLBACKS[key] || "";
+    for (const [name, value] of Object.entries(values)) text = text.replaceAll(`{${name}}`, String(value));
+    return text;
+  }
+
+  function countMessage(i18n, key, count, values = {}) {
+    const category = i18n.plurals.select(count);
+    const forms = i18n.messages[key];
+    const text = forms[category] || forms.other || CATALOG_PLURAL_FALLBACKS.other;
+    return text.replaceAll("{count}", formatInteger(count)).replaceAll("{total}", formatInteger(values.total));
+  }
+
+  function formatInteger(value) {
+    const digits = String(Math.max(0, Math.trunc(Number(value) || 0)));
+    return digits.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  }
 
   let activeController = null;
   let pendingFreshState = null;
@@ -375,16 +484,16 @@
     return JSON.stringify([type, ...parts]);
   }
 
-  function treeAuthorTargets(book) {
-    if (book.authors.length === 0) return [{key: treeIdentity("synthetic-author", "unknown"), label: "Unknown author", sortKey: normalizePhrase("Unknown author")}];
-    if (book.authors.length >= 6) return [{key: treeIdentity("synthetic-author", "many"), label: "Many authors (6+)", sortKey: normalizePhrase("Many authors (6+)")}];
-    return book.authors.map((author) => ({key: treeIdentity("author", author.raw), label: author.display, sortKey: normalizePhrase(author.display), author}));
+  function treeAuthorTargets(book, i18n = DEFAULT_CATALOG_I18N) {
+    if (book.authors.length === 0) return [{key: treeIdentity("synthetic-author", "unknown"), label: message(i18n, "unknownAuthor"), stableLabel: "Unknown author", sortKey: normalizePhrase("Unknown author")}];
+    if (book.authors.length >= 6) return [{key: treeIdentity("synthetic-author", "many"), label: message(i18n, "manyAuthors"), stableLabel: "Many authors (6+)", sortKey: normalizePhrase("Many authors (6+)")}];
+    return book.authors.map((author) => ({key: treeIdentity("author", author.raw), label: author.display, stableLabel: author.display, sortKey: normalizePhrase(author.display), author}));
   }
 
-  function buildTreeModel(books) {
+  function buildTreeModel(books, i18n = DEFAULT_CATALOG_I18N) {
     const authorGroups = new Map();
     for (const book of books) {
-      for (const target of treeAuthorTargets(book)) {
+      for (const target of treeAuthorTargets(book, i18n)) {
         let branch = authorGroups.get(target.key);
         if (!branch) {
           branch = {...target, books: [], named: new Map(), withoutSeries: []};
@@ -402,13 +511,13 @@
       }
     }
     const branches = [...authorGroups.values()];
-    branches.sort((left, right) => unicodeScalarCompare(left.sortKey, right.sortKey) || unicodeScalarCompare(left.label, right.label) || unicodeScalarCompare(left.key, right.key));
+    branches.sort((left, right) => unicodeScalarCompare(left.sortKey, right.sortKey) || unicodeScalarCompare(left.stableLabel, right.stableLabel) || unicodeScalarCompare(left.key, right.key));
     for (const branch of branches) {
       branch.series = [...branch.named.values()].sort((left, right) => unicodeScalarCompare(left.sortKey, right.sortKey) || unicodeScalarCompare(left.label, right.label));
       for (const leaf of branch.series) leaf.books.sort((left, right) => compareSeriesNumberValues(left.series?.number, right.series?.number) || compareTitle(left, right));
       branch.withoutSeries.sort(compareTitle);
       if (branch.withoutSeries.length) {
-        branch.series.push({key: treeIdentity("series", branch.key, "without-series"), label: "Books without series", sortKey: null, books: branch.withoutSeries, withoutSeries: true});
+        branch.series.push({key: treeIdentity("series", branch.key, "without-series"), label: message(i18n, "booksWithoutSeries"), sortKey: null, books: branch.withoutSeries, withoutSeries: true});
       }
       branch.count = new Set(branch.books.map((book) => book.publicId)).size;
       delete branch.named;
@@ -436,7 +545,7 @@
     return anchor;
   }
 
-  function appendAuthors(container, book, limit) {
+  function appendAuthors(container, book, limit, i18n = DEFAULT_CATALOG_I18N) {
     const visible = book.authors.slice(0, limit);
     visible.forEach((author, index) => {
       container.append(metadataLink(author.display, author.scopeUrl));
@@ -444,7 +553,7 @@
     });
     if (book.authors.length > limit) {
       const disclosure = element("details", "author-overflow");
-      const summary = element("summary", "", `+${book.authors.length - limit} more`);
+      const summary = element("summary", "", message(i18n, "moreAuthors", {count: formatInteger(book.authors.length - limit)}));
       disclosure.append(summary);
       const links = element("span", "author-overflow__links");
       book.authors.slice(limit).forEach((author, index, values) => {
@@ -456,7 +565,7 @@
     }
   }
 
-  function buildSelectionControl(book) {
+  function buildSelectionControl(book, i18n = DEFAULT_CATALOG_I18N) {
     if (!book.selectable) return null;
     const label = element("label", "selection-control");
     label.dataset.selectionControl = "";
@@ -465,28 +574,28 @@
     checkbox.type = "checkbox";
     checkbox.dataset.selectionCheckbox = "";
     checkbox.dataset.publicId = book.publicId;
-    const accessible = element("span", "visually-hidden", `Select ${book.title}`);
+    const accessible = element("span", "visually-hidden", message(i18n, "selectBook", {title: book.title}));
     label.append(checkbox, accessible);
     return label;
   }
 
-  function buildTreeSelectionControl(books, label) {
+  function buildTreeSelectionControl(books, label, type, i18n = DEFAULT_CATALOG_I18N) {
     const publicIds = [...new Set(books.filter((book) => book.selectable).map((book) => book.publicId))];
     if (!publicIds.length) return null;
     const checkbox = element("input", "catalog-tree-select");
     checkbox.type = "checkbox";
     checkbox.dataset.selectionGroup = "";
     checkbox.dataset.publicIds = JSON.stringify(publicIds);
-    checkbox.setAttribute("aria-label", `Select all books in ${label}`);
+    checkbox.setAttribute("aria-label", message(i18n, type === "author" ? "selectAllAuthor" : "selectAllSeries", {label}));
     return checkbox;
   }
 
-  function buildActions(book, includeSelection = true) {
+  function buildActions(book, includeSelection = true, i18n = DEFAULT_CATALOG_I18N) {
     const actions = element("div", "result-row__actions");
-    const selection = includeSelection ? buildSelectionControl(book) : null;
+    const selection = includeSelection ? buildSelectionControl(book, i18n) : null;
     if (selection) actions.append(selection);
     if (book.readUrl) {
-      const read = safeAnchor("Read", book.readUrl, "result-row__action result-row__read");
+      const read = safeAnchor(message(i18n, "read"), book.readUrl, "result-row__action result-row__read");
       read.target = "_blank";
       read.rel = "noopener noreferrer";
       actions.append(read);
@@ -494,16 +603,16 @@
     if (book.originalDownload) {
       const split = element("div", "download-split");
       const original = safeAnchor(book.originalDownload.label, book.originalDownload.url, "result-row__download");
-      original.setAttribute("aria-label", `Download original ${book.originalDownload.label} file for ${book.title}`);
+      original.setAttribute("aria-label", message(i18n, "downloadOriginal", {format: book.originalDownload.label, title: book.title}));
       split.append(original);
       if (book.conversions.length) {
         const menu = element("details", "download-menu");
         const summary = element("summary", "", "▼");
-        summary.setAttribute("aria-label", `More download formats for ${book.title}`);
+        summary.setAttribute("aria-label", message(i18n, "moreDownloadFormats", {title: book.title}));
         const items = element("div", "download-menu__items");
         for (const conversion of book.conversions) {
           const link = safeAnchor(conversion.label, conversion.url);
-          link.setAttribute("aria-label", `Download ${conversion.label} conversion for ${book.title}`);
+          link.setAttribute("aria-label", message(i18n, "downloadConversion", {format: conversion.label, title: book.title}));
           items.append(link);
         }
         menu.append(summary, items);
@@ -511,11 +620,11 @@
       }
       actions.append(split);
     }
-    actions.append(safeAnchor("Details", book.detailUrl, "result-row__action"));
+    actions.append(safeAnchor(message(i18n, "details"), book.detailUrl, "result-row__action"));
     return actions;
   }
 
-  function buildBookRow(book, index = 0, compact = false) {
+  function buildBookRow(book, index = 0, compact = false, i18n = DEFAULT_CATALOG_I18N) {
     const row = element("article", compact ? "result-row result-row--catalog tree-book-row" : "result-row result-row--catalog");
     row.dataset.publicId = book.publicId;
     const tile = element("div", `book-tile book-tile--${(index % 4) + 1}`, Array.from(book.title.trim())[0]?.toUpperCase() || "?");
@@ -525,22 +634,22 @@
     const title = element("h2", "result-row__title");
     title.append(safeAnchor(book.title, book.detailUrl));
     heading.append(title);
-    if (book.availability !== "active") heading.append(element("span", `availability-badge availability-badge--${book.availability}`, book.availability === "missed" ? "Missed" : "Hidden"));
+    if (book.availability !== "active") heading.append(element("span", `availability-badge availability-badge--${book.availability}`, message(i18n, book.availability === "missed" ? "missed" : "hidden")));
     body.append(heading);
     if (book.authors.length) {
       const authors = element("div", "result-row__authors");
-      authors.append(element("span", "visually-hidden", "Authors: "));
-      appendAuthors(authors, book, 3);
+      authors.append(element("span", "visually-hidden", message(i18n, "authors")));
+      appendAuthors(authors, book, 3, i18n);
       body.append(authors);
     }
     if (book.series) {
       const series = element("p", "result-row__series");
-      series.append(element("span", "visually-hidden", "Series: "), metadataLink(book.series.name, book.series.scopeUrl));
+      series.append(element("span", "visually-hidden", message(i18n, "series")), metadataLink(book.series.name, book.series.scopeUrl));
       if (book.series.number) series.append(document.createTextNode(` #${book.series.number}`));
       body.append(series);
     }
     const metadata = element("ul", "result-metadata");
-    metadata.setAttribute("aria-label", "Book metadata");
+    metadata.setAttribute("aria-label", message(i18n, "bookMetadata"));
     const first = element("li", "result-metadata__line");
     first.append(element("span", "", book.sourceFormat.label));
     if (book.language) first.append(document.createTextNode(` · ${book.language.toUpperCase()}`));
@@ -548,9 +657,9 @@
     if (book.publishedDate) second.append(document.createTextNode(`${book.publishedDate} · `));
     second.append(document.createTextNode(book.sizeLabel));
     metadata.append(first, second);
-    const selection = buildSelectionControl(book);
+    const selection = buildSelectionControl(book, i18n);
     if (selection) row.append(selection);
-    row.append(tile, body, metadata, buildActions(book, false));
+    row.append(tile, body, metadata, buildActions(book, false, i18n));
     return row;
   }
 
@@ -559,8 +668,9 @@
   }
 
   class CatalogController {
-    constructor(root, payload, state) {
+    constructor(root, payload, state, i18n = readCatalogI18n(root)) {
       this.root = root;
+      this.i18n = i18n;
       this.books = payload.books;
       this.truncated = payload.truncated;
       this.state = state;
@@ -655,9 +765,9 @@
         return;
       }
       if (count === 0 && this.truncated) {
-        this.summary.textContent = `0 of ${this.books.length} loaded · More match — refine search`;
+        this.summary.textContent = message(this.i18n, "filteredOverflow", {total: formatInteger(this.books.length)});
       } else {
-        this.summary.textContent = `${count} of ${this.books.length} loaded ${this.books.length === 1 ? "book" : "books"}.`;
+        this.summary.textContent = countMessage(this.i18n, "filteredLoaded", count, {total: this.books.length});
       }
     }
 
@@ -667,21 +777,21 @@
       const table = this.state.view === "table";
       const sort = table ? this.state.tableSort : this.state.flatSort;
       const direction = table ? this.state.tableDir : this.state.flatDir;
-      const label = element("label", "catalog-sort-control", "Sort by ");
+      const label = element("label", "catalog-sort-control", message(this.i18n, "sortBy"));
       const select = element("select");
       select.dataset.catalogSort = "";
       const choices = table ? ["author", "title", "series", "number"] : ["title", "author", "series"];
       for (const choice of choices) {
-        const option = element("option", "", choice[0].toUpperCase() + choice.slice(1));
+        const option = element("option", "", message(this.i18n, choice === "series" ? "seriesColumn" : choice));
         option.value = choice;
         option.selected = choice === sort;
         select.append(option);
       }
       label.append(select);
-      const button = element("button", "", direction === "asc" ? "Ascending" : "Descending");
+      const button = element("button", "", message(this.i18n, direction === "asc" ? "ascending" : "descending"));
       button.type = "button";
       button.dataset.catalogDirection = "";
-      button.setAttribute("aria-label", `Sort ${direction === "asc" ? "descending" : "ascending"}`);
+      button.setAttribute("aria-label", message(this.i18n, direction === "asc" ? "sortDescending" : "sortAscending"));
       this.sortMount.append(label, button);
     }
 
@@ -693,10 +803,8 @@
       if (!books.length) {
         const empty = element("div", "catalog-results__message catalog-local-empty");
         empty.setAttribute("role", "status");
-        empty.append(element("h2", "", "No loaded books match"));
-        empty.append(element("p", "", this.truncated
-          ? "Additional catalog matches were not loaded. Refine the catalog search to search beyond this loaded set."
-          : "Clear a local filter or try a broader phrase."));
+        empty.append(element("h2", "", message(this.i18n, "noLoadedBooksMatch")));
+        empty.append(element("p", "", message(this.i18n, this.truncated ? "emptyOverflow" : "emptyFiltered")));
         this.mount.append(empty);
       } else if (this.state.view === "tree") this.renderTree(books);
       else if (this.state.view === "table") this.renderTable(books);
@@ -708,22 +816,22 @@
     renderFlat(books) {
       const sorted = [...books].sort(flatComparator(this.state.flatSort, this.state.flatDir));
       const list = element("div", "catalog-flat-view");
-      sorted.forEach((book, index) => list.append(buildBookRow(book, index)));
+      sorted.forEach((book, index) => list.append(buildBookRow(book, index, false, this.i18n)));
       this.mount.append(list);
     }
 
     renderTree(books) {
       const tree = element("div", "catalog-tree-view");
-      const branches = buildTreeModel(books);
+      const branches = buildTreeModel(books, this.i18n);
       for (const branch of branches) {
         const author = element("details", "catalog-tree-author");
         author.open = this.expansion.get(branch.key) || false;
         const authorSummary = element("summary", "catalog-tree-author__summary");
-        const authorSelection = buildTreeSelectionControl(branch.books, `author ${branch.label}`);
+        const authorSelection = buildTreeSelectionControl(branch.books, branch.label, "author", this.i18n);
         if (authorSelection) authorSummary.append(authorSelection);
         if (branch.author) authorSummary.append(metadataLink(branch.label, branch.author.scopeUrl));
         else authorSummary.append(document.createTextNode(branch.label));
-        authorSummary.append(element("span", "catalog-tree-count", ` (${branch.count})`));
+        authorSummary.append(element("span", "catalog-tree-count", ` (${formatInteger(branch.count)})`));
         author.append(authorSummary);
         author.addEventListener("toggle", () => {
           this.expansion.set(branch.key, author.open);
@@ -732,17 +840,17 @@
           const details = element("details", "catalog-tree-series");
           details.open = this.expansion.get(leaf.key) || false;
           const summary = element("summary", "catalog-tree-series__summary");
-          const seriesSelection = buildTreeSelectionControl(leaf.books, `series ${leaf.label}`);
+          const seriesSelection = buildTreeSelectionControl(leaf.books, leaf.label, "series", this.i18n);
           if (seriesSelection) summary.append(seriesSelection);
           if (leaf.scopeUrl) summary.append(metadataLink(leaf.label, leaf.scopeUrl));
           else summary.append(document.createTextNode(leaf.label));
-          summary.append(element("span", "catalog-tree-count", ` (${new Set(leaf.books.map((book) => book.publicId)).size})`));
+          summary.append(element("span", "catalog-tree-count", ` (${formatInteger(new Set(leaf.books.map((book) => book.publicId)).size)})`));
           details.append(summary);
           let rendered = false;
           const renderLeaf = (lazy) => {
             if (rendered || !details.open) return;
             const rows = element("div", "catalog-tree-books");
-            leaf.books.forEach((book, index) => rows.append(buildBookRow(book, index, true)));
+            leaf.books.forEach((book, index) => rows.append(buildBookRow(book, index, true, this.i18n)));
             details.append(rows);
             synchronizeCriteriaLinks(rows, this.state);
             rendered = true;
@@ -766,16 +874,16 @@
       const wrapper = element("div", "catalog-table-scroll");
       wrapper.dataset.catalogTableScroll = "";
       const table = element("table", "catalog-table");
-      const caption = element("caption", "visually-hidden", "Loaded catalog books");
+      const caption = element("caption", "visually-hidden", message(this.i18n, "loadedCatalogBooks"));
       const head = element("thead");
       const headerRow = element("tr");
       for (const name of ["select", "author", "title", "series", "number", "actions"]) {
         const cell = element("th");
         cell.scope = "col";
-        if (name === "select") cell.append(element("span", "visually-hidden", "Select"));
-        else if (name === "actions") cell.textContent = "Actions";
+        if (name === "select") cell.append(element("span", "visually-hidden", message(this.i18n, "select")));
+        else if (name === "actions") cell.textContent = message(this.i18n, "actions");
         else {
-          const button = element("button", "catalog-table__sort", name[0].toUpperCase() + name.slice(1));
+          const button = element("button", "catalog-table__sort", message(this.i18n, name === "series" ? "seriesColumn" : name));
           button.type = "button";
           button.dataset.catalogTableSort = name;
           button.addEventListener("click", () => {
@@ -793,7 +901,7 @@
           cell.append(button);
           if (this.state.tableSort === name) {
             cell.setAttribute("aria-sort", this.state.tableDir === "asc" ? "ascending" : "descending");
-            button.append(element("span", "visually-hidden", `, sorted ${this.state.tableDir === "asc" ? "ascending" : "descending"}`));
+            button.append(element("span", "visually-hidden", message(this.i18n, this.state.tableDir === "asc" ? "sortedAscending" : "sortedDescending")));
           }
         }
         headerRow.append(cell);
@@ -804,18 +912,18 @@
         const row = element("tr");
         row.dataset.publicId = book.publicId;
         const selection = element("td", "catalog-table__selection");
-        const selectionControl = buildSelectionControl(book);
+        const selectionControl = buildSelectionControl(book, this.i18n);
         if (selectionControl) selection.append(selectionControl);
         const authors = element("td");
-        appendAuthors(authors, book, 2);
+        appendAuthors(authors, book, 2, this.i18n);
         const title = element("td");
         title.append(safeAnchor(book.title, book.detailUrl));
-        if (book.availability !== "active") title.append(document.createTextNode(` — ${book.availability === "missed" ? "Missed" : "Hidden"}`));
+        if (book.availability !== "active") title.append(document.createTextNode(` — ${message(this.i18n, book.availability === "missed" ? "missed" : "hidden")}`));
         const series = element("td");
         if (book.series) series.append(metadataLink(book.series.name, book.series.scopeUrl));
         const number = element("td", "", book.series?.number || "");
         const actions = element("td");
-        actions.append(buildActions(book, false));
+        actions.append(buildActions(book, false, this.i18n));
         row.append(selection, authors, title, series, number, actions);
         body.append(row);
       }

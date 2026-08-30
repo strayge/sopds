@@ -9,7 +9,12 @@ const exportHook = `
   globalThis.selectionBehavior = {
     mergeSelectedPreview,
     syncFormatSelector,
+    readSelectionI18n,
+    selectionMessage,
+    formatInteger,
+    formatSize,
     compareSelectedMetadata,
+    selectedEntryMetadata,
     selectedGroupKey,
     mergeSelectedSearchUrls,
     selectionGroupIds,
@@ -18,6 +23,9 @@ const exportHook = `
     setState(ids, previewIds) {
       selectedIds = ids;
       authoritativePreviewIds = previewIds === null ? null : new Set(previewIds);
+    },
+    setI18n(root) {
+      selectionI18n = readSelectionI18n(root);
     },
   };
 `;
@@ -271,6 +279,58 @@ function makeSelectionCheckbox(publicId, checked = false) {
   };
 }
 
+test("selection messages localize safely, group integers with ASCII spaces, and preserve size output", () => {
+  behavior.setI18n({dataset: {
+    uiLocale: "ru",
+    selectionMessages: JSON.stringify({
+      selectionUnavailable: "Выбор книг недоступен в этом браузере.",
+      unknownAuthor: "Неизвестный автор",
+    }),
+  }});
+  assert.equal(behavior.selectionMessage("selectionUnavailable"), "Выбор книг недоступен в этом браузере.");
+  assert.equal(behavior.selectionMessage("unknownAuthor"), "Неизвестный автор");
+  assert.equal(behavior.selectionMessage("details"), "", "unknown keys are never accepted from payloads");
+  assert.equal(behavior.formatInteger(10_000), "10 000");
+  assert.deepEqual(
+    [0, 1023, 1024, 1536, 1024 ** 2].map((size) => behavior.formatSize(size)),
+    ["0 bytes", "1023 bytes", "1.0 KiB", "1.5 KiB", "1.0 MiB"],
+  );
+
+  behavior.setI18n({dataset: {
+    uiLocale: "ru-RU",
+    selectionMessages: JSON.stringify({
+      selectionUnavailable: "Выбор книг недоступен.",
+      unknownAuthor: "Неизвестный автор",
+    }),
+  }});
+  assert.equal(behavior.selectionMessage("selectionUnavailable"), "Book selection is unavailable in this browser.");
+  assert.equal(behavior.selectionMessage("unknownAuthor"), "Unknown author");
+
+  behavior.setI18n({dataset: {
+    uiLocale: "ru",
+    selectionMessages: JSON.stringify({
+      selectionUnavailable: " \t ",
+      unknownAuthor: "Неизвестный автор {title}",
+      loadingPreview: "Загрузка {preview",
+      selectAllAuthor: "Выбрать книги автора {label} {label}",
+      selectAllSeries: "Выбрать книги серии {label} {1}",
+    }),
+  }});
+  assert.equal(
+    behavior.selectionMessage("selectionUnavailable"),
+    "Book selection is unavailable in this browser.",
+    "static messages reject whitespace-only values",
+  );
+  assert.equal(behavior.selectionMessage("unknownAuthor"), "Unknown author", "static messages reject placeholders");
+  assert.equal(behavior.selectionMessage("loadingPreview"), "Loading preview…");
+  assert.equal(
+    behavior.selectionMessage("selectAllAuthor", {label: "Иванов"}),
+    "Select all books by Иванов",
+    "placeholder counts must match",
+  );
+  assert.equal(behavior.selectionMessage("selectAllSeries", {label: "Серия"}), "Select all books in series Серия");
+});
+
 test("selected Tree metadata groups visible names and merges availability searches", () => {
   assert.equal(behavior.selectedGroupKey("author", "Ａuthor"), "author:author");
   assert.equal(behavior.selectedGroupKey("series", "Saga"), "series:saga");
@@ -284,6 +344,25 @@ test("selected Tree metadata groups visible names and merges availability search
   );
   assert.equal(behavior.mergeSelectedSearchUrls([]), null);
 });
+
+function renderedSelectedEntry(publicId, status, title, author = null) {
+  const authorLink = author === null ? null : {
+    textContent: author,
+    getAttribute(name) {
+      return name === "href" ? `/?q=${author}&search_field=author` : null;
+    },
+  };
+  return {
+    dataset: {publicId, status},
+    querySelectorAll(selector) {
+      return selector === ".result-row__authors a" && authorLink ? [authorLink] : [];
+    },
+    querySelector(selector) {
+      if (selector === ".result-row__title") return {textContent: title};
+      return null;
+    },
+  };
+}
 
 test("selected Table metadata sorting supports three columns and both directions", () => {
   const values = [
@@ -301,6 +380,31 @@ test("selected Table metadata sorting supports three columns and both directions
   assert.deepEqual(sorted("title", "desc"), ["c", "b", "a"]);
   assert.deepEqual(sorted("series", "asc"), ["c", "b", "a"]);
   assert.deepEqual(sorted("series", "desc"), ["a", "b", "c"]);
+});
+
+test("rendered unknown selections keep Table and Tree metadata order across locales", () => {
+  const renderedOrder = (unknownTitle, messages, sort) => {
+    behavior.setI18n({dataset: {uiLocale: messages ? "ru" : "en", selectionMessages: JSON.stringify(messages || {})}});
+    const entries = [
+      renderedSelectedEntry("unknown", "unknown", unknownTitle),
+      renderedSelectedEntry("known", "downloadable", "Middle title", "Middle author"),
+    ];
+    return entries
+      .map((entry) => behavior.selectedEntryMetadata(entry))
+      .sort((left, right) => behavior.compareSelectedMetadata(left, right, sort, "asc"))
+      .map((item) => item.publicId);
+  };
+  const russianMessages = {
+    unknownAuthor: "Неизвестный автор",
+    unknownSelection: "Неизвестный элемент",
+  };
+  for (const sort of ["author", "title", "series"]) {
+    assert.deepEqual(
+      renderedOrder("Неизвестный элемент", russianMessages, sort),
+      renderedOrder("Unknown selection", null, sort),
+      `${sort} ordering is locale-independent`,
+    );
+  }
 });
 
 test("a re-included preserved row takes the authoritative format state", () => {

@@ -11,6 +11,95 @@
   const SELECTED_VIEWS = new Set(["flat", "tree", "table"]);
   const SELECTED_TABLE_SORTS = new Set(["author", "title", "series"]);
   const SORT_DIRECTIONS = new Set(["asc", "desc"]);
+  const SELECTION_MESSAGE_FALLBACKS = Object.freeze({
+    savedSelectionRepaired: "Saved selection was repaired.",
+    selectionUnavailable: "Book selection is unavailable in this browser.",
+    couldNotSaveSelection: "Could not save the book selection.",
+    selectionLimit: "The selection is limited to 10 000 books.",
+    original: "Original",
+    size: "Size",
+    sourceSize: "Source size",
+    couldNotLoadPreview: "Could not load the selection preview.",
+    noBooksSelected: "No books selected",
+    selectBooksForZip: "Select downloadable books from the catalog to build a ZIP.",
+    browseCatalog: "Browse the catalog",
+    unknownAuthor: "Unknown author",
+    manyAuthors: "Many authors (6+)",
+    booksWithoutSeries: "Books without series",
+    unknownSelection: "Unknown selection",
+    selectAllAuthor: "Select all books by {label}",
+    selectAllSeries: "Select all books in series {label}",
+    selectedBooks: "Selected books",
+    select: "Select",
+    author: "Author",
+    title: "Title",
+    series: "Series",
+    status: "Status",
+    actions: "Actions",
+    sortedAscending: ", sorted ascending",
+    sortedDescending: ", sorted descending",
+    downloadable: "Downloadable",
+    unsupported: "Unsupported",
+    unavailable: "Unavailable",
+    unknown: "Unknown",
+    loadingSelection: "Loading selection…",
+    loadingPreview: "Loading preview…",
+    previewNeedsAttention: "Preview needs attention.",
+    couldNotRefreshPreview: "Could not refresh the selection preview.",
+  });
+
+  function templatePlaceholders(value) {
+    const placeholders = [];
+    let position = 0;
+    for (const match of value.matchAll(/\{([a-z][a-zA-Z0-9]*)\}/g)) {
+      if (/[{}]/.test(value.slice(position, match.index))) return null;
+      placeholders.push(match[1]);
+      position = match.index + match[0].length;
+    }
+    return /[{}]/.test(value.slice(position)) ? null : placeholders;
+  }
+
+  function validSelectionMessage(value, fallback) {
+    if (typeof value !== "string" || value.trim().length === 0 || value.length > 500) return false;
+    const placeholders = templatePlaceholders(value);
+    const expected = templatePlaceholders(fallback);
+    if (placeholders === null || expected === null || placeholders.length !== expected.length) return false;
+    placeholders.sort();
+    expected.sort();
+    return expected.every((name, index) => placeholders[index] === name);
+  }
+
+  function readSelectionI18n(root = document.body) {
+    const configuredLocale = root?.dataset?.uiLocale;
+    const locale = ["en", "ru"].includes(configuredLocale) ? configuredLocale : "en";
+    let configured = {};
+    if (configuredLocale === locale) {
+      try {
+        configured = JSON.parse(root?.dataset?.selectionMessages || "{}");
+        if (!configured || typeof configured !== "object" || Array.isArray(configured)) configured = {};
+      } catch (_error) {
+        configured = {};
+      }
+    }
+    const messages = {};
+    for (const [key, fallback] of Object.entries(SELECTION_MESSAGE_FALLBACKS)) {
+      messages[key] = validSelectionMessage(configured[key], fallback) ? configured[key] : fallback;
+    }
+    return {locale, messages, plurals: new Intl.PluralRules(locale)};
+  }
+
+  let selectionI18n = readSelectionI18n();
+
+  function selectionMessage(key, values = {}) {
+    let text = selectionI18n.messages[key] || SELECTION_MESSAGE_FALLBACKS[key] || "";
+    for (const [name, value] of Object.entries(values)) text = text.replaceAll(`{${name}}`, String(value));
+    return text;
+  }
+
+  function formatInteger(value) {
+    const digits = String(Math.max(0, Math.trunc(Number(value) || 0)));
+    return digits.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  }
 
   let selectedIds = [];
   let storageReady = false;
@@ -81,19 +170,19 @@
       storageReady = true;
       if (raw !== null && raw !== JSON.stringify(ids)) {
         window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
-        showSelectionStatus("Saved selection was repaired.");
+        showSelectionStatus(selectionMessage("savedSelectionRepaired"));
       }
       return ids;
     } catch (_error) {
       storageReady = false;
-      showSelectionStatus("Book selection is unavailable in this browser.", true);
+      showSelectionStatus(selectionMessage("selectionUnavailable"), true);
       return [];
     }
   }
 
   function syncNavigationCount() {
     document.querySelectorAll("[data-selection-count]").forEach((count) => {
-      count.textContent = String(selectedIds.length);
+      count.textContent = formatInteger(selectedIds.length);
       count.hidden = !storageReady;
     });
   }
@@ -181,7 +270,7 @@
 
     const original = selector.querySelector('option[value="original"]');
     if (original) {
-      original.textContent = sourceFormats.size === 1 ? [...sourceFormats][0] : "Original";
+      original.textContent = sourceFormats.size === 1 ? [...sourceFormats][0] : selectionMessage("original");
     }
     CONVERTED_FORMATS.forEach(({value}) => {
       selector.querySelector(`option[value="${value}"]`)?.remove();
@@ -228,14 +317,14 @@
   function saveSelection(nextIds, restoreFocus = false, preserveEntries = false) {
     const normalized = normalizeIds(nextIds);
     if (!storageReady) {
-      showSelectionStatus("Book selection is unavailable in this browser.", true);
+      showSelectionStatus(selectionMessage("selectionUnavailable"), true);
       syncInterface();
       return false;
     }
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
     } catch (_error) {
-      showSelectionStatus("Could not save the book selection.", true);
+      showSelectionStatus(selectionMessage("couldNotSaveSelection"), true);
       syncInterface();
       return false;
     }
@@ -257,7 +346,7 @@
       return;
     }
     if (selectedIds.length >= MAX_SELECTED) {
-      showSelectionStatus("The selection is limited to 10,000 books.", true);
+      showSelectionStatus(selectionMessage("selectionLimit"), true);
       syncInterface();
       return;
     }
@@ -310,7 +399,7 @@
     });
     const selectedFormat = page.querySelector("[data-selected-format]")?.value || "original";
     page.querySelectorAll("[data-selected-total-label]").forEach((element) => {
-      element.textContent = selectedFormat === "original" ? "Size" : "Source size";
+      element.textContent = selectionMessage(selectedFormat === "original" ? "size" : "sourceSize");
     });
     const download = page.querySelector("[data-selected-download]");
     if (download) {
@@ -323,13 +412,13 @@
     const totalSize = Number.parseInt(content.dataset.totalSize || "0", 10);
     const usableCount = Number.isFinite(downloadable) && downloadable > 0 ? downloadable : 0;
     page.querySelectorAll("[data-selected-downloadable-count]").forEach((element) => {
-      element.textContent = String(usableCount);
+      element.textContent = formatInteger(usableCount);
     });
     page.querySelectorAll("[data-selected-total-size]").forEach((element) => {
       element.textContent = formatSize(totalSize);
     });
     page.querySelectorAll("[data-selected-total-label]").forEach((element) => {
-      element.textContent = content.dataset.archiveFormat === "original" ? "Size" : "Source size";
+      element.textContent = selectionMessage(content.dataset.archiveFormat === "original" ? "size" : "sourceSize");
     });
     const download = page.querySelector("[data-selected-download]");
     if (download) {
@@ -356,15 +445,25 @@
   }
 
   function showPreviewError(target) {
-    target.innerHTML = '<div class="selected-preview-error" data-selected-preview-error role="alert" tabindex="-1"><p>Could not load the selection preview.</p></div>';
+    const error = selectedElement("div", "selected-preview-error");
+    error.dataset.selectedPreviewError = "";
+    error.setAttribute("role", "alert");
+    error.setAttribute("tabindex", "-1");
+    error.append(selectedElement("p", "", selectionMessage("couldNotLoadPreview")));
+    target.replaceChildren(error);
   }
 
   function createSelectedEmptyState() {
-    const emptyState = document.createElement("div");
-    emptyState.className = "catalog-results__message selected-empty";
+    const emptyState = selectedElement("div", "catalog-results__message selected-empty");
     emptyState.dataset.selectedEmpty = "";
     emptyState.setAttribute("tabindex", "-1");
-    emptyState.innerHTML = "<h2>No books selected</h2><p>Select downloadable books from the catalog to build a ZIP.</p><p><a href=\"/\">Browse the catalog</a></p>";
+    emptyState.append(selectedElement("h2", "", selectionMessage("noBooksSelected")));
+    emptyState.append(selectedElement("p", "", selectionMessage("selectBooksForZip")));
+    const navigation = selectedElement("p");
+    const link = selectedElement("a", "", selectionMessage("browseCatalog"));
+    link.href = "/";
+    navigation.append(link);
+    emptyState.append(navigation);
     return emptyState;
   }
 
@@ -391,21 +490,23 @@
   }
 
   function compareSelectedMetadata(left, right, sort, direction = "asc") {
-    const leftAuthor = left.authors[0]?.label || null;
-    const rightAuthor = right.authors[0]?.label || null;
-    const leftSeries = left.series?.label || null;
-    const rightSeries = right.series?.label || null;
+    const leftAuthor = left.authors[0]?.sortLabel || left.authors[0]?.label || null;
+    const rightAuthor = right.authors[0]?.sortLabel || right.authors[0]?.label || null;
+    const leftSeries = left.series?.sortLabel || left.series?.label || null;
+    const rightSeries = right.series?.sortLabel || right.series?.label || null;
+    const leftTitle = left.titleSort || left.title;
+    const rightTitle = right.titleSort || right.title;
     let compared;
     if (sort === "title") {
-      compared = selectedTextCompare(left.title, right.title);
+      compared = selectedTextCompare(leftTitle, rightTitle);
     } else if (sort === "series") {
       compared = selectedOptionalTextCompare(leftSeries, rightSeries)
-        || selectedTextCompare(left.title, right.title)
+        || selectedTextCompare(leftTitle, rightTitle)
         || selectedOptionalTextCompare(leftAuthor, rightAuthor);
     } else {
       compared = selectedOptionalTextCompare(leftAuthor, rightAuthor)
         || selectedOptionalTextCompare(leftSeries, rightSeries)
-        || selectedTextCompare(left.title, right.title);
+        || selectedTextCompare(leftTitle, rightTitle);
     }
     if (!compared) compared = selectedTextCompare(left.publicId, right.publicId);
     return direction === "desc" ? -compared : compared;
@@ -452,18 +553,22 @@
       searchUrl: link.getAttribute("href"),
     }));
     if (authors.length === 0) {
-      authors = [{key: "synthetic-author:unknown", label: "Unknown author", searchUrl: null}];
+      authors = [{key: "synthetic-author:unknown", label: selectionMessage("unknownAuthor"), sortLabel: "Unknown author", searchUrl: null}];
     } else if (authors.length >= 6) {
-      authors = [{key: "synthetic-author:many", label: "Many authors (6+)", searchUrl: null}];
+      authors = [{key: "synthetic-author:many", label: selectionMessage("manyAuthors"), sortLabel: "Many authors (6+)", searchUrl: null}];
     }
     const seriesLink = entry.querySelector(".result-row__series a");
+    const renderedTitle = entry.querySelector(".result-row__title")?.textContent.trim();
+    const unknownEntry = entry.dataset.status === "unknown";
     return {
       publicId: entry.dataset.publicId,
-      title: entry.querySelector(".result-row__title")?.textContent.trim() || "Unknown selection",
+      title: renderedTitle || selectionMessage("unknownSelection"),
+      titleSort: unknownEntry ? "Unknown selection" : renderedTitle || "Unknown selection",
       authors,
       series: seriesLink ? {
         key: selectedGroupKey("series", seriesLink.textContent),
         label: seriesLink.textContent,
+        sortLabel: seriesLink.textContent,
         searchUrl: seriesLink.getAttribute("href"),
       } : null,
     };
@@ -476,13 +581,13 @@
     return clone;
   }
 
-  function selectedGroupCheckbox(entries, label) {
+  function selectedGroupCheckbox(entries, label, type) {
     const publicIds = [...new Set(entries.map((entry) => entry.dataset.publicId).filter(isValidId))];
     const checkbox = selectedElement("input", "catalog-tree-select");
     checkbox.type = "checkbox";
     checkbox.dataset.selectionGroup = "";
     checkbox.dataset.publicIds = JSON.stringify(publicIds);
-    checkbox.setAttribute("aria-label", `Select all books in ${label}`);
+    checkbox.setAttribute("aria-label", selectionMessage(type === "author" ? "selectAllAuthor" : "selectAllSeries", {label}));
     return checkbox;
   }
 
@@ -499,7 +604,7 @@
       for (const author of metadata.authors) {
         let branch = groups.get(author.key);
         if (!branch) {
-          branch = {label: author.label, entries: [], searchUrls: [], series: new Map()};
+          branch = {label: author.label, sortLabel: author.sortLabel || author.label, entries: [], searchUrls: [], series: new Map()};
           groups.set(author.key, branch);
         }
         branch.entries.push(entry);
@@ -508,7 +613,8 @@
         let leaf = branch.series.get(seriesKey);
         if (!leaf) {
           leaf = {
-            label: metadata.series?.label || "Books without series",
+            label: metadata.series?.label || selectionMessage("booksWithoutSeries"),
+            sortLabel: metadata.series?.label || "Books without series",
             entries: [],
             searchUrls: [],
           };
@@ -519,24 +625,24 @@
       }
     }
     const tree = selectedElement("div", "catalog-tree-view selected-tree-view");
-    const branches = [...groups.values()].sort((left, right) => selectedTextCompare(left.label, right.label));
+    const branches = [...groups.values()].sort((left, right) => selectedTextCompare(left.sortLabel, right.sortLabel));
     for (const branch of branches) {
       const author = selectedElement("details", "catalog-tree-author");
       const authorSummary = selectedElement("summary", "catalog-tree-author__summary");
-      authorSummary.append(selectedGroupCheckbox(branch.entries, `author ${branch.label}`));
+      authorSummary.append(selectedGroupCheckbox(branch.entries, branch.label, "author"));
       authorSummary.append(selectedMetadataLink(branch.label, branch.searchUrls));
-      authorSummary.append(selectedElement("span", "catalog-tree-count", ` (${new Set(branch.entries.map((entry) => entry.dataset.publicId)).size})`));
+      authorSummary.append(selectedElement("span", "catalog-tree-count", ` (${formatInteger(new Set(branch.entries.map((entry) => entry.dataset.publicId)).size)})`));
       author.append(authorSummary);
-      const leaves = [...branch.series.values()].sort((left, right) => selectedTextCompare(left.label, right.label));
+      const leaves = [...branch.series.values()].sort((left, right) => selectedTextCompare(left.sortLabel, right.sortLabel));
       for (const leaf of leaves) {
         const series = selectedElement("details", "catalog-tree-series");
         const summary = selectedElement("summary", "catalog-tree-series__summary");
-        summary.append(selectedGroupCheckbox(leaf.entries, `series ${leaf.label}`));
+        summary.append(selectedGroupCheckbox(leaf.entries, leaf.label, "series"));
         summary.append(selectedMetadataLink(leaf.label, leaf.searchUrls));
-        summary.append(selectedElement("span", "catalog-tree-count", ` (${new Set(leaf.entries.map((entry) => entry.dataset.publicId)).size})`));
+        summary.append(selectedElement("span", "catalog-tree-count", ` (${formatInteger(new Set(leaf.entries.map((entry) => entry.dataset.publicId)).size)})`));
         const books = selectedElement("div", "catalog-tree-books");
         [...leaf.entries]
-          .sort((left, right) => selectedTextCompare(selectedEntryMetadata(left).title, selectedEntryMetadata(right).title))
+          .sort((left, right) => selectedTextCompare(selectedEntryMetadata(left).titleSort, selectedEntryMetadata(right).titleSort))
           .forEach((entry) => books.append(cloneSelectedEntry(entry)));
         series.append(summary, books);
         author.append(series);
@@ -555,16 +661,16 @@
   function renderSelectedTable(entries) {
     const wrapper = selectedElement("div", "catalog-table-scroll");
     const table = selectedElement("table", "catalog-table selected-table");
-    table.append(selectedElement("caption", "visually-hidden", "Selected books"));
+    table.append(selectedElement("caption", "visually-hidden", selectionMessage("selectedBooks")));
     const head = selectedElement("thead");
     const header = selectedElement("tr");
     for (const {key, label} of [
-      {key: null, label: "Select"},
-      {key: "author", label: "Author"},
-      {key: "title", label: "Title"},
-      {key: "series", label: "Series"},
-      {key: null, label: "Status"},
-      {key: null, label: "Actions"},
+      {key: null, label: selectionMessage("select")},
+      {key: "author", label: selectionMessage("author")},
+      {key: "title", label: selectionMessage("title")},
+      {key: "series", label: selectionMessage("series")},
+      {key: null, label: selectionMessage("status")},
+      {key: null, label: selectionMessage("actions")},
     ]) {
       const cell = selectedElement("th");
       cell.scope = "col";
@@ -589,7 +695,7 @@
         cell.append(button);
         if (selectedTableSort === key) {
           cell.setAttribute("aria-sort", selectedTableDirection === "asc" ? "ascending" : "descending");
-          button.append(selectedElement("span", "visually-hidden", `, sorted ${selectedTableDirection === "asc" ? "ascending" : "descending"}`));
+          button.append(selectedElement("span", "visually-hidden", selectionMessage(selectedTableDirection === "asc" ? "sortedAscending" : "sortedDescending")));
         }
       }
       header.append(cell);
@@ -614,9 +720,9 @@
       status.append(selectedElement(
         "strong",
         "selected-table__status-label",
-        statusValue[0].toUpperCase() + statusValue.slice(1),
+        selectionMessage(Object.hasOwn(SELECTION_MESSAGE_FALLBACKS, statusValue) ? statusValue : "unknown"),
       ));
-      status.append(entry.querySelector(".result-metadata")?.cloneNode(true) || document.createTextNode("Unknown"));
+      status.append(entry.querySelector(".result-metadata")?.cloneNode(true) || document.createTextNode(selectionMessage("unknown")));
       const note = entry.querySelector(".selected-entry-note")?.cloneNode(true);
       if (note) status.append(note);
       selectedTableCell(row, status);
@@ -745,7 +851,7 @@
       errorContent.dataset.selectedPreviewError = "";
       errorContent.setAttribute("role", "alert");
       errorContent.setAttribute("tabindex", "-1");
-      errorContent.innerHTML = "<p>Could not load the selection preview.</p>";
+      errorContent.append(selectedElement("p", "", selectionMessage("couldNotLoadPreview")));
     }
     currentContent.insertBefore(errorContent, currentEntries);
     currentContent.querySelectorAll("[data-selected-entry]").forEach(clearCollisionState);
@@ -825,10 +931,10 @@
     const requestIds = [...selectedIds];
     target.setAttribute("aria-busy", "true");
     if (!keepEntries) {
-      target.innerHTML = '<p class="selected-loading">Loading selection…</p>';
+      target.replaceChildren(selectedElement("p", "selected-loading", selectionMessage("loadingSelection")));
     }
     resetPreviewState(page);
-    setPreviewStatus(page, "Loading preview…");
+    setPreviewStatus(page, selectionMessage("loadingPreview"));
 
     try {
       const response = await window.fetch("/selected/preview", {
@@ -861,7 +967,7 @@
           target.innerHTML = markup;
         }
         resetPreviewState(page);
-        setPreviewStatus(page, "Preview needs attention.", true);
+        setPreviewStatus(page, selectionMessage("previewNeedsAttention"), true);
         restorePreviewFocus(target, requestIds);
         return;
       }
@@ -899,7 +1005,7 @@
       } else {
         showPreviewError(target);
       }
-      setPreviewStatus(page, "Could not refresh the selection preview.", true);
+      setPreviewStatus(page, selectionMessage("couldNotRefreshPreview"), true);
       restorePreviewFocus(target, requestIds);
     } finally {
       if (requestGeneration === previewGeneration) {
@@ -934,7 +1040,7 @@
       if (include) {
         const nextIds = [...new Set([...selectedIds, ...publicIds])];
         if (nextIds.length > MAX_SELECTED) {
-          showSelectionStatus("The selection is limited to 10,000 books.", true);
+          showSelectionStatus(selectionMessage("selectionLimit"), true);
           syncInterface();
           return;
         }
@@ -974,6 +1080,7 @@
   }
 
   function initialize() {
+    selectionI18n = readSelectionI18n();
     selectedIds = readSelection();
     syncInterface();
     document.addEventListener("change", handleChange);

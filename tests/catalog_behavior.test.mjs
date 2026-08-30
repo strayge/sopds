@@ -25,6 +25,9 @@ const exportHook = `
     matchesFilters,
     filterBooks,
     validatePayload,
+    readCatalogI18n,
+    countMessage,
+    formatInteger,
     buildTreeModel,
     buildBookRow,
     buildActions,
@@ -733,7 +736,7 @@ test("Tree parent checkboxes contain unique visible selectable IDs", () => {
   assert.equal(groups.length, 2);
   for (const group of groups) {
     assert.deepEqual(JSON.parse(group.dataset.publicIds), ["one", "two"]);
-    assert.match(group.getAttribute("aria-label"), /^Select all books in (author|series)/);
+    assert.match(group.getAttribute("aria-label"), /^Select all books (by|in series)/);
   }
   controller.state.title = "one";
   controller.render();
@@ -757,6 +760,131 @@ test("Table places book selection in the first column and excludes it from actio
   controller.destroy();
 });
 
+test("Russian catalog messages use plural categories, ASCII grouping, and stable synthetic order", () => {
+  const localizedRoot = new FakeNode("section");
+  localizedRoot.dataset.catalogLocale = "ru";
+  localizedRoot.dataset.catalogMessages = JSON.stringify({
+    unknownAuthor: "Неизвестный автор",
+    manyAuthors: "Много авторов (6+)",
+    booksWithoutSeries: "Книги без серии",
+    filteredLoaded: {
+      one: "Загружена {count} книга из {total}.",
+      few: "Загружено {count} книги из {total}.",
+      many: "Загружено {count} книг из {total}.",
+      other: "Загружено {count} книги из {total}.",
+    },
+  });
+  const russian = behavior.readCatalogI18n(localizedRoot);
+  const values = books(
+    rawBook("unknown", {authors: [], seriesName: null}),
+    rawBook("ordinary", {authorName: "Middle", seriesName: null}),
+    rawBook("many", {authors: Array.from({length: 6}, (_value, index) => ({
+      raw: `Writer ${index}`,
+      display: `Writer ${index}`,
+      sortKey: `writer ${index}`,
+      scopeUrl: `/?q=Writer${index}&search_field=author`,
+    })), seriesName: null}),
+  );
+  const englishOrder = behavior.buildTreeModel(values).map((branch) => branch.key);
+  const russianTree = behavior.buildTreeModel(values, russian);
+  assert.deepEqual(plain(russianTree.map((branch) => branch.key)), plain(englishOrder));
+  assert.ok(russianTree.some((branch) => branch.label === "Неизвестный автор"));
+  assert.ok(russianTree.some((branch) => branch.label === "Много авторов (6+)"));
+  assert.equal(behavior.formatInteger(1_002_003), "1 002 003");
+  assert.deepEqual(
+    [1, 2, 5, 11, 21].map((count) => behavior.countMessage(russian, "filteredLoaded", count, {total: 21})),
+    [
+      "Загружена 1 книга из 21.",
+      "Загружено 2 книги из 21.",
+      "Загружено 5 книг из 21.",
+      "Загружено 11 книг из 21.",
+      "Загружена 21 книга из 21.",
+    ],
+  );
+
+  const fixture = controllerRoot();
+  const controller = new behavior.CatalogController(
+    fixture.root,
+    {books: values.slice(0, 2), truncated: false},
+    behavior.parseFragment("#title=title"),
+    russian,
+  );
+  assert.equal(fixture.summary.textContent, "Загружено 2 книги из 2.");
+  controller.destroy();
+});
+
+test("invalid locales and malformed catalog templates use bounded English fallback", () => {
+  const invalidLocaleRoot = new FakeNode("section");
+  invalidLocaleRoot.dataset.catalogLocale = "ru-RU";
+  invalidLocaleRoot.dataset.catalogMessages = JSON.stringify({
+    read: "Читать",
+    details: "Сведения",
+    filteredLoaded: {
+      one: "Загружена {count} книга из {total}.",
+      other: "Загружено {count} книг из {total}.",
+    },
+  });
+  const invalidLocale = behavior.readCatalogI18n(invalidLocaleRoot);
+  assert.equal(invalidLocale.locale, "en");
+  const [book] = books(rawBook("fallback"));
+  assert.match(behavior.buildActions(book, true, invalidLocale).textContent, /Read/);
+  assert.match(behavior.buildActions(book, true, invalidLocale).textContent, /Details/);
+  assert.equal(
+    behavior.countMessage(invalidLocale, "filteredLoaded", 1, {total: 2}),
+    "1 book loaded out of 2.",
+  );
+
+  const malformedTemplateRoot = new FakeNode("section");
+  malformedTemplateRoot.dataset.catalogLocale = "ru";
+  malformedTemplateRoot.dataset.catalogMessages = JSON.stringify({
+    read: " \t ",
+    details: "Сведения: {title}",
+    selectBook: "Выбрать {title} {title}",
+    selectAllAuthor: "Выбрать книги автора {label} {1}",
+    selectAllSeries: "Выбрать книги серии {label",
+    downloadOriginal: "Скачать {format} для {wrong}",
+    filteredLoaded: {
+      one: "Загружена {count} книга.",
+      few: "Загружено {count} книги из {total}.",
+      many: "Загружено {count} книг из {total}}.",
+    },
+  });
+  const malformedTemplate = behavior.readCatalogI18n(malformedTemplateRoot);
+  assert.equal(malformedTemplate.messages.read, "Read", "static messages reject whitespace-only values");
+  assert.equal(malformedTemplate.messages.details, "Details", "static messages reject placeholders");
+  assert.equal(malformedTemplate.messages.selectBook, "Select {title}", "placeholder counts must match");
+  assert.equal(malformedTemplate.messages.selectAllAuthor, "Select all books by {label}");
+  assert.equal(malformedTemplate.messages.selectAllSeries, "Select all books in series {label}");
+  assert.equal(
+    malformedTemplate.messages.downloadOriginal,
+    "Download original {format} file for {title}",
+  );
+  assert.equal(
+    behavior.countMessage(malformedTemplate, "filteredLoaded", 1, {total: 2}),
+    "1 book loaded out of 2.",
+  );
+  assert.equal(
+    behavior.countMessage(malformedTemplate, "filteredLoaded", 2, {total: 2}),
+    "Загружено 2 книги из 2.",
+  );
+  assert.equal(
+    behavior.countMessage(malformedTemplate, "filteredLoaded", 5, {total: 5}),
+    "5 books loaded out of 5.",
+  );
+});
+
+test("English local count copy is governed by the filtered count", () => {
+  const english = behavior.readCatalogI18n(null);
+  assert.equal(
+    behavior.countMessage(english, "filteredLoaded", 1, {total: 2}),
+    "1 book loaded out of 2.",
+  );
+  assert.equal(
+    behavior.countMessage(english, "filteredLoaded", 0, {total: 1}),
+    "0 books loaded out of 1.",
+  );
+});
+
 test("local count copy is truthful for loaded and truncated zero results and restores on clear", () => {
   const fixture = controllerRoot();
   const values = books(rawBook("one"), rawBook("two"));
@@ -765,7 +893,7 @@ test("local count copy is truthful for loaded and truncated zero results and res
   assert.match(fixture.mount.textContent, /No loaded books match/);
   controller.state.title = "title";
   controller.render();
-  assert.equal(fixture.summary.textContent, "2 of 2 loaded books.");
+  assert.equal(fixture.summary.textContent, "2 books loaded out of 2.");
   controller.state.title = "";
   controller.render();
   assert.equal(fixture.summary.textContent, "2 books loaded.");

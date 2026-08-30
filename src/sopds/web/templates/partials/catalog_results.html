@@ -4,7 +4,7 @@
     <p>{{ gettext("Enter a title, author, or series above, or narrow the library with the available filters.") }}</p>
   </div>
 {% elif page.books %}
-  <section class="catalog-explorer" data-catalog-root aria-labelledby="catalog-loaded-summary">
+  <section class="catalog-explorer" data-catalog-root data-catalog-locale="{{ catalog_locale }}" data-catalog-messages="{{ catalog_messages|tojson|forceescape }}" aria-labelledby="catalog-loaded-summary">
     <div class="catalog-local-toolbar">
       <div class="catalog-view-context">
         <div class="catalog-view-switcher" role="group" aria-label="{{ gettext('Result view') }}">

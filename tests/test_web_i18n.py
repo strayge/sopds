@@ -11,6 +11,7 @@ from sopds.catalog.contracts import CatalogInputError
 from sopds.imports.status import ImportState, ImportTrigger
 from sopds.web.i18n import (
     N_,
+    catalog_browser_messages,
     catalog_error_message,
     compile_catalogs_if_needed,
     import_state_label,
@@ -18,6 +19,7 @@ from sopds.web.i18n import (
     known_html_message,
     request_translation_context,
     resolve_locale,
+    selection_browser_messages,
     translation_context,
 )
 
@@ -171,6 +173,32 @@ def test_public_html_presenters_translate_only_known_values() -> None:
     assert import_trigger_label(russian, ImportTrigger.SCHEDULED) == "По расписанию"
     with pytest.raises(ValueError, match="Unknown HTML message"):
         known_html_message(russian, "private diagnostic")
+
+
+def test_compact_browser_payloads_are_allowlisted_and_have_russian_plural_categories() -> None:
+    english_catalog = catalog_browser_messages(
+        request_translation_context(_request(accept_language="en"))
+    )
+    russian = request_translation_context(_request(accept_language="ru"))
+    catalog = catalog_browser_messages(russian)
+    selection = selection_browser_messages(russian)
+
+    assert english_catalog["filteredLoaded"] == {
+        "one": "{count} book loaded out of {total}.",
+        "few": "{count} books loaded out of {total}.",
+        "many": "{count} books loaded out of {total}.",
+        "other": "{count} books loaded out of {total}.",
+    }
+    assert catalog["unknownAuthor"] == "Неизвестный автор"
+    assert catalog["filteredLoaded"] == {
+        "one": "Загружена {count} книга из {total}.",
+        "few": "Загружено {count} книги из {total}.",
+        "many": "Загружено {count} книг из {total}.",
+        "other": "Загружено {count} книги из {total}.",
+    }
+    assert selection["selectionLimit"] == "Можно выбрать не более 10 000 книг."
+    assert "Browse and manage the SOPDS private library catalog." not in catalog.values()
+    assert "Browse and manage the SOPDS private library catalog." not in selection.values()
 
 
 def test_russian_server_plural_rules_cover_one_few_and_many() -> None:
