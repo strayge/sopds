@@ -1201,6 +1201,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "max-height: 50vh" in stylesheet.text
     assert "overflow-y: auto" in stylesheet.text
     assert "overscroll-behavior-y: contain" in stylesheet.text
+    contents_css = stylesheet.text.split("[data-reader-contents] {", 1)[1].split("}", 1)[0]
+    assert "overflow: hidden" in contents_css
     assert "data-reader-mode-toggle" in stylesheet.text
     assert "data-reader-book-position" in stylesheet.text
     assert "writing-mode: vertical-lr" in stylesheet.text
@@ -1223,6 +1225,9 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "createRasterBudget()" in book_adapter.text
     assert "const parseFB2XML" in book_adapter.text
     assert "error.message !== 'FB2 is malformed XML.'" in book_adapter.text
+    assert (
+        "result.insertBefore(safe.createTextNode(' '), result.children[index])" in book_adapter.text
+    )
     assert "canonicalizeFB2RasterImage" in book_adapter.text
     assert "candidateBinaries" in book_adapter.text
     assert "retainedBinaries" in book_adapter.text

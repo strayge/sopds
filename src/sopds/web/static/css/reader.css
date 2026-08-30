@@ -344,6 +344,7 @@ foliate-view {
   width: min(28rem, calc(100% - 2rem));
   max-height: min(42rem, calc(100% - 2rem));
   padding: 0;
+  overflow: hidden;
   border: 1px solid var(--reader-border);
   border-radius: 0.35rem;
   background: var(--reader-surface);

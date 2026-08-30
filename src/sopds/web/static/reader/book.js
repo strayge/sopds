@@ -625,6 +625,8 @@ const makeSafeFB2 = async (file, signal) => {
             flush()
         }
         consume(sourceElement)
+        for (let index = result.children.length - 1; index > 0; index--)
+            result.insertBefore(safe.createTextNode(' '), result.children[index])
         return result
     }
     function copySectionLike(name, sourceElement) {
