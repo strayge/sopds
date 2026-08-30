@@ -741,12 +741,14 @@ dd {
 .catalog-tree-author__summary {
   min-height: 2.75rem;
   padding: 0.65rem var(--space-3);
-  background: var(--color-paper-deep);
+  background: rgb(245 240 230 / 55%);
   color: var(--color-ink);
   font-weight: 600;
 }
 
 .catalog-tree-author[open] > .catalog-tree-author__summary {
+  background: #e8f0eb;
+  color: var(--color-forest-dark);
   box-shadow: inset 0.2rem 0 0 var(--color-terracotta);
 }
 
@@ -801,7 +803,7 @@ dd {
 }
 
 .catalog-tree-series[open] > .catalog-tree-series__summary {
-  background: var(--color-surface);
+  background: var(--color-paper-deep);
   color: var(--color-forest-dark);
 }
 

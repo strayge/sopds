@@ -1527,6 +1527,32 @@ def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() 
     assert "min-height: 2.75rem;" in coarse_rules.group(1)
 
 
+def test_expanded_tree_rows_use_hierarchical_backgrounds() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        stylesheet = client.get("/static/css/app.css")
+
+    assert stylesheet.status_code == 200
+    assert re.search(
+        r"\.catalog-tree-author__summary \{[^}]*"
+        r"background: rgb\(245 240 230 / 55%\);",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-tree-author\[open\] > \.catalog-tree-author__summary \{[^}]*"
+        r"background: #e8f0eb;[^}]*color: var\(--color-forest-dark\);",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-tree-series\[open\] > \.catalog-tree-series__summary \{[^}]*"
+        r"background: var\(--color-paper-deep\);",
+        stylesheet.text,
+        re.S,
+    )
+
+
 def test_narrow_navigation_uses_two_touch_safe_rows_without_count_overflow() -> None:
     app, _, _ = _app()
     with TestClient(app) as client:
