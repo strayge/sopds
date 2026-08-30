@@ -58,6 +58,9 @@ let bookSeeking = false
 let lastProgress = 0
 let lastChapter = ''
 let bookPositionMarkers = []
+let contentsEntries = new Map()
+let activeContentsEntry = null
+let currentContentsHref = ''
 
 const publicationStyles = scale => `
 @font-face {
@@ -186,6 +189,9 @@ const cleanup = async () => {
     view?.remove()
     surface.replaceChildren()
     contentsNavigation.replaceChildren()
+    clearContentsHighlight()
+    contentsEntries = new Map()
+    currentContentsHref = ''
     contentsButton.disabled = true
     previousButton.disabled = true
     nextButton.disabled = true
@@ -235,6 +241,35 @@ const updateNavigationControls = (view, switchingComplete = false) => {
 const turnLeft = () => currentPageRTL ? activeView?.next() : activeView?.prev()
 const turnRight = () => currentPageRTL ? activeView?.prev() : activeView?.next()
 
+const clearContentsHighlight = () => {
+    if (!activeContentsEntry) return
+    activeContentsEntry.element.removeAttribute('aria-current')
+    for (const ancestor of activeContentsEntry.ancestors)
+        ancestor.removeAttribute('data-reader-current-parent')
+    activeContentsEntry = null
+}
+
+const updateContentsHighlight = href => {
+    currentContentsHref = typeof href === 'string' ? href : ''
+    clearContentsHighlight()
+    const entry = contentsEntries.get(currentContentsHref)
+    if (!entry) return
+    entry.element.setAttribute('aria-current', 'location')
+    for (const ancestor of entry.ancestors)
+        ancestor.setAttribute('data-reader-current-parent', '')
+    activeContentsEntry = entry
+}
+
+const centerCurrentContentsEntry = () => {
+    const element = activeContentsEntry?.element
+    if (!element || !contentsDialog.open) return
+    element.focus({ preventScroll: true })
+    const navigationRect = contentsNavigation.getBoundingClientRect()
+    const elementRect = element.getBoundingClientRect()
+    contentsNavigation.scrollTop += elementRect.top - navigationRect.top
+        - (contentsNavigation.clientHeight - elementRect.height) / 2
+}
+
 const updateProgress = detail => {
     const fraction = Number(detail?.fraction)
     const progress = Number.isFinite(fraction)
@@ -242,6 +277,8 @@ const updateProgress = detail => {
     lastProgress = progress
     lastChapter = typeof detail?.tocItem?.label === 'string'
         ? detail.tocItem.label.trim() : ''
+    if (typeof detail?.tocItem?.href === 'string')
+        updateContentsHighlight(detail.tocItem.href)
     if (!bookSeeking) updateBookPosition(progress, false, lastChapter)
     progressOutput.value = `${Math.round(progress * 100)}%`
     progressOutput.textContent = progressOutput.value
@@ -273,34 +310,38 @@ const keyboardNavigation = event => {
 }
 
 const renderContents = (items, view) => {
-    const buildList = entries => {
+    clearContentsHighlight()
+    contentsEntries = new Map()
+    const buildList = (entries, ancestors = []) => {
         const list = document.createElement('ul')
         for (const item of entries) {
             if (typeof item?.label !== 'string') continue
             const listItem = document.createElement('li')
+            let element
             if (typeof item.href === 'string') {
-                const button = document.createElement('button')
-                button.type = 'button'
-                button.textContent = item.label
-                button.addEventListener('click', async () => {
+                element = document.createElement('button')
+                element.type = 'button'
+                element.textContent = item.label
+                element.addEventListener('click', async () => {
                     await view.goTo(item.href)
                     contentsDialog.close()
                     surface.focus()
                 })
-                listItem.append(button)
+                contentsEntries.set(item.href, { element, ancestors })
             } else {
-                const label = document.createElement('span')
-                label.className = 'reader-contents-group'
-                label.textContent = item.label
-                listItem.append(label)
+                element = document.createElement('span')
+                element.className = 'reader-contents-group'
+                element.textContent = item.label
             }
+            listItem.append(element)
             if (Array.isArray(item.subitems) && item.subitems.length)
-                listItem.append(buildList(item.subitems))
+                listItem.append(buildList(item.subitems, [...ancestors, element]))
             list.append(listItem)
         }
         return list
     }
     contentsNavigation.replaceChildren(buildList(Array.isArray(items) ? items : []))
+    updateContentsHighlight(currentContentsHref)
     const available = Boolean(contentsNavigation.querySelector('button'))
     contentsButton.disabled = !available
 }
@@ -700,6 +741,7 @@ contentsButton.addEventListener('click', () => {
     if (contentsButton.disabled || modeSwitching || bookSeeking) return
     contentsDialog.showModal()
     contentsButton.setAttribute('aria-expanded', 'true')
+    requestAnimationFrame(centerCurrentContentsEntry)
 })
 contentsDialog.addEventListener('close', () =>
     contentsButton.setAttribute('aria-expanded', 'false'))

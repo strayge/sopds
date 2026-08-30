@@ -1190,6 +1190,9 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "BOOK_POSITION_MAX = 10_000" in javascript.text
     assert "configureBookPositionMarkers" in javascript.text
     assert "previewText = label" in javascript.text
+    assert "setAttribute('aria-current', 'location')" in javascript.text
+    assert "data-reader-current-parent" in javascript.text
+    assert "requestAnimationFrame(centerCurrentContentsEntry)" in javascript.text
     assert "sopds.reader.v1" in state.text
     assert "export const getReaderMode" in state.text
     assert "export const setReaderMode" in state.text
@@ -1201,6 +1204,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "max-height: 50vh" in stylesheet.text
     assert "overflow-y: auto" in stylesheet.text
     assert "overscroll-behavior-y: contain" in stylesheet.text
+    assert 'button[aria-current="location"]' in stylesheet.text
+    assert "[data-reader-current-parent]" in stylesheet.text
     contents_css = stylesheet.text.split("[data-reader-contents] {", 1)[1].split("}", 1)[0]
     assert "overflow: hidden" in contents_css
     assert "data-reader-mode-toggle" in stylesheet.text

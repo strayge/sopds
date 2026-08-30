@@ -23,6 +23,7 @@
   --reader-border: #d5cbbb;
   --reader-action: #275b49;
   --reader-action-hover: #183f33;
+  --reader-current: #e2eee8;
   --reader-focus: #166f9d;
   --reader-error: #a21b1b;
   --reader-error-surface: #f9e7e4;
@@ -393,6 +394,19 @@ foliate-view {
   white-space: normal;
 }
 
+[data-reader-contents-navigation] [data-reader-current-parent] {
+  color: var(--reader-action);
+  font-weight: 600;
+}
+
+[data-reader-contents-navigation] button[aria-current="location"] {
+  border-color: var(--reader-action);
+  background: var(--reader-current);
+  box-shadow: inset 0.2rem 0 var(--reader-action);
+  color: var(--reader-action-hover);
+  font-weight: 600;
+}
+
 .reader-contents-group {
   display: flex;
   min-height: 2.75rem;
@@ -588,6 +602,7 @@ foliate-view {
     --reader-border: #4a4e43;
     --reader-action: #8fc9ad;
     --reader-action-hover: #b2ddc8;
+    --reader-current: #30443a;
     --reader-focus: #72bde8;
     --reader-error: #ffaaa0;
     --reader-error-surface: #35221f;
