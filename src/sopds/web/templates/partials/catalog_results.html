@@ -5,17 +5,18 @@
   </div>
 {% elif page.books %}
   <section class="catalog-explorer" data-catalog-root aria-labelledby="catalog-loaded-summary">
-    {% if truncated %}
-      <p id="catalog-loaded-summary" class="catalog-results__summary catalog-results__summary--truncated" role="status" aria-live="polite">Showing the first {{ page.books|length|integer }} matching books in title order. More books match. Refine the catalog search to search beyond this loaded set.</p>
-    {% else %}
-      <p id="catalog-loaded-summary" class="catalog-results__summary" role="status" aria-live="polite">Loaded {{ page.books|length|integer }} {% if page.books|length == 1 %}book{% else %}books{% endif %} in title order.</p>
-    {% endif %}
-
     <div class="catalog-local-toolbar">
-      <div class="catalog-view-switcher" role="group" aria-label="Result view">
-        <button type="button" data-catalog-view="flat" aria-pressed="true">Flat</button>
-        <button type="button" data-catalog-view="tree" aria-pressed="false">Tree</button>
-        <button type="button" data-catalog-view="table" aria-pressed="false">Table</button>
+      <div class="catalog-view-context">
+        <div class="catalog-view-switcher" role="group" aria-label="Result view">
+          <button type="button" data-catalog-view="flat" aria-pressed="true">Flat</button>
+          <button type="button" data-catalog-view="tree" aria-pressed="false">Tree</button>
+          <button type="button" data-catalog-view="table" aria-pressed="false">Table</button>
+        </div>
+        {% if truncated %}
+          <p id="catalog-loaded-summary" class="catalog-results__summary catalog-results__summary--truncated" role="status" aria-live="polite">{{ page.books|length|integer }} loaded · More match — refine search</p>
+        {% else %}
+          <p id="catalog-loaded-summary" class="catalog-results__summary" role="status" aria-live="polite">{{ page.books|length|integer }} {% if page.books|length == 1 %}book{% else %}books{% endif %} loaded.</p>
+        {% endif %}
       </div>
 
       <div class="catalog-local-filters" role="group" aria-label="Filter loaded books">

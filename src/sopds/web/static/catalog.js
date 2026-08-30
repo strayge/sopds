@@ -655,7 +655,7 @@
         return;
       }
       if (count === 0 && this.truncated) {
-        this.summary.textContent = `0 of ${this.books.length} loaded books. Additional catalog matches were not loaded; refine the catalog search to search beyond this loaded set.`;
+        this.summary.textContent = `0 of ${this.books.length} loaded · More match — refine search`;
       } else {
         this.summary.textContent = `${count} of ${this.books.length} loaded ${this.books.length === 1 ? "book" : "books"}.`;
       }

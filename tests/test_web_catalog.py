@@ -523,7 +523,7 @@ def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
             ],
         }
     ]
-    assert "Showing the first 1 matching books in title order" in page.text
+    assert "1 loaded · More match — refine search" in page.text
     assert 'aria-label="Result view"' in page.text
     assert 'data-catalog-view="flat" aria-pressed="true"' in page.text
     assert page.text.count("data-catalog-result-view") == 1
@@ -602,7 +602,7 @@ def test_catalog_payload_is_script_safe_and_complete_status_is_truthful() -> Non
         response = client.get("/?q=hostile")
 
     assert response.status_code == 200
-    assert "Loaded 1 book in title order." in response.text
+    assert "1 book loaded." in response.text
     assert "More books match" not in response.text
     assert "</script><img" not in response.text
     assert r"\u003c/script\u003e\u003cimg" in response.text
@@ -1446,6 +1446,11 @@ def test_utility_workspace_structure_keeps_catalog_and_management_separate() -> 
     assert "catalog-search__footer" not in catalog.text
     assert "data-catalog-sort-controls hidden" in catalog.text
     assert 'class="catalog-local-toolbar"' in catalog.text
+    toolbar_start = catalog.text.index('class="catalog-local-toolbar"')
+    assert toolbar_start < catalog.text.index('id="catalog-loaded-summary"')
+    assert catalog.text.index('id="catalog-loaded-summary"') < catalog.text.index(
+        'class="catalog-local-filters"', toolbar_start
+    )
     assert ">Clear</button>" in catalog.text
     assert "Clear local filters" not in catalog.text
     assert "data-catalog-result-view" in catalog.text

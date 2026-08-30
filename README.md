@@ -34,7 +34,7 @@ Use the search field and filters to narrow the catalog. Each web search loads
 at most the first 1,000 matching books in title order. When more books match,
 the catalog says:
 
-> Showing the first 1 000 matching books in title order. More books match. Refine the catalog search to search beyond this loaded set.
+> 1 000 loaded · More match — refine search
 
 This is a loaded collection rather than an exact total. Refine the catalog
 search to reach books outside the loaded collection.

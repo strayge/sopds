@@ -576,7 +576,7 @@ test("shared actions expose selection/read/download/conversions/details only whe
 function controllerRoot() {
   const root = new FakeNode("section");
   root.dataset.catalogRoot = "";
-  const summary = new FakeNode("p", "Loaded 2 books in title order.");
+  const summary = new FakeNode("p", "2 books loaded.");
   summary.id = "catalog-loaded-summary";
   const views = ["flat", "tree", "table"].map((name) => {
     const button = new FakeNode("button", name);
@@ -761,15 +761,14 @@ test("local count copy is truthful for loaded and truncated zero results and res
   const fixture = controllerRoot();
   const values = books(rawBook("one"), rawBook("two"));
   const controller = new behavior.CatalogController(fixture.root, {books: values, truncated: true}, behavior.parseFragment("#title=missing"));
-  assert.match(fixture.summary.textContent, /^0 of 2 loaded books/);
-  assert.match(fixture.summary.textContent, /Additional catalog matches were not loaded/);
+  assert.equal(fixture.summary.textContent, "0 of 2 loaded · More match — refine search");
   assert.match(fixture.mount.textContent, /No loaded books match/);
   controller.state.title = "title";
   controller.render();
   assert.equal(fixture.summary.textContent, "2 of 2 loaded books.");
   controller.state.title = "";
   controller.render();
-  assert.equal(fixture.summary.textContent, "Loaded 2 books in title order.");
+  assert.equal(fixture.summary.textContent, "2 books loaded.");
 });
 
 test("detail history enhancement accepts only same-origin catalog or selected referrers with prior history", () => {
