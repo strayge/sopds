@@ -638,11 +638,19 @@
     refreshSelectedPreview({preserveEntries: hasExcludedDisplayedEntries()});
   }
 
+  function handleCatalogRendered(event) {
+    const root = event.detail?.root;
+    if (root?.querySelectorAll) {
+      syncCheckboxes(root);
+    }
+  }
+
   function initialize() {
     selectedIds = readSelection();
     syncInterface();
     document.addEventListener("change", handleChange);
     document.addEventListener("click", handleClick);
+    document.addEventListener("sopds:catalog-rendered", handleCatalogRendered);
     document.addEventListener("htmx:afterSwap", (event) => {
       syncCheckboxes(event.detail && event.detail.elt ? event.detail.elt : document);
       syncNavigationCount();

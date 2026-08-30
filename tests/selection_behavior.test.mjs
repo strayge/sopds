@@ -9,6 +9,7 @@ const exportHook = `
   globalThis.selectionBehavior = {
     mergeSelectedPreview,
     syncFormatSelector,
+    initialize,
     setState(ids, previewIds) {
       selectedIds = ids;
       authoritativePreviewIds = previewIds === null ? null : new Set(previewIds);
@@ -134,12 +135,45 @@ function makeContent(entries, archiveFormat = "epub") {
   };
 }
 
+const documentListeners = new Map();
+const windowListeners = new Map();
+let documentCheckboxes = [];
+let storedSelection = null;
 const documentStub = {
   readyState: "loading",
-  addEventListener() {},
+  addEventListener(name, listener) {
+    if (!documentListeners.has(name)) documentListeners.set(name, []);
+    documentListeners.get(name).push(listener);
+  },
+  dispatch(name, event = {}) {
+    for (const listener of documentListeners.get(name) || []) listener(event);
+  },
+  querySelectorAll(selector) {
+    return selector === "[data-selection-checkbox]" ? documentCheckboxes : [];
+  },
+  querySelector() {
+    return null;
+  },
   createElement(tag) {
     assert.equal(tag, "option");
     return makeOption("", "");
+  },
+};
+const windowStub = {
+  addEventListener(name, listener) {
+    if (!windowListeners.has(name)) windowListeners.set(name, []);
+    windowListeners.get(name).push(listener);
+  },
+  dispatch(name, event = {}) {
+    for (const listener of windowListeners.get(name) || []) listener(event);
+  },
+  localStorage: {
+    getItem() {
+      return storedSelection;
+    },
+    setItem(_key, value) {
+      storedSelection = value;
+    },
   },
 };
 const context = vm.createContext({
@@ -148,7 +182,7 @@ const context = vm.createContext({
   document: documentStub,
   globalThis: null,
   Set,
-  window: {addEventListener() {}},
+  window: windowStub,
 });
 context.globalThis = context;
 vm.runInContext(instrumented, context, {filename: scriptPath.pathname});
@@ -198,6 +232,20 @@ function makePage(selector, rows) {
       }
       return [];
     },
+  };
+}
+
+function makeSelectionCheckbox(publicId, checked = false) {
+  const control = {hidden: true};
+  return {
+    checked,
+    disabled: true,
+    dataset: {publicId},
+    closest(selector) {
+      if (selector === "[data-selection-checkbox]") return this;
+      return selector === "[data-selection-control]" ? control : null;
+    },
+    control,
   };
 }
 
@@ -273,4 +321,51 @@ test("a delayed replacement preview does not prematurely reset the chosen target
   replacement.dataset.outputFormats = "azw3";
   assert.equal(behavior.syncFormatSelector(page), true);
   assert.equal(selector.value, "original", "an authoritative preview can still reset the target");
+});
+
+test("dynamic catalog renders stay root-scoped while duplicate and cross-tab selection stays authoritative", () => {
+  storedSelection = "[]";
+  documentCheckboxes = [];
+  behavior.initialize();
+
+  const first = makeSelectionCheckbox("repeat");
+  const duplicate = makeSelectionCheckbox("repeat");
+  const other = makeSelectionCheckbox("other");
+  const outside = makeSelectionCheckbox("outside", true);
+  const renderRoot = {
+    querySelectorAll(selector) {
+      return selector === "[data-selection-checkbox]" ? [first, duplicate, other] : [];
+    },
+  };
+  documentCheckboxes = [first, duplicate, other, outside];
+
+  documentStub.dispatch("sopds:catalog-rendered", {detail: {root: renderRoot}});
+  for (const checkbox of [first, duplicate, other]) {
+    assert.equal(checkbox.checked, false);
+    assert.equal(checkbox.disabled, false);
+    assert.equal(checkbox.control.hidden, false, "newly rendered controls become available");
+  }
+  assert.equal(outside.checked, true, "render synchronization does not escape event.detail.root");
+  assert.equal(outside.disabled, true);
+
+  first.checked = true;
+  documentStub.dispatch("change", {target: first});
+  assert.equal(storedSelection, '["repeat"]');
+  assert.equal(first.checked, true);
+  assert.equal(duplicate.checked, true, "selecting one occurrence updates every duplicate");
+  assert.equal(other.checked, false);
+
+  storedSelection = '["other"]';
+  windowStub.dispatch("storage", {key: "sopds.selected-books.v1"});
+  assert.equal(first.checked, false);
+  assert.equal(duplicate.checked, false);
+  assert.equal(other.checked, true, "cross-tab state remains authoritative");
+
+  const lazy = makeSelectionCheckbox("other");
+  documentStub.dispatch("sopds:catalog-rendered", {
+    detail: {root: {querySelectorAll: () => [lazy]}},
+  });
+  assert.equal(lazy.checked, true, "lazy and rerendered controls receive current state");
+  assert.equal(lazy.disabled, false);
+  assert.equal(lazy.control.hidden, false);
 });

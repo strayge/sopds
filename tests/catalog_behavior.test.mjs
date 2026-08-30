@@ -543,6 +543,7 @@ test("shared actions expose selection/read/download/conversions/details only whe
   assert.equal(eligibleActions.querySelectorAll("[data-selection-checkbox]").length, 1);
   assert.match(eligibleActions.textContent, /Read/);
   assert.match(eligibleActions.textContent, /FB2/);
+  assert.match(eligibleActions.textContent, /Formats/, "download choices remain visibly text-identifiable");
   assert.match(eligibleActions.textContent, /EPUB/);
   assert.match(eligibleActions.textContent, /Details/);
   const missedActions = behavior.buildActions(missed);

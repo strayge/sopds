@@ -497,7 +497,7 @@
       split.append(original);
       if (book.conversions.length) {
         const menu = element("details", "download-menu");
-        const summary = element("summary", "", "▾");
+        const summary = element("summary", "", "Formats");
         summary.setAttribute("aria-label", `More download formats for ${book.title}`);
         const items = element("div", "download-menu__items");
         for (const conversion of book.conversions) {
