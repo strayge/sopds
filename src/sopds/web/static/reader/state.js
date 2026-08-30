@@ -1,6 +1,9 @@
 const PREFIX = 'sopds.reader.v1'
 const FONT_KEY = `${PREFIX}.font-scale`
+const MODE_KEY = `${PREFIX}.mode`
 const LOCATION_PREFIX = `${PREFIX}.location.`
+const DEFAULT_READER_MODE = 'scroll'
+const READER_MODES = Object.freeze({ scroll: 'scroll', pages: 'pages' })
 const DEFAULT_FONT_SCALE = 1
 const MIN_FONT_SCALE = 0.75
 const MAX_FONT_SCALE = 1.5
@@ -22,6 +25,25 @@ const remove = key => {
     } catch {
         // Persistence is optional; reading must continue when storage is denied.
     }
+}
+
+export const getReaderMode = () => {
+    try {
+        const value = storage()?.getItem(MODE_KEY)
+        return value === READER_MODES.pages ? READER_MODES.pages : DEFAULT_READER_MODE
+    } catch {
+        return DEFAULT_READER_MODE
+    }
+}
+
+export const setReaderMode = value => {
+    const mode = value === READER_MODES.pages ? READER_MODES.pages : DEFAULT_READER_MODE
+    try {
+        storage()?.setItem(MODE_KEY, mode)
+    } catch {
+        // Persistence is optional; return the usable in-memory value.
+    }
+    return mode
 }
 
 export const getFontScale = () => {
@@ -85,6 +107,8 @@ export const saveLocation = ({ publicId, revision, format, location }) => {
 }
 
 export const discardLocation = publicId => remove(locationKey(publicId))
+
+export const READER_MODE_VALUES = READER_MODES
 
 export const FONT_SCALE_RANGE = Object.freeze({
     default: DEFAULT_FONT_SCALE,

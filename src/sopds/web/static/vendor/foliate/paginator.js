@@ -178,12 +178,12 @@ const setSelectionTo = (target, collapse) => {
 const getDirection = doc => {
     const { defaultView } = doc
     const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
-    const vertical = writingMode === 'vertical-rl'
-        || writingMode === 'vertical-lr'
+    const verticalLR = writingMode === 'vertical-lr'
+    const vertical = writingMode === 'vertical-rl' || verticalLR
     const rtl = doc.body.dir === 'rtl'
         || direction === 'rtl'
         || doc.documentElement.dir === 'rtl'
-    return { vertical, rtl }
+    return { vertical, verticalLR, rtl }
 }
 
 const getBackground = doc => {
@@ -217,6 +217,7 @@ class View {
     #contentRange = document.createRange()
     #overlayer
     #vertical = false
+    #verticalLR = false
     #rtl = false
     #column = true
     #size
@@ -270,15 +271,16 @@ class View {
 
                 // it needs to be visible for Firefox to get computed style
                 this.#iframe.style.display = 'block'
-                const { vertical, rtl } = getDirection(doc)
+                const { vertical, verticalLR, rtl } = getDirection(doc)
                 const background = getBackground(doc)
                 this.#iframe.style.display = 'none'
 
                 this.#vertical = vertical
+                this.#verticalLR = verticalLR
                 this.#rtl = rtl
 
                 this.#contentRange.selectNodeContents(doc.body)
-                const layout = beforeRender?.({ vertical, rtl, background })
+                const layout = beforeRender?.({ vertical, verticalLR, rtl, background })
                 this.#iframe.style.display = 'block'
                 this.render(layout)
                 if (this.#destroyed) {
@@ -456,6 +458,7 @@ export class Paginator extends HTMLElement {
     #footer
     #view
     #vertical = false
+    #verticalLR = false
     #rtl = false
     #margin = 0
     #index = -1
@@ -469,7 +472,47 @@ export class Paginator extends HTMLElement {
     #scrollBounds
     #touchState
     #touchScrolled
+    #touchBoundary
+    #documentCleanup
+    #transformTarget
     #lastVisibleRange
+    #onContainerScroll = () => this.dispatchEvent(new Event('scroll'))
+    #onScroll = debounce(() => {
+        if (this.#destroyed || !this.scrolled) return
+        if (this.#justAnchored) this.#justAnchored = false
+        else this.#afterScroll('scroll')
+    }, 250)
+    #boundWheel = e => this.#onWheel(e)
+    #boundTouchStart = e => this.#onTouchStart(e)
+    #boundTouchMove = e => this.#onTouchMove(e)
+    #boundTouchEnd = e => this.#onTouchEnd(e)
+    #boundTouchCancel = e => this.#onTouchCancel(e)
+    #boundLoad = e => this.#attachDocumentListeners(e.detail?.doc)
+    #onRelocate = ({ detail }) => {
+        if (detail.reason === 'selection') setSelectionTo(this.#anchor, 0)
+        else if (detail.reason === 'navigation') {
+            if (this.#anchor === 1) setSelectionTo(detail.range, 1)
+            else if (typeof this.#anchor === 'number')
+                setSelectionTo(detail.range, -1)
+            else setSelectionTo(this.#anchor, -1)
+        }
+    }
+    #onTransformData = ({ detail }) => {
+        if (detail.type !== 'text/css') return
+        const w = innerWidth
+        const h = innerHeight
+        detail.data = Promise.resolve(detail.data).then(data => data
+            // unprefix as most of the props are (only) supported unprefixed
+            .replace(/(?<=[{\s;])-epub-/gi, '')
+            // replace vw and vh as they cause problems with layout
+            .replace(/(\d*\.?\d+)vw/gi, (_, d) => parseFloat(d) * w / 100 + 'px')
+            .replace(/(\d*\.?\d+)vh/gi, (_, d) => parseFloat(d) * h / 100 + 'px')
+            // `page-break-*` unsupported in columns; replace with `column-break-*`
+            .replace(/page-break-(after|before|inside)\s*:/gi, (_, x) =>
+                `-webkit-column-break-${x}:`)
+            .replace(/break-(after|before|inside)\s*:\s*(avoid-)?page/gi, (_, x, y) =>
+                `break-${x}: ${y ?? ''}column`))
+    }
     constructor() {
         super()
         this.#root.innerHTML = `<style>
@@ -577,35 +620,47 @@ export class Paginator extends HTMLElement {
         this.#footer = this.#root.getElementById('footer')
 
         this.#observer.observe(this.#container)
-        this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
-        this.#container.addEventListener('scroll', debounce(() => {
-            if (this.scrolled) {
-                if (this.#justAnchored) this.#justAnchored = false
-                else this.#afterScroll('scroll')
-            }
-        }, 250))
+        this.#container.addEventListener('scroll', this.#onContainerScroll)
+        this.#container.addEventListener('scroll', this.#onScroll)
 
         const opts = { passive: false }
-        this.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
-        this.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
-        this.addEventListener('touchend', this.#onTouchEnd.bind(this))
-        this.addEventListener('load', ({ detail: { doc } }) => {
-            doc.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
-            doc.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
-            doc.addEventListener('touchend', this.#onTouchEnd.bind(this))
-        })
+        this.#container.addEventListener('wheel', this.#boundWheel, opts)
+        this.addEventListener('touchstart', this.#boundTouchStart, opts)
+        this.addEventListener('touchmove', this.#boundTouchMove, opts)
+        this.addEventListener('touchend', this.#boundTouchEnd)
+        this.addEventListener('touchcancel', this.#boundTouchCancel)
+        this.addEventListener('load', this.#boundLoad)
 
-        this.addEventListener('relocate', ({ detail }) => {
-            if (detail.reason === 'selection') setSelectionTo(this.#anchor, 0)
-            else if (detail.reason === 'navigation') {
-                if (this.#anchor === 1) setSelectionTo(detail.range, 1)
-                else if (typeof this.#anchor === 'number')
-                    setSelectionTo(detail.range, -1)
-                else setSelectionTo(this.#anchor, -1)
-            }
-        })
+        this.addEventListener('relocate', this.#onRelocate)
+        this.#mediaQueryListener = () => {
+            if (!this.#view) return
+            this.#background.style.background = getBackground(this.#view.document)
+        }
+        this.#mediaQuery.addEventListener('change', this.#mediaQueryListener)
+    }
+    #detachDocumentListeners() {
+        this.#documentCleanup?.()
+        this.#documentCleanup = null
+    }
+    #attachDocumentListeners(doc) {
+        this.#detachDocumentListeners()
+        if (!doc || this.#destroyed) return
+        const opts = { passive: false }
+        const cleanups = []
+        const add = (type, listener, options) => {
+            doc.addEventListener(type, listener, options)
+            cleanups.push(() => doc.removeEventListener(type, listener, options))
+        }
+        add('wheel', this.#boundWheel, opts)
+        add('touchstart', this.#boundTouchStart, opts)
+        add('touchmove', this.#boundTouchMove, opts)
+        add('touchend', this.#boundTouchEnd)
+        add('touchcancel', this.#boundTouchCancel)
+
+        let isPointerSelecting = false
+        let isKeyboardSelecting = false
         const checkPointerSelection = debounce((range, sel) => {
-            if (!sel.rangeCount) return
+            if (this.#destroyed || this.#view?.document !== doc || !sel.rangeCount) return
             const selRange = sel.getRangeAt(0)
             const backward = selectionIsBackward(sel)
             if (backward && selRange.compareBoundaryPoints(Range.START_TO_START, range) < 0)
@@ -613,38 +668,42 @@ export class Paginator extends HTMLElement {
             else if (!backward && selRange.compareBoundaryPoints(Range.END_TO_END, range) > 0)
                 this.next()
         }, 700)
-        this.addEventListener('load', ({ detail: { doc } }) => {
-            let isPointerSelecting = false
-            doc.addEventListener('pointerdown', () => isPointerSelecting = true)
-            doc.addEventListener('pointerup', () => isPointerSelecting = false)
-            let isKeyboardSelecting = false
-            doc.addEventListener('keydown', () => isKeyboardSelecting = true)
-            doc.addEventListener('keyup', () => isKeyboardSelecting = false)
-            doc.addEventListener('selectionchange', () => {
-                if (this.scrolled) return
-                const range = this.#lastVisibleRange
-                if (!range) return
-                const sel = doc.getSelection()
-                if (!sel.rangeCount) return
-                if (isPointerSelecting && sel.type === 'Range')
-                    checkPointerSelection(range, sel)
-                else if (isKeyboardSelecting) {
-                    const selRange = sel.getRangeAt(0).cloneRange()
-                    const backward = selectionIsBackward(sel)
-                    if (!backward) selRange.collapse()
-                    this.#scrollToAnchor(selRange)
-                }
-            })
-            doc.addEventListener('focusin', e => this.scrolled ? null :
-                // NOTE: `requestAnimationFrame` is needed in WebKit
-                requestAnimationFrame(() => this.#scrollToAnchor(e.target)))
-        })
-
-        this.#mediaQueryListener = () => {
-            if (!this.#view) return
-            this.#background.style.background = getBackground(this.#view.document)
+        const pointerDown = () => isPointerSelecting = true
+        const pointerUp = () => isPointerSelecting = false
+        const keyDown = () => isKeyboardSelecting = true
+        const keyUp = () => isKeyboardSelecting = false
+        const selectionChange = () => {
+            if (this.#destroyed || this.#view?.document !== doc || this.scrolled) return
+            const range = this.#lastVisibleRange
+            if (!range) return
+            const sel = doc.getSelection()
+            if (!sel?.rangeCount) return
+            if (isPointerSelecting && sel.type === 'Range')
+                checkPointerSelection(range, sel)
+            else if (isKeyboardSelecting) {
+                const selRange = sel.getRangeAt(0).cloneRange()
+                const backward = selectionIsBackward(sel)
+                if (!backward) selRange.collapse()
+                this.#scrollToAnchor(selRange)
+            }
         }
-        this.#mediaQuery.addEventListener('change', this.#mediaQueryListener)
+        const focusIn = e => {
+            if (this.scrolled) return
+            // NOTE: `requestAnimationFrame` is needed in WebKit.
+            requestAnimationFrame(() => {
+                if (!this.#destroyed && this.#view?.document === doc)
+                    this.#scrollToAnchor(e.target)
+            })
+        }
+        add('pointerdown', pointerDown)
+        add('pointerup', pointerUp)
+        add('keydown', keyDown)
+        add('keyup', keyUp)
+        add('selectionchange', selectionChange)
+        add('focusin', focusIn)
+        this.#documentCleanup = () => {
+            for (const remove of cleanups.splice(0)) remove()
+        }
     }
     attributeChangedCallback(name, _, value) {
         switch (name) {
@@ -667,22 +726,9 @@ export class Paginator extends HTMLElement {
     open(book) {
         this.bookDir = book.dir
         this.sections = book.sections
-        book.transformTarget?.addEventListener('data', ({ detail }) => {
-            if (detail.type !== 'text/css') return
-            const w = innerWidth
-            const h = innerHeight
-            detail.data = Promise.resolve(detail.data).then(data => data
-                // unprefix as most of the props are (only) supported unprefixed
-                .replace(/(?<=[{\s;])-epub-/gi, '')
-                // replace vw and vh as they cause problems with layout
-                .replace(/(\d*\.?\d+)vw/gi, (_, d) => parseFloat(d) * w / 100 + 'px')
-                .replace(/(\d*\.?\d+)vh/gi, (_, d) => parseFloat(d) * h / 100 + 'px')
-                // `page-break-*` unsupported in columns; replace with `column-break-*`
-                .replace(/page-break-(after|before|inside)\s*:/gi, (_, x) =>
-                    `-webkit-column-break-${x}:`)
-                .replace(/break-(after|before|inside)\s*:\s*(avoid-)?page/gi, (_, x, y) =>
-                    `break-${x}: ${y ?? ''}column`))
-        })
+        this.#transformTarget?.removeEventListener('data', this.#onTransformData)
+        this.#transformTarget = book.transformTarget
+        this.#transformTarget?.addEventListener('data', this.#onTransformData)
     }
     #createView() {
         if (this.#view) {
@@ -696,8 +742,9 @@ export class Paginator extends HTMLElement {
         this.#container.append(this.#view.element)
         return this.#view
     }
-    #beforeRender({ vertical, rtl, background }) {
+    #beforeRender({ vertical, verticalLR, rtl, background }) {
         this.#vertical = vertical
+        this.#verticalLR = verticalLR
         this.#rtl = rtl
         this.#top.classList.toggle('vertical', vertical)
 
@@ -736,8 +783,7 @@ export class Paginator extends HTMLElement {
 
         const flow = this.getAttribute('flow')
         if (flow === 'scrolled') {
-            // FIXME: vertical-rl only, not -lr
-            this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
+            this.setAttribute('dir', vertical && !verticalLR ? 'rtl' : 'ltr')
             this.#top.style.padding = '0'
             const columnWidth = maxInlineSize
 
@@ -776,12 +822,16 @@ export class Paginator extends HTMLElement {
         if (this.#destroyed || !this.#view) return
         this.#view.render(this.#beforeRender({
             vertical: this.#vertical,
+            verticalLR: this.#verticalLR,
             rtl: this.#rtl,
         }))
         this.#scrollToAnchor(this.#anchor)
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
+    }
+    get locked() {
+        return this.#locked
     }
     get scrollProp() {
         const { scrolled } = this
@@ -841,47 +891,169 @@ export class Paginator extends HTMLElement {
             })
         })
     }
+    #isInteractiveTarget(target) {
+        return target?.closest?.(
+            'button, input, select, textarea, [contenteditable]:not([contenteditable="false"])')
+    }
+    #wheelLineSize(doc) {
+        const element = doc?.body || doc?.documentElement
+        if (!element) return 16
+        const style = getComputedStyle(element)
+        const lineHeight = parseFloat(style.lineHeight)
+        if (Number.isFinite(lineHeight)) return lineHeight
+        const fontSize = parseFloat(style.fontSize)
+        return Number.isFinite(fontSize) ? fontSize * 1.2 : 16
+    }
+    #normalizeWheelDelta(e, value) {
+        if (e.deltaMode === 1)
+            return value * this.#wheelLineSize(e.currentTarget)
+        if (e.deltaMode === 2) {
+            const size = this.#vertical
+                ? this.#container.clientWidth : this.#container.clientHeight
+            return value * (size || this.size)
+        }
+        return value
+    }
+    #wheelDelta(e) {
+        const primary = this.#vertical ? e.deltaX : e.deltaY
+        const fallback = this.#vertical ? e.deltaY : e.deltaX
+        const delta = Math.abs(primary) >= Math.abs(fallback) ? primary : fallback
+        return this.#normalizeWheelDelta(e, delta)
+    }
+    #scrollByLogical(delta) {
+        const rawDelta = this.#vertical && this.scrolled && !this.#verticalLR ? -delta : delta
+        this.#container[this.scrollProp] += rawDelta
+    }
+    #atSectionBoundary(direction) {
+        const offset = direction < 0 ? this.start : this.viewSize - this.end
+        return offset <= 2 && this.#adjacentIndex(direction) != null
+    }
+    #onWheel(e) {
+        if (this.#destroyed || !this.#view || e.defaultPrevented || e.ctrlKey || !this.scrolled
+            || this.#isInteractiveTarget(e.target)) return
+        const delta = this.#wheelDelta(e)
+        if (!delta) return
+        const direction = delta > 0 ? 1 : -1
+        if (this.#atSectionBoundary(direction)) {
+            e.preventDefault()
+            void (direction < 0 ? this.prev() : this.next())
+            return
+        }
+        if (e.currentTarget !== this.#container) {
+            e.preventDefault()
+            this.#scrollByLogical(delta)
+        }
+    }
+    #touchDelta(state, touch) {
+        const dx = state.x - touch.screenX
+        const dy = state.y - touch.screenY
+        if (!this.scrolled) return this.#vertical ? dy : dx
+        if (!this.#vertical) return dy
+        return dx && Math.abs(dx) >= Math.abs(dy) ? dx : dy
+    }
+    #touchTravel(state, touch) {
+        const dx = state.startX - touch.screenX
+        const dy = state.startY - touch.screenY
+        if (!this.#vertical || !this.scrolled) return this.scrolled ? dy : dx
+        return dx && Math.abs(dx) >= Math.abs(dy) ? dx : dy
+    }
     #onTouchStart(e) {
+        if (this.#destroyed || !this.#view) return
         const touch = e.changedTouches[0]
+        if (!touch) return
+        const interactive = Boolean(this.#isInteractiveTarget(e.target))
+        const atStart = this.scrolled && !interactive && this.#atSectionBoundary(-1)
+        const atEnd = this.scrolled && !interactive && this.#atSectionBoundary(1)
+        const boundaryDirection = atStart && !atEnd ? -1
+            : atEnd && !atStart ? 1 : 0
+        this.#touchBoundary = boundaryDirection
         this.#touchState = {
-            x: touch?.screenX, y: touch?.screenY,
+            x: touch.screenX, y: touch.screenY,
+            startX: touch.screenX, startY: touch.screenY,
             t: e.timeStamp,
-            vx: 0, xy: 0,
+            vx: 0, vy: 0,
+            pinched: false,
+            thresholdPassed: false,
+            interactive,
+            atStart,
+            atEnd,
         }
     }
     #onTouchMove(e) {
         const state = this.#touchState
+        if (this.#destroyed || !this.#view || !state || state.pinched || state.interactive) return
+        state.pinched = (globalThis.visualViewport?.scale ?? 1) > 1
         if (state.pinched) return
-        state.pinched = globalThis.visualViewport.scale > 1
-        if (this.scrolled || state.pinched) return
         if (e.touches.length > 1) {
             if (this.#touchScrolled) e.preventDefault()
             return
         }
-        e.preventDefault()
         const touch = e.changedTouches[0]
+        if (!touch) return
         const x = touch.screenX, y = touch.screenY
         const dx = state.x - x, dy = state.y - y
         const dt = e.timeStamp - state.t
+        const logicalDelta = this.#touchDelta(state, touch)
         state.x = x
         state.y = y
         state.t = e.timeStamp
-        state.vx = dx / dt
-        state.vy = dy / dt
+
+        if (this.scrolled) {
+            if (!this.#touchBoundary) {
+                if (logicalDelta < 0 && state.atStart) this.#touchBoundary = -1
+                else if (logicalDelta > 0 && state.atEnd) this.#touchBoundary = 1
+            }
+            if (this.#touchBoundary) {
+                if (logicalDelta * this.#touchBoundary < 0)
+                    this.#touchBoundary = 0
+                else if (this.#touchTravel(state, touch) * this.#touchBoundary >= 48)
+                    state.thresholdPassed = true
+                if (this.#touchBoundary && !state.thresholdPassed) {
+                    e.preventDefault()
+                    return
+                }
+                if (state.thresholdPassed) {
+                    e.preventDefault()
+                    return
+                }
+            }
+            e.preventDefault()
+            if (logicalDelta) this.#scrollByLogical(logicalDelta)
+            return
+        }
+
+        e.preventDefault()
+        const dtSafe = dt || 1
+        state.vx = dx / dtSafe
+        state.vy = dy / dtSafe
         this.#touchScrolled = true
         this.scrollBy(dx, dy)
     }
     #onTouchEnd() {
+        const state = this.#touchState
+        this.#touchState = null
+        const direction = this.#touchBoundary
+        this.#touchBoundary = 0
         this.#touchScrolled = false
-        if (this.scrolled) return
+        if (this.#destroyed || !this.#view) return
+        if (this.scrolled) {
+            if (state?.thresholdPassed && direction && !state.pinched)
+                void (direction < 0 ? this.prev() : this.next())
+            return
+        }
 
         // XXX: Firefox seems to report scale as 1... sometimes...?
         // at this point I'm basically throwing `requestAnimationFrame` at
         // anything that doesn't work
         requestAnimationFrame(() => {
-            if (globalThis.visualViewport.scale === 1)
-                this.snap(this.#touchState.vx, this.#touchState.vy)
+            if (state && (globalThis.visualViewport?.scale ?? 1) === 1)
+                this.snap(state.vx, state.vy)
         })
+    }
+    #onTouchCancel() {
+        this.#touchState = null
+        this.#touchBoundary = 0
+        this.#touchScrolled = false
     }
     // allows one to process rects as if they were LTR and horizontal
     #getRectMapper() {
@@ -889,8 +1061,10 @@ export class Paginator extends HTMLElement {
             const size = this.viewSize
             const margin = this.#margin
             return this.#vertical
-                ? ({ left, right }) =>
-                    ({ left: size - right - margin, right: size - left - margin })
+                ? this.#verticalLR
+                    ? ({ left, right }) => ({ left: left + margin, right: right + margin })
+                    : ({ left, right }) =>
+                        ({ left: size - right - margin, right: size - left - margin })
                 : ({ top, bottom }) => ({ left: top + margin, right: bottom + margin })
         }
         const pxSize = this.pages * this.size
@@ -917,8 +1091,7 @@ export class Paginator extends HTMLElement {
             this.#afterScroll(reason)
             return
         }
-        // FIXME: vertical-rl only, not -lr
-        if (this.scrolled && this.#vertical) offset = -offset
+        if (this.scrolled && this.#vertical && !this.#verticalLR) offset = -offset
         if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
             element[scrollProp], offset, 300, easeOutQuad,
             x => element[scrollProp] = x,
@@ -1085,14 +1258,18 @@ export class Paginator extends HTMLElement {
     async #turnPage(dir, distance) {
         if (this.#locked) return
         this.#locked = true
-        const prev = dir === -1
-        const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
-        if (shouldGo) await this.#goTo({
-            index: this.#adjacentIndex(dir),
-            anchor: prev ? () => 1 : () => 0,
-        })
-        if (shouldGo || !this.hasAttribute('animated')) await wait(100)
-        this.#locked = false
+        try {
+            const prev = dir === -1
+            const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
+            const adjacentIndex = shouldGo ? this.#adjacentIndex(dir) : null
+            if (adjacentIndex != null) await this.#goTo({
+                index: adjacentIndex,
+                anchor: prev ? () => 1 : () => 0,
+            })
+            if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+        } finally {
+            this.#locked = false
+        }
     }
     prev(distance) {
         return this.#turnPage(-1, distance)
@@ -1149,10 +1326,22 @@ export class Paginator extends HTMLElement {
         if (this.#destroyed) return
         this.#destroyed = true
         this.#observer.disconnect()
+        this.#detachDocumentListeners()
+        this.#container.removeEventListener('scroll', this.#onContainerScroll)
+        this.#container.removeEventListener('scroll', this.#onScroll)
+        this.#container.removeEventListener('wheel', this.#boundWheel)
+        this.removeEventListener('touchstart', this.#boundTouchStart)
+        this.removeEventListener('touchmove', this.#boundTouchMove)
+        this.removeEventListener('touchend', this.#boundTouchEnd)
+        this.removeEventListener('touchcancel', this.#boundTouchCancel)
+        this.removeEventListener('load', this.#boundLoad)
         this.#view?.destroy()
         this.#view = null
-        this.sections[this.#index]?.unload?.()
+        this.sections?.[this.#index]?.unload?.()
         this.#mediaQuery.removeEventListener('change', this.#mediaQueryListener)
+        this.#transformTarget?.removeEventListener('data', this.#onTransformData)
+        this.#transformTarget = null
+        this.removeEventListener('relocate', this.#onRelocate)
     }
 }
 

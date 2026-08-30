@@ -1166,8 +1166,14 @@ def test_reader_shell_is_standalone_and_preserves_validated_detail_context() -> 
     assert 'data-source-format="fb2"' in response.text
     assert 'data-source-url="/books/public-1/download"' in response.text
     assert 'data-reader-state="loading" role="status" aria-live="polite"' in response.text
-    assert 'data-reader-state="reader" aria-label="Book reader" hidden' in response.text
+    assert (
+        'data-reader-state="reader" data-reader-mode="scroll" aria-label="Book reader" hidden'
+        in response.text
+    )
     assert 'data-reader-toolbar role="toolbar" aria-label="Reading controls"' in response.text
+    assert "data-reader-mode-toggle" in response.text
+    assert "data-reader-page-dock" in response.text
+    assert "data-reader-edge-left" in response.text
     assert 'data-reader-contents aria-labelledby="reader-contents-title"' in response.text
     assert 'data-reader-state="error" role="alert" hidden' in response.text
     assert response.text.count("<script") == 1
@@ -1202,6 +1208,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
         book_adapter = client.get("/static/reader/book.js")
         foliate_fb2 = client.get("/static/vendor/foliate/fb2.js")
         policy = client.get("/static/reader/policy.js")
+        state = client.get("/static/reader/state.js")
         paginator = client.get("/static/vendor/foliate/paginator.js")
 
     assert javascript.status_code == 200
@@ -1209,6 +1216,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert book_adapter.status_code == 200
     assert foliate_fb2.status_code == 200
     assert policy.status_code == 200
+    assert state.status_code == 200
     assert paginator.status_code == 200
     assert "import '../vendor/foliate/view.js'" in javascript.text
     assert "import { openPublication } from './book.js'" in javascript.text
@@ -1217,7 +1225,13 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "font-size: ${scale}em !important;" in javascript.text
     assert "await publication.destroy()" in javascript.text
     assert "event.stopImmediatePropagation()" in javascript.text
-    assert "localStorage" not in javascript.text
+    assert "getReaderMode" in javascript.text
+    assert "setReaderMode" in javascript.text
+    assert "view.renderer.goTo(resolved)" in javascript.text
+    assert "view.renderer.inert = true" in javascript.text
+    assert "sopds.reader.v1" in state.text
+    assert "export const getReaderMode" in state.text
+    assert "export const setReaderMode" in state.text
     assert "foliate-view" in stylesheet.text
     assert "prefers-color-scheme: dark" in stylesheet.text
     assert "@media (max-width: 35rem)" in stylesheet.text
@@ -1226,6 +1240,12 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "max-height: 50vh" in stylesheet.text
     assert "overflow-y: auto" in stylesheet.text
     assert "overscroll-behavior-y: contain" in stylesheet.text
+    assert "data-reader-mode-toggle" in stylesheet.text
+    assert "grid-column: 4 / 6" not in stylesheet.text
+    assert 'flow="scrolled"' in paginator.text
+    assert "#adjacentIndex(direction)" in paginator.text
+    assert "this.#container.addEventListener('wheel', this.#boundWheel" in paginator.text
+    assert "this.addEventListener('wheel'" not in paginator.text
     assert "min-width: 20rem" not in stylesheet.text
     assert 'url("../fonts/IBMPlexSans-Regular.woff2")' in stylesheet.text
 

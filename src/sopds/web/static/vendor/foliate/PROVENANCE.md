@@ -31,6 +31,11 @@ Security patches:
    reactivation and detached-document access during reader teardown.
 4. `paginator.js` gives every publication iframe the stable accessible title
    `Book content` before attaching it to the paginator.
+Reader behavior patch:
+
+- `paginator.js` supports switching between paginated and `flow=scrolled` layouts,
+  forwards wheel input from publication documents to the native section scroller,
+  and changes sections only for thresholded outward boundary swipes.
 
 Compatibility patches:
 

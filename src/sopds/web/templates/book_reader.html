@@ -23,21 +23,27 @@
         </div>
       </section>
 
-      <section data-reader-state="reader" aria-label="Book reader" hidden>
+      <section data-reader-state="reader" data-reader-mode="scroll" aria-label="Book reader" hidden>
         <header data-reader-toolbar role="toolbar" aria-label="Reading controls">
           <strong data-reader-title title="{{ book.title }}">{{ book.title }}</strong>
           <button type="button" data-reader-contents-button aria-controls="reader-contents" aria-expanded="false" disabled>Contents</button>
-          <button type="button" data-reader-previous aria-label="Previous page" disabled>Previous</button>
-          <button type="button" data-reader-next aria-label="Next page" disabled>Next</button>
+          <button type="button" data-reader-mode-toggle data-reader-mode="scroll" aria-label="Switch to pages view" disabled>Scroll</button>
           <output data-reader-progress aria-label="Reading progress" aria-live="polite">0%</output>
           <button type="button" data-reader-font-decrease aria-label="Decrease font size" disabled>Smaller text</button>
           <button type="button" data-reader-font-increase aria-label="Increase font size" disabled>Larger text</button>
         </header>
+        <button type="button" class="reader-edge-control reader-edge-control--left" data-reader-edge-left data-reader-page-control aria-label="Previous page" hidden>‹</button>
+        <button type="button" class="reader-edge-control reader-edge-control--right" data-reader-edge-right data-reader-page-control aria-label="Next page" hidden>›</button>
         <dialog id="reader-contents" data-reader-contents aria-labelledby="reader-contents-title">
           <h2 id="reader-contents-title">Contents</h2>
           <nav aria-label="Book contents" data-reader-contents-navigation></nav>
         </dialog>
         <div data-reader-surface tabindex="0" aria-label="Reading surface"></div>
+        <nav class="reader-page-dock" data-reader-page-dock data-reader-page-control hidden aria-label="Page navigation">
+          <button type="button" data-reader-previous aria-label="Previous page" disabled>Previous</button>
+          <output data-reader-dock-progress aria-label="Reading progress" aria-live="polite">0%</output>
+          <button type="button" data-reader-next aria-label="Next page" disabled>Next</button>
+        </nav>
       </section>
 
       <section class="reader-message reader-message--error" data-reader-state="error" role="alert"{% if not reader_error %} hidden{% endif %}>
