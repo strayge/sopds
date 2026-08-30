@@ -188,7 +188,38 @@ button:disabled {
   background: color-mix(in srgb, var(--reader-paper), transparent 14%);
 }
 
+.reader-book-scrollbar::before,
+.reader-book-scrollbar::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  box-sizing: border-box;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.reader-book-scrollbar::before {
+  top: 0.45rem;
+  bottom: 0.45rem;
+  width: 6px;
+  border: 1px solid var(--reader-border);
+  background: var(--reader-surface);
+}
+
+.reader-book-scrollbar::after {
+  z-index: 1;
+  top: clamp(1.2rem, var(--reader-seek-position, 0%), calc(100% - 1.2rem));
+  width: 10px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--reader-action);
+  background: var(--reader-action);
+}
+
 [data-reader-book-position] {
+  position: relative;
+  z-index: 2;
   width: 2.75rem;
   height: 100%;
   min-height: 5rem;
@@ -202,34 +233,30 @@ button:disabled {
 
 [data-reader-book-position]::-webkit-slider-runnable-track {
   width: 0.35rem;
-  border: 1px solid var(--reader-border);
-  border-radius: 999px;
-  background: var(--reader-surface);
+  border: 0;
+  background: transparent;
 }
 
 [data-reader-book-position]::-webkit-slider-thumb {
-  width: 0.65rem;
+  width: 1.5rem;
   height: 1.5rem;
   appearance: none;
-  transform: translateX(-3.5px);
-  border: 1px solid var(--reader-action);
-  border-radius: 999px;
-  background: var(--reader-action);
+  border: 0;
+  background: transparent;
 }
 
-[data-reader-book-position]::-moz-range-track {
+[data-reader-book-position]::-moz-range-track,
+[data-reader-book-position]::-moz-range-progress {
   width: 0.35rem;
-  border: 1px solid var(--reader-border);
-  border-radius: 999px;
-  background: var(--reader-surface);
+  border: 0;
+  background: transparent;
 }
 
 [data-reader-book-position]::-moz-range-thumb {
-  width: 0.65rem;
+  width: 1.5rem;
   height: 1.5rem;
-  border: 1px solid var(--reader-action);
-  border-radius: 999px;
-  background: var(--reader-action);
+  border: 0;
+  background: transparent;
 }
 
 [data-reader-book-position]:focus-visible {
@@ -239,7 +266,7 @@ button:disabled {
 
 .reader-book-scrollbar__preview {
   position: absolute;
-  z-index: 1;
+  z-index: 3;
   top: clamp(1.5rem, var(--reader-seek-position, 0%), calc(100% - 1.5rem));
   right: 2.35rem;
   width: max-content;
