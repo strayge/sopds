@@ -1230,6 +1230,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "view.renderer.goTo(resolved)" in javascript.text
     assert "view.renderer.inert = true" in javascript.text
     assert "event.code === 'Space'" in javascript.text
+    assert "'Spacebar'" in javascript.text
+    assert "activeView.renderer.nextScreen()" in javascript.text
     assert "sopds.reader.v1" in state.text
     assert "export const getReaderMode" in state.text
     assert "export const setReaderMode" in state.text
@@ -1245,6 +1247,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "grid-column: 4 / 6" not in stylesheet.text
     assert 'flow="scrolled"' in paginator.text
     assert "#adjacentIndex(direction)" in paginator.text
+    assert "async nextScreen()" in paginator.text
     assert "this.#container.addEventListener('wheel', this.#boundWheel" in paginator.text
     assert "this.addEventListener('wheel'" not in paginator.text
     assert "min-width: 20rem" not in stylesheet.text

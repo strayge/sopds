@@ -150,6 +150,7 @@ def test_shared_stylesheet_and_fonts_are_served_locally(
 
     assert stylesheet.status_code == 200
     assert stylesheet.headers["content-type"].startswith("text/css")
+    assert stylesheet.headers["cache-control"] == "no-cache"
     assert stylesheet.text.count("font-display: swap") == 4
     assert all(path.rsplit("/", 1)[-1] in stylesheet.text for path in font_paths)
     assert '--font-result-title: "Noto Serif", Georgia, serif;' in stylesheet.text
@@ -162,13 +163,19 @@ def test_shared_stylesheet_and_fonts_are_served_locally(
     assert all(response.content.startswith(b"wOF2") for response in fonts)
 
 
-def test_vendored_htmx_is_served_locally(migrated_app_config: AppConfig) -> None:
+def test_vendored_javascript_is_served_locally_and_revalidated(
+    migrated_app_config: AppConfig,
+) -> None:
     with TestClient(create_app(migrated_app_config)) as client:
-        response = client.get("/static/vendor/htmx/htmx-2.0.10.min.js")
+        htmx = client.get("/static/vendor/htmx/htmx-2.0.10.min.js")
+        reader = client.get("/static/reader/app.js")
 
-    assert response.status_code == 200
-    assert "javascript" in response.headers["content-type"]
-    assert response.text.startswith("var htmx=")
+    assert htmx.status_code == 200
+    assert "javascript" in htmx.headers["content-type"]
+    assert htmx.headers["cache-control"] == "no-cache"
+    assert htmx.text.startswith("var htmx=")
+    assert reader.status_code == 200
+    assert reader.headers["cache-control"] == "no-cache"
 
 
 def test_missing_inpx_stays_healthy_and_records_immediate_check(

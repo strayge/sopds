@@ -819,13 +819,14 @@ export class Paginator extends HTMLElement {
         return { height, width, margin, gap, columnWidth }
     }
     render() {
-        if (this.#destroyed || !this.#view) return
-        this.#view.render(this.#beforeRender({
+        const view = this.#view
+        if (this.#destroyed || !view?.document?.body) return
+        view.render(this.#beforeRender({
             vertical: this.#vertical,
             verticalLR: this.#verticalLR,
             rtl: this.#rtl,
         }))
-        this.#scrollToAnchor(this.#anchor)
+        if (this.#view === view) this.#scrollToAnchor(this.#anchor)
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
@@ -1085,6 +1086,7 @@ export class Paginator extends HTMLElement {
     }
     async #scrollTo(offset, reason, smooth) {
         const element = this.#container
+        const view = this.#view
         const { scrollProp, size } = this
         if (element[scrollProp] === offset) {
             this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
@@ -1096,6 +1098,7 @@ export class Paginator extends HTMLElement {
             element[scrollProp], offset, 300, easeOutQuad,
             x => element[scrollProp] = x,
         ).then(() => {
+            if (this.#destroyed || this.#view !== view) return
             this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
             this.#afterScroll(reason)
         })
@@ -1276,6 +1279,44 @@ export class Paginator extends HTMLElement {
     }
     next(distance) {
         return this.#turnPage(1, distance)
+    }
+    async nextScreen() {
+        if (!this.scrolled) return this.next()
+        const view = this.#view
+        if (this.#locked || !view) return
+        this.#locked = true
+        try {
+            if (this.viewSize - this.end <= 2) {
+                const index = this.#adjacentIndex(1)
+                if (index != null) await this.#goTo({ index, anchor: () => 0 })
+                return
+            }
+            const oldStart = this.start
+            const maxOffset = Math.max(0, this.viewSize - this.size)
+            const style = view.document.defaultView.getComputedStyle(view.document.body)
+            const lineHeight = parseFloat(style.lineHeight)
+                || parseFloat(style.fontSize) * 1.5 || 24
+            const overlap = Math.min(this.size / 4, Math.max(8, lineHeight))
+            const roughOffset = Math.min(maxOffset,
+                oldStart + Math.max(1, this.size - overlap))
+            await this.#scrollTo(roughOffset, 'page', true)
+            if (this.#destroyed || this.#view !== view) return
+
+            const range = this.#lastVisibleRange ?? this.#getVisibleRange()
+            if (range.collapsed && range.startContainer === view.document.body) return
+            const probe = range.cloneRange()
+            probe.collapse(true)
+            const target = uncollapse(probe)
+            const mapped = this.#getRectMapper()(getBoundingClientRect(target))
+            const lineOffset = mapped.left - this.#margin
+            if (Number.isFinite(lineOffset) && lineOffset > oldStart + 1) {
+                const alignedOffset = Math.min(maxOffset, lineOffset)
+                if (Math.abs(alignedOffset - this.start) > 0.5)
+                    await this.#scrollTo(alignedOffset, 'page')
+            }
+        } finally {
+            this.#locked = false
+        }
     }
     prevSection() {
         return this.goTo({ index: this.#adjacentIndex(-1) })

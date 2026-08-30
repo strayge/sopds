@@ -55,7 +55,8 @@ scrolls the current section, and an outward gesture at its edge automatically
 moves to the adjacent section. Pages mode provides **Previous** and **Next**
 controls, with a page dock generally available and edge controls on desktop.
 Arrow Left/Right, Page Up/Down, Space for the next page, and touch navigation
-are also supported. The
+are also supported. In Scroll mode, Space keeps the last complete line as the
+first line of the next screen when ordinary body text allows it. The
 reader follows the browser's light or dark appearance.
 
 The reader automatically resumes a saved position, remembers the selected reader
