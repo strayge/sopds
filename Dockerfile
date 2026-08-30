@@ -37,6 +37,7 @@ COPY requirements.freeze.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.freeze.txt
 
 COPY src ./src
+RUN ["python", "-c", "from sopds.web.i18n import compile_catalogs_if_needed; compile_catalogs_if_needed(force=True)"]
 COPY --from=converter-downloader /out/fbc /usr/local/bin/fbc
 COPY --from=converter-downloader /out/kindling-cli /usr/local/bin/kindling-cli
 

@@ -198,6 +198,30 @@ def test_missing_inpx_stays_healthy_and_records_immediate_check(
         )
 
 
+def test_lifespan_prepares_translation_catalogs(migrated_app_config: AppConfig) -> None:
+    with (
+        patch("sopds.app.compile_catalogs_if_needed") as prepare_translations,
+        TestClient(create_app(migrated_app_config)) as client,
+    ):
+        assert client.get("/health").status_code == 200
+
+    prepare_translations.assert_called_once_with()
+
+
+def test_translation_preparation_failure_prevents_service_startup(app_config: AppConfig) -> None:
+    failure = RuntimeError("catalog compilation failed")
+    app = create_app(app_config)
+    with (
+        patch("sopds.app.compile_catalogs_if_needed", side_effect=failure),
+        patch("sopds.app.lifespan") as service_lifespan,
+        pytest.raises(RuntimeError, match="catalog compilation failed"),
+        TestClient(app),
+    ):
+        pass
+
+    service_lifespan.assert_not_called()
+
+
 def test_lifespan_logs_startup_failure_type_and_duration(
     migrated_app_config: AppConfig,
     caplog: pytest.LogCaptureFixture,
