@@ -211,6 +211,7 @@ button:disabled {
   width: 0.65rem;
   height: 1.5rem;
   appearance: none;
+  transform: translateX(-3.5px);
   border: 1px solid var(--reader-action);
   border-radius: 999px;
   background: var(--reader-action);
