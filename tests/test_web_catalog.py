@@ -1200,12 +1200,14 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
         javascript = client.get("/static/reader/app.js")
         stylesheet = client.get("/static/css/reader.css")
         book_adapter = client.get("/static/reader/book.js")
+        foliate_fb2 = client.get("/static/vendor/foliate/fb2.js")
         policy = client.get("/static/reader/policy.js")
         paginator = client.get("/static/vendor/foliate/paginator.js")
 
     assert javascript.status_code == 200
     assert stylesheet.status_code == 200
     assert book_adapter.status_code == 200
+    assert foliate_fb2.status_code == 200
     assert policy.status_code == 200
     assert paginator.status_code == 200
     assert "import '../vendor/foliate/view.js'" in javascript.text
@@ -1235,6 +1237,15 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "(node.getAttribute('rel') ?? '').toLowerCase()" in book_adapter.text
     assert "createRasterBudget()" in book_adapter.text
     assert "validateRasterImage(blob, item.mediaType, rasterBudget)" in book_adapter.text
+    text_elements = book_adapter.text.split("const FB2_TEXT_ELEMENTS", 1)[1].split("])\n", 1)[0]
+    assert "'v'" not in text_elements
+    assert "validateFB2Person" not in book_adapter.text
+    assert "const converted = this.convert(item, STYLE)" in foliate_fb2.text
+    assert "firstSection.insertBefore(content, firstSection.firstChild)" in foliate_fb2.text
+    assert "mergedSectionTitles.set(firstSection" in foliate_fb2.text
+    assert ".filter(item => item.label)" in foliate_fb2.text
+    assert "elements[0]?.localName === 'img'" in foliate_fb2.text
+    assert "if (index === 0) mergeLeadingFrontMatter(converted)" in foliate_fb2.text
 
     for limit in (
         "imageDimension: 16_384",

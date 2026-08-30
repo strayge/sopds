@@ -32,6 +32,13 @@ Security patches:
 4. `paginator.js` gives every publication iframe the stable accessible title
    `Book content` before attaching it to the paginator.
 
+Compatibility patches:
+
+- `fb2.js` folds a primary body's title and leading epigraphs into its first real
+  section without changing that section's contents label, while retaining a leading
+  cover image and additional note bodies. It omits empty contents entries and
+  preserves supported inline markup in verse lines.
+
 Formatting-only normalization:
 
 - `overlayer.js` removes the upstream trailing blank line at end of file. This

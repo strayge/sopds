@@ -114,7 +114,10 @@ class FB2Converter {
             }],
         })
         for (const child of node.children) if (child.nodeName === 'v') {
-            el.append(this.doc.createTextNode(child.textContent))
+            for (const item of child.childNodes) {
+                const converted = this.convert(item, STYLE)
+                if (converted) el.append(converted)
+            }
             el.append(this.doc.createElement('br'))
         }
         return el
@@ -274,9 +277,26 @@ export const makeFB2 = async blob => {
         book.getCover = () => fetch(src).then(res => res.blob())
     } else book.getCover = () => null
 
+    const mergedSectionTitles = new WeakMap()
+    const mergeLeadingFrontMatter = body => {
+        const elements = Array.from(body.children)
+        let index = elements[0]?.localName === 'img' ? 1 : 0
+        const frontMatter = []
+        if (elements[index]?.classList.contains('title')) frontMatter.push(elements[index++])
+        while (elements[index]?.classList.contains('epigraph')) frontMatter.push(elements[index++])
+        const firstSection = elements[index]
+        if (!frontMatter.length || !firstSection?.classList.contains('section')) return
+        mergedSectionTitles.set(firstSection, normalizeWhitespace(
+            firstSection.querySelector('.title, .subtitle, p')?.textContent ?? ''))
+        const content = converter.doc.createDocumentFragment()
+        content.append(...frontMatter)
+        firstSection.insertBefore(content, firstSection.firstChild)
+    }
+
     // get convert each body
-    const bodyData = Array.from(doc.querySelectorAll('body'), body => {
+    const bodyData = Array.from(doc.querySelectorAll('body'), (body, index) => {
         const converted = converter.convert(body, { body: ['body', BODY] })
+        if (index === 0) mergeLeadingFrontMatter(converted)
         return [Array.from(converted.children, el => {
             // get list of IDs in the section
             const ids = [el, ...el.querySelectorAll('[id]')].map(el => el.id)
@@ -308,7 +328,7 @@ export const makeFB2 = async blob => {
             const blob = new Blob([str], { type: MIME.XHTML })
             const url = URL.createObjectURL(blob)
             urls.push(url)
-            const title = normalizeWhitespace(
+            const title = mergedSectionTitles.get(el) ?? normalizeWhitespace(
                 el.querySelector('.title, .subtitle, p')?.textContent
                 ?? (el.classList.contains('title') ? el.textContent : ''))
             return {
@@ -339,7 +359,7 @@ export const makeFB2 = async blob => {
                 href: `${id}#${index}`,
             })) : null,
         }
-    }).filter(item => item)
+    }).filter(item => item.label)
 
     book.resolveHref = href => {
         const [a, b] = href.split('#')

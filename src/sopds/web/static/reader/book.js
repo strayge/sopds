@@ -342,7 +342,7 @@ const FB2_DESCRIPTION_CHILDREN = Object.freeze({
 const FB2_TEXT_ELEMENTS = new Set([
     'genre', 'book-title', 'book-name', 'keywords', 'lang', 'src-lang', 'first-name',
     'middle-name', 'last-name', 'nickname', 'email', 'home-page', 'id', 'version',
-    'program-used', 'src-url', 'src-ocr', 'publisher', 'city', 'year', 'isbn', 'v',
+    'program-used', 'src-url', 'src-ocr', 'publisher', 'city', 'year', 'isbn',
 ])
 const FB2_METADATA_ORDER = Object.freeze({
     description: [
@@ -545,21 +545,6 @@ const validateFB2MetadataOrder = element => {
     }
 }
 
-const validateFB2Person = element => {
-    if (!isFB2Person(element)) return
-    const first = children(element, 'first-name')
-    const middle = children(element, 'middle-name')
-    const last = children(element, 'last-name')
-    const nickname = children(element, 'nickname')
-    const usesStructuredName = first.length || middle.length || last.length
-    if (usesStructuredName) {
-        if (first.length !== 1 || last.length !== 1
-            || !hasVisibleElementText(first[0]) || !hasVisibleElementText(last[0]))
-            fail('FB2 person names require both a readable first and last name.')
-    } else if (nickname.length !== 1 || !hasVisibleElementText(nickname[0]))
-        fail('FB2 person names require a readable nickname or first and last name.')
-}
-
 const validateFB2DescriptionChildren = element => {
     if (['annotation', 'history'].includes(element.localName)) {
         validateFB2Block(element)
@@ -571,7 +556,6 @@ const validateFB2DescriptionChildren = element => {
         ? FB2_PERSON_CHILDREN : FB2_DESCRIPTION_CHILDREN[element.localName]
     if (!allowed) fail(`FB2 contains unsupported metadata: ${element.localName}.`)
     validateFB2MetadataOrder(element)
-    validateFB2Person(element)
     for (const item of elementChildren(element)) {
         if (item.namespaceURI !== FB2_NS || !allowed.has(item.localName))
             fail(`FB2 contains ${item.localName} in invalid metadata context.`)
