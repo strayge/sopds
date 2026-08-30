@@ -1,29 +1,10 @@
 <div id="catalog-statistics" class="catalog-statistics" hx-get="/catalog-statistics" hx-trigger="catalogChanged from:body" hx-swap="outerHTML">
   <dl class="catalog-statistics__grid">
-    <div class="statistic-card">
-      <dt>Total books</dt><dd>{{ statistics.total_books | integer }}</dd>
-    </div>
-    <div class="statistic-card">
-      <dt>Active books</dt><dd>{{ statistics.active_books | integer }}</dd>
-    </div>
-    <div class="statistic-card">
-      <dt>Hidden books</dt><dd>{{ statistics.hidden_books | integer }}</dd>
-    </div>
-    <div class="statistic-card">
-      <dt>Missed books</dt><dd>{{ statistics.missed_books | integer }}</dd>
-    </div>
-    <div class="statistic-card statistic-card--generation">
-      <dt>Current generation added</dt>
-      <dd>
-        {% if statistics.generation_activated_at %}
-          <time class="local-datetime" datetime="{{ statistics.generation_activated_at.isoformat() }}">{{ statistics.generation_activated_at }} UTC</time>
-        {% else %}
-          No generation imported
-        {% endif %}
-      </dd>
-    </div>
-    <div class="statistic-card statistic-card--size">
-      <dt>Database size</dt><dd>{{ database_size }}</dd>
-    </div>
+    <div class="statistic-card"><dt>{{ gettext("Total books") }}</dt><dd>{{ statistics.total_books | integer }}</dd></div>
+    <div class="statistic-card"><dt>{{ gettext("Active books") }}</dt><dd>{{ statistics.active_books | integer }}</dd></div>
+    <div class="statistic-card"><dt>{{ gettext("Hidden books") }}</dt><dd>{{ statistics.hidden_books | integer }}</dd></div>
+    <div class="statistic-card"><dt>{{ gettext("Missed books") }}</dt><dd>{{ statistics.missed_books | integer }}</dd></div>
+    <div class="statistic-card statistic-card--generation"><dt>{{ gettext("Current generation added") }}</dt><dd>{% if statistics.generation_activated_at %}<time class="local-datetime" datetime="{{ statistics.generation_activated_at.isoformat() }}">{{ statistics.generation_activated_at }} UTC</time>{% else %}{{ gettext("No generation imported") }}{% endif %}</dd></div>
+    <div class="statistic-card statistic-card--size"><dt>{{ gettext("Database size") }}</dt><dd>{{ database_size }}</dd></div>
   </dl>
 </div>

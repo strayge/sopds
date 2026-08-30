@@ -1,52 +1,48 @@
 {% extends "base.html" %}
 
-{% block title %}Selected books · SOPDS{% endblock %}
+{% block title %}{{ gettext("Selected books · SOPDS") }}{% endblock %}
 
-{% block page_heading %}Selected books{% endblock %}
-{% block page_subtitle %}Uncheck books to exclude them from this ZIP. Unchecked rows disappear when you reload.{% endblock %}
+{% block page_heading %}{{ gettext("Selected books") }}{% endblock %}
+{% block page_subtitle %}{{ gettext("Uncheck books to exclude them from this ZIP. Unchecked rows disappear when you reload.") }}{% endblock %}
 
 {% block content %}
   <div class="selected-page" data-selection-page>
     <section class="selected-toolbar" aria-labelledby="selected-options-heading">
       <div class="selected-toolbar__heading">
-        <h2 id="selected-options-heading">Archive options</h2>
+        <h2 id="selected-options-heading">{{ gettext("Archive options") }}</h2>
         <p class="selected-toolbar__summary" aria-live="polite">
-          <strong data-selected-downloadable-count>0</strong> downloadable ·
-          <span data-selected-total-label>Size</span>: <span data-selected-total-size>0 bytes</span>
+          <strong data-selected-downloadable-count>0</strong> {{ gettext("downloadable") }} ·
+          <span data-selected-total-label>{{ gettext("Size") }}</span>: <span data-selected-total-size>0 bytes</span>
         </p>
       </div>
       <form id="selected-download-form" class="selected-download-form" method="post" action="/selected/download" enctype="application/x-www-form-urlencoded">
         <input id="selected-ids" type="hidden" name="ids" value="[]" data-selected-ids>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="selected-option" for="selected-format">
-          <span>Format</span>
-          <select id="selected-format" name="format" data-selected-format>
-            <option value="original" selected>Original</option>
-          </select>
+        <label class="selected-option" for="selected-format"><span>{{ gettext("Format") }}</span>
+          <select id="selected-format" name="format" data-selected-format><option value="original" selected>{{ gettext("Original") }}</option></select>
         </label>
-        <label class="selected-option" for="selected-preset">
-          <span>ZIP layout</span>
+        <label class="selected-option" for="selected-preset"><span>{{ gettext("ZIP layout") }}</span>
           <select id="selected-preset" name="preset" data-selected-preset>
-            <option value="nested" selected>Author + series folders</option>
-            <option value="flatten">Author folders</option>
-            <option value="list">Single list</option>
+            <option value="nested" selected>{{ gettext("Author + series folders") }}</option>
+            <option value="flatten">{{ gettext("Author folders") }}</option>
+            <option value="list">{{ gettext("Single list") }}</option>
           </select>
         </label>
-        <button type="submit" data-selected-download disabled>Download ZIP</button>
-        <button class="button-secondary" type="button" data-selection-clear disabled>Clear all</button>
+        <button type="submit" data-selected-download disabled>{{ gettext("Download ZIP") }}</button>
+        <button class="button-secondary" type="button" data-selection-clear disabled>{{ gettext("Clear all") }}</button>
       </form>
       <p class="selected-request-status" data-selected-request-status role="status" aria-live="polite"></p>
     </section>
 
     <section class="selected-preview-section" aria-labelledby="selected-preview-heading">
-      <h2 id="selected-preview-heading" class="visually-hidden">Selection preview</h2>
-      <div class="catalog-view-switcher selected-view-switcher" role="group" aria-label="Selected books view">
-        <button type="button" data-selected-view="flat" aria-pressed="true">Flat</button>
-        <button type="button" data-selected-view="tree" aria-pressed="false">Tree</button>
-        <button type="button" data-selected-view="table" aria-pressed="false">Table</button>
+      <h2 id="selected-preview-heading" class="visually-hidden">{{ gettext("Selection preview") }}</h2>
+      <div class="catalog-view-switcher selected-view-switcher" role="group" aria-label="{{ gettext('Selected books view') }}">
+        <button type="button" data-selected-view="flat" aria-pressed="true">{{ gettext("Flat") }}</button>
+        <button type="button" data-selected-view="tree" aria-pressed="false">{{ gettext("Tree") }}</button>
+        <button type="button" data-selected-view="table" aria-pressed="false">{{ gettext("Table") }}</button>
       </div>
       <div id="selected-preview" data-selected-preview-target aria-live="polite" aria-busy="true">
-        <p class="selected-loading">Loading selection…</p>
+        <p class="selected-loading">{{ gettext("Loading selection…") }}</p>
       </div>
     </section>
   </div>

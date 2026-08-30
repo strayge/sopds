@@ -241,8 +241,30 @@ dl {
   display: none;
 }
 
+.language-control {
+  display: flex;
+  gap: var(--space-1);
+  margin-top: auto;
+  padding-top: var(--space-4);
+}
+
+.language-control button {
+  min-height: 1.8rem;
+  padding: 0.2rem 0.5rem;
+  border-color: rgb(255 253 248 / 45%);
+  background: transparent;
+  color: rgb(255 253 248 / 82%);
+  font-size: 0.7rem;
+}
+
+.language-control button[aria-pressed="true"] {
+  background: var(--color-paper-deep);
+  color: var(--color-forest-dark);
+  font-weight: 600;
+}
+
 .selection-status {
-  margin: auto 0 0;
+  margin: var(--space-2) 0 0;
   padding-top: var(--space-4);
   color: rgb(255 253 248 / 78%);
   font-size: 0.75rem;

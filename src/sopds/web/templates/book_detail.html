@@ -1,34 +1,29 @@
 {% extends "base.html" %}
 
 {% block title %}{{ book.title }} · SOPDS{% endblock %}
-
 {% block page_heading_class %} workspace-header__title--book{% endblock %}
 {% block page_heading %}{{ book.title }}{% endblock %}
-{% block page_subtitle %}Book details and original file{% endblock %}
+{% block page_subtitle %}{{ gettext("Book details and original file") }}{% endblock %}
 
 {% block content %}
   <article class="book-detail">
-    <nav class="book-detail__breadcrumb" aria-label="Breadcrumb">
-      <a data-testid="detail-back-link" href="/" data-detail-back><span aria-hidden="true">←</span> Back to results</a>
+    <nav class="book-detail__breadcrumb" aria-label="{{ gettext('Breadcrumb') }}">
+      <a data-testid="detail-back-link" href="/" data-detail-back><span aria-hidden="true">←</span> {{ gettext("Back to results") }}</a>
     </nav>
 
     <header class="book-detail__header">
       <div class="book-tile book-detail__tile book-tile--1" aria-hidden="true">{{ (book.title|trim|first)|upper }}</div>
       <div class="book-detail__introduction">
         {% if book.availability.value != "active" %}
-          <div class="book-detail__title-row">
-            <span class="availability-badge availability-badge--{{ book.availability.value }}">{{ book.availability.value|capitalize }}</span>
-          </div>
+          <div class="book-detail__title-row"><span class="availability-badge availability-badge--{{ book.availability.value }}">{{ gettext("Hidden") if book.availability.value == "hidden" else gettext("Missed") }}</span></div>
         {% endif %}
         {% if book.authors %}
-          <p class="book-detail__authors">
-            <span class="visually-hidden">Authors:</span>
+          <p class="book-detail__authors"><span class="visually-hidden">{{ gettext("Authors:") }}</span>
             {% for author in book.authors %}<a href="/?q={{ author|author_name|urlencode }}&amp;search_field=author{% if availability_query %}&amp;{{ availability_query }}{% endif %}" data-catalog-criteria-link>{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span> {% endif %}{% endfor %}
           </p>
         {% endif %}
         {% if book.series %}
-          <p class="book-detail__series">
-            <span class="book-detail__label">Series</span>
+          <p class="book-detail__series"><span class="book-detail__label">{{ gettext("Series") }}</span>
             <a href="/?q={{ book.series|urlencode }}&amp;search_field=series{% if availability_query %}&amp;{{ availability_query }}{% endif %}" data-catalog-criteria-link>{{ book.series }}</a>{% if book.series_number %} <span>#{{ book.series_number }}</span>{% endif %}
           </p>
         {% endif %}
@@ -37,55 +32,30 @@
 
     <div class="book-detail__content">
       <section class="book-detail__metadata surface" aria-labelledby="book-metadata-heading">
-        <h2 id="book-metadata-heading">Book details</h2>
+        <h2 id="book-metadata-heading">{{ gettext("Book details") }}</h2>
         <dl>
-          <dt>Original format</dt>
-          <dd>{{ book.original_format|upper }}</dd>
-          {% if book.language %}<dt>Language</dt><dd>{{ book.language }}</dd>{% endif %}
-          {% if book.published_date %}<dt>Published</dt><dd>{{ book.published_date }}</dd>{% endif %}
-          <dt>File size</dt>
-          <dd>{{ book.size|kilobytes }}</dd>
-          {% if book.rating is not none %}<dt>Rating</dt><dd>{{ book.rating }}</dd>{% endif %}
-          {% if book.libid %}<dt>Library ID</dt><dd>{{ book.libid }}</dd>{% endif %}
+          <dt>{{ gettext("Original format") }}</dt><dd>{{ book.original_format|upper }}</dd>
+          {% if book.language %}<dt>{{ gettext("Language") }}</dt><dd>{{ book.language }}</dd>{% endif %}
+          {% if book.published_date %}<dt>{{ gettext("Published") }}</dt><dd>{{ book.published_date }}</dd>{% endif %}
+          <dt>{{ gettext("File size") }}</dt><dd>{{ book.size|kilobytes }}</dd>
+          {% if book.rating is not none %}<dt>{{ gettext("Rating") }}</dt><dd>{{ book.rating }}</dd>{% endif %}
+          {% if book.libid %}<dt>{{ gettext("Library ID") }}</dt><dd>{{ book.libid }}</dd>{% endif %}
         </dl>
-
-        {% if book.genres %}
-          <div class="book-detail__tags">
-            <h3>Genres</h3>
-            <ul class="tag-list">
-              {% for code, label in book.genres %}<li><a class="tag" href="/?genre={{ code|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ label }}</a></li>{% endfor %}
-            </ul>
-          </div>
-        {% endif %}
-
-        {% if book.keywords %}
-          <div class="book-detail__tags">
-            <h3>Keywords</h3>
-            <ul class="tag-list">
-              {% for keyword in book.keywords.split(",") %}{% if keyword|trim %}<li><span class="tag tag--text">{{ keyword|trim }}</span></li>{% endif %}{% endfor %}
-            </ul>
-          </div>
-        {% endif %}
+        {% if book.genres %}<div class="book-detail__tags"><h3>{{ gettext("Genres") }}</h3><ul class="tag-list">{% for code, label in book.genres %}<li><a class="tag" href="/?genre={{ code|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ label }}</a></li>{% endfor %}</ul></div>{% endif %}
+        {% if book.keywords %}<div class="book-detail__tags"><h3>{{ gettext("Keywords") }}</h3><ul class="tag-list">{% for keyword in book.keywords.split(",") %}{% if keyword|trim %}<li><span class="tag tag--text">{{ keyword|trim }}</span></li>{% endif %}{% endfor %}</ul></div>{% endif %}
       </section>
 
-      <aside class="book-detail__download surface surface--raised" aria-label="Original file">
+      <aside class="book-detail__download surface surface--raised" aria-label="{{ gettext('Original file') }}">
         {% if not book.downloadable or book.availability.value == "missed" %}
-          <p class="book-detail__unavailable" role="status">Original file unavailable</p>
-          <p class="muted">The catalog record remains available, but its original file is missing.</p>
+          <p class="book-detail__unavailable" role="status">{{ gettext("Original file unavailable") }}</p>
+          <p class="muted">{{ gettext("The catalog record remains available, but its original file is missing.") }}</p>
         {% else %}
-          <p class="book-detail__download-label">Original file · {{ book.size|kilobytes }}</p>
+          <p class="book-detail__download-label">{{ gettext("Original file") }} · {{ book.size|kilobytes }}</p>
           <div class="download-split download-split--detail">
-            <a class="book-detail__download-action" href="/books/{{ book.public_id|urlencode }}/download" aria-label="Download original {{ book.original_format|source_format_label }} file for {{ book.title }}">{{ book.original_format|source_format_label }}</a>
-            {% if additional_download_formats %}
-              <details class="download-menu download-menu--detail">
-                <summary aria-label="More download formats for {{ book.title }}"><span aria-hidden="true">▾</span></summary>
-                <div class="download-menu__items">
-                  {% for target in additional_download_formats %}<a href="/books/{{ book.public_id|urlencode }}/download/{{ target.key }}" aria-label="Download {{ target.label }} conversion for {{ book.title }}">{{ target.label }}</a>{% endfor %}
-                </div>
-              </details>
-            {% endif %}
+            <a class="book-detail__download-action" href="/books/{{ book.public_id|urlencode }}/download" aria-label="{{ gettext('Download original %(format)s file for %(title)s') % {'format': book.original_format|source_format_label, 'title': book.title} }}">{{ book.original_format|source_format_label }}</a>
+            {% if additional_download_formats %}<details class="download-menu download-menu--detail"><summary aria-label="{{ gettext('More download formats for %(title)s') % {'title': book.title} }}"><span aria-hidden="true">▾</span></summary><div class="download-menu__items">{% for target in additional_download_formats %}<a href="/books/{{ book.public_id|urlencode }}/download/{{ target.key }}" aria-label="{{ gettext('Download %(format)s conversion for %(title)s') % {'format': target.label, 'title': book.title} }}">{{ target.label }}</a>{% endfor %}</div></details>{% endif %}
           </div>
-          {% if reader_url %}<a data-testid="detail-read-link" href="{{ reader_url }}" class="book-detail__read-action" target="_blank" rel="noopener noreferrer">Read</a>{% endif %}
+          {% if reader_url %}<a data-testid="detail-read-link" href="{{ reader_url }}" class="book-detail__read-action" target="_blank" rel="noopener noreferrer">{{ pgettext("reader-action", "Read") }}</a>{% endif %}
         {% endif %}
       </aside>
     </div>

@@ -14,6 +14,8 @@ from babel.messages.pofile import read_po
 from babel.support import NullTranslations, Translations
 from starlette.requests import Request
 
+from sopds.imports.status import ImportState, ImportTrigger
+
 LocaleCode = Literal["en", "ru"]
 
 SUPPORTED_LOCALES: tuple[LocaleCode, ...] = ("en", "ru")
@@ -24,6 +26,60 @@ _DOMAIN = "messages"
 _LANGUAGE_COOKIE_BYTES = LANGUAGE_COOKIE.encode("ascii")
 _COOKIE_LOCALES: dict[bytes, LocaleCode] = {b"en": "en", b"ru": "ru"}
 _RUSSIAN_PLURAL = get_plural("ru")
+
+
+def N_(message: str) -> str:
+    """Mark deferred messages for extraction without translating them eagerly."""
+    return message
+
+
+_CATALOG_ERROR_MESSAGES = frozenset(
+    {
+        N_("Catalog changed while loading; retry the request"),
+        N_("Invalid catalog search"),
+        N_("Invalid search field"),
+        N_("Invalid catalog filter"),
+        N_("Invalid catalog cursor"),
+    }
+)
+_GENERIC_CATALOG_ERROR = N_("The catalog request could not be completed")
+_KNOWN_HTML_MESSAGES = frozenset(
+    {
+        N_("This page has expired. Reload it and try again."),
+        N_("Selected-books request is too large"),
+        N_("Invalid selected-books request"),
+        N_("Invalid archive preset"),
+        N_("Invalid archive format"),
+        N_("Invalid archive request"),
+        N_("Invalid selected book IDs"),
+        N_("Invalid public book ID"),
+        N_("Too many selected books"),
+        N_("Selected books exceed the source-size limit"),
+        N_("No selected books are available for download"),
+        N_("Catalog changed while loading; retry the request"),
+        N_("The selected-books preview is unavailable"),
+        N_("Service is shutting down"),
+        N_("The selected books archive could not be created"),
+        N_("Catalog import is starting"),
+        N_("No catalog changes found"),
+        N_("Manual import is starting"),
+        N_("Import check is starting"),
+        N_("Force import is starting"),
+        N_("An import or database maintenance operation is already running"),
+        N_("Database VACUUM completed"),
+        N_("VACUUM skipped because catalog work is running"),
+    }
+)
+_IMPORT_STATE_MESSAGES = {
+    ImportState.RUNNING: N_("running"),
+    ImportState.SUCCEEDED: N_("succeeded"),
+    ImportState.FAILED: N_("failed"),
+    ImportState.INTERRUPTED: N_("interrupted"),
+}
+_IMPORT_TRIGGER_MESSAGES = {
+    ImportTrigger.SCHEDULED: N_("scheduled"),
+    ImportTrigger.MANUAL: N_("manual"),
+}
 
 
 def _is_ascii_alphanumeric(value: str) -> bool:
@@ -82,11 +138,6 @@ def _supported_locale_from_tag(language_tag: str) -> LocaleCode | None:
             index += 1
 
     return locale if index == len(subtags) else None
-
-
-def N_(message: str) -> str:
-    """Mark deferred messages for extraction without translating them eagerly."""
-    return message
 
 
 def _locale_from_cookie_headers(request: Request) -> LocaleCode | None:
@@ -159,6 +210,29 @@ def translation_context(
 
 def request_translation_context(request: Request) -> TranslationContext:
     return translation_context(resolve_locale(request))
+
+
+def catalog_error_message(context: TranslationContext, error: Exception) -> str:
+    """Translate only catalog failures approved for public HTML presentation."""
+    source = str(error)
+    if source not in _CATALOG_ERROR_MESSAGES:
+        source = _GENERIC_CATALOG_ERROR
+    return context.gettext(source)
+
+
+def known_html_message(context: TranslationContext, source: str) -> str:
+    """Keep route-generated HTML translation limited to reviewed source messages."""
+    if source not in _KNOWN_HTML_MESSAGES:
+        raise ValueError(f"Unknown HTML message: {source!r}")
+    return context.gettext(source)
+
+
+def import_state_label(context: TranslationContext, state: ImportState) -> str:
+    return context.gettext(_IMPORT_STATE_MESSAGES[state])
+
+
+def import_trigger_label(context: TranslationContext, trigger: ImportTrigger) -> str:
+    return context.gettext(_IMPORT_TRIGGER_MESSAGES[trigger])
 
 
 def _validate_message(message: Message, *, plural_count: int) -> None:

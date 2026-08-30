@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ locale }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Browse and manage the SOPDS private library catalog.">
-    <title>{% block title %}SOPDS catalog{% endblock %}</title>
+    <meta name="description" content="{{ gettext('Browse and manage the SOPDS private library catalog.') }}">
+    <title>{% block title %}{{ gettext("SOPDS catalog") }}{% endblock %}</title>
     <link rel="alternate" type="application/atom+xml;profile=opds-catalog;kind=navigation" href="{{ opds_url }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
     <script src="{{ url_for('static', path='/vendor/htmx/htmx-2.0.10.min.js') }}"></script>
@@ -14,27 +14,28 @@
     {% block head %}{% endblock %}
   </head>
   <body>
-    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <a class="skip-link" href="#main-content">{{ gettext("Skip to main content") }}</a>
     <div class="app-shell">
       <aside class="app-sidebar">
-        <a class="site-brand" href="/" aria-label="SOPDS catalog home">
+        <a class="site-brand" href="/" aria-label="{{ gettext('SOPDS catalog home') }}">
           <span class="site-brand__name">SOPDS</span>
-          <span class="site-brand__tagline">INPX-backed catalog</span>
+          <span class="site-brand__tagline">{{ gettext("INPX-backed catalog") }}</span>
         </a>
-        <nav class="site-navigation" aria-label="Primary navigation">
-          <a href="/"{% if active_navigation == "catalog" %} aria-current="page"{% endif %}>Catalog</a>
-          <a href="/selected"{% if active_navigation == "selected" %} aria-current="page"{% endif %}>Selected <span data-selection-count hidden>0</span></a>
+        <nav class="site-navigation" aria-label="{{ gettext('Primary navigation') }}">
+          <a href="/"{% if active_navigation == "catalog" %} aria-current="page"{% endif %}>{{ gettext("Catalog") }}</a>
+          <a href="/selected"{% if active_navigation == "selected" %} aria-current="page"{% endif %}>{{ gettext("Selected") }} <span data-selection-count hidden>0</span></a>
           <a href="{{ opds_url }}">OPDS</a>
-          <a href="/manage"{% if active_navigation == "manage" %} aria-current="page"{% endif %}>Manage</a>
+          <a href="/manage"{% if active_navigation == "manage" %} aria-current="page"{% endif %}>{{ gettext("Manage") }}</a>
         </nav>
+        <div class="language-control" role="group" aria-label="{{ gettext('Interface language') }}"><button type="button" data-locale-choice="en" aria-pressed="{{ 'true' if locale == 'en' else 'false' }}">EN</button><button type="button" data-locale-choice="ru" aria-pressed="{{ 'true' if locale == 'ru' else 'false' }}">RU</button></div>
       </aside>
       <div class="workspace">
         <header class="workspace-header">
           <div class="workspace-header__heading">
-            <h1 id="page-heading" class="workspace-header__title{% block page_heading_class %}{% endblock %}">{% block page_heading %}SOPDS catalog{% endblock %}</h1>
-            <p class="workspace-header__subtitle">{% block page_subtitle %}Browse your private library.{% endblock %}</p>
+            <h1 id="page-heading" class="workspace-header__title{% block page_heading_class %}{% endblock %}">{% block page_heading %}{{ gettext("SOPDS catalog") }}{% endblock %}</h1>
+            <p class="workspace-header__subtitle">{% block page_subtitle %}{{ gettext("Browse your private library.") }}{% endblock %}</p>
           </div>
-          <p id="health" class="health-status"><span class="status-ok">Application is healthy</span></p>
+          <p id="health" class="health-status"><span class="status-ok">{{ gettext("Application is healthy") }}</span></p>
         </header>
         <main id="main-content" class="page-content" tabindex="-1" aria-labelledby="page-heading">
           {% block content %}{% endblock %}
@@ -42,23 +43,8 @@
       </div>
     </div>
     <script>
-      function localizeCatalogTimes(root) {
-        root.querySelectorAll("time.local-datetime").forEach((element) => {
-          const value = new Date(element.dateTime);
-          if (!Number.isNaN(value.getTime())) {
-            element.textContent = new Intl.DateTimeFormat(undefined, {
-              dateStyle: "medium",
-              timeStyle: "medium",
-              hourCycle: "h23"
-            }).format(value);
-            element.title = element.dateTime;
-          }
-        });
-      }
-      localizeCatalogTimes(document);
-      document.body.addEventListener("htmx:afterSwap", (event) => {
-        localizeCatalogTimes(event.detail.elt || event.target);
-      });
+      function localizeCatalogTimes(root){root.querySelectorAll("time.local-datetime").forEach((element)=>{const value=new Date(element.dateTime);if(!Number.isNaN(value.getTime())){element.textContent=new Intl.DateTimeFormat({{ locale|tojson }},{dateStyle:"medium",timeStyle:"medium",hourCycle: "h23"}).format(value);element.title=element.dateTime;}})}
+      localizeCatalogTimes(document);document.body.addEventListener("htmx:afterSwap",(event)=>localizeCatalogTimes(event.detail.elt || event.target));
     </script>
   </body>
 </html>

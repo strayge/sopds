@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Invalid catalog request · SOPDS{% endblock %}
+{% block title %}{{ gettext("Invalid catalog request · SOPDS") }}{% endblock %}
 
-{% block page_heading %}Invalid catalog request{% endblock %}
-{% block page_subtitle %}The catalog could not process these search options.{% endblock %}
+{% block page_heading %}{{ gettext("Invalid catalog request") }}{% endblock %}
+{% block page_subtitle %}{{ gettext("The catalog could not process these search options.") }}{% endblock %}
 
 {% block content %}
   <section class="message-panel message-panel--error" role="alert" aria-labelledby="catalog-error-heading">
-    <h2 id="catalog-error-heading">Search request error</h2>
+    <h2 id="catalog-error-heading">{{ gettext("Search request error") }}</h2>
     <p>{{ message }}</p>
-    <p><a href="/">Return to catalog</a></p>
+    <p><a href="/">{{ gettext("Return to catalog") }}</a></p>
   </section>
 {% endblock %}

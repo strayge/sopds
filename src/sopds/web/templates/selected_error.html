@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Selected books error · SOPDS{% endblock %}
+{% block title %}{{ gettext("Selected books error · SOPDS") }}{% endblock %}
 
-{% block page_heading %}Selected books{% endblock %}
-{% block page_subtitle %}The archive request could not be completed.{% endblock %}
+{% block page_heading %}{{ gettext("Selected books") }}{% endblock %}
+{% block page_subtitle %}{{ gettext("The archive request could not be completed.") }}{% endblock %}
 
 {% block content %}
   <section class="message-panel message-panel--error" role="alert" aria-labelledby="selected-error-heading">
-    <h2 id="selected-error-heading">Archive request error</h2>
+    <h2 id="selected-error-heading">{{ gettext("Archive request error") }}</h2>
     <p>{{ message }}</p>
-    <p><a href="/selected">Return to selected books</a></p>
+    <p><a href="/selected">{{ gettext("Return to selected books") }}</a></p>
   </section>
 {% endblock %}

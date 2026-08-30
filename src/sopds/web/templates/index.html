@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}SOPDS catalog{% endblock %}
+{% block title %}{{ gettext("SOPDS catalog") }}{% endblock %}
 
-{% block page_heading %}Search catalog{% endblock %}
-{% block page_subtitle %}Find books in your private library by title, author, or series.{% endblock %}
+{% block page_heading %}{{ gettext("Search catalog") }}{% endblock %}
+{% block page_subtitle %}{{ gettext("Find books in your private library by title, author, or series.") }}{% endblock %}
 
 {% block content %}
   {% include "partials/catalog_search_form.html" %}
 
-  <section id="catalog-results" class="catalog-results" aria-label="Catalog results">
+  <section id="catalog-results" class="catalog-results" aria-label="{{ gettext('Catalog results') }}">
     {% include "partials/catalog_results.html" %}
   </section>
 {% endblock %}

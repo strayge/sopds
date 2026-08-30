@@ -3145,6 +3145,169 @@ def test_manage_page_polls_past_terminal_status_during_new_import_startup() -> N
     assert "Completed" not in management.text
 
 
+def test_russian_server_rendered_surfaces_preserve_catalog_data() -> None:
+    imports = _Imports(_status(ImportState.FAILED, error_summary="raw parser failure"))
+    app, catalog, _ = _app(imports)
+    catalog.detail_published_date = date(2024, 2, 3)
+    catalog.detail_keywords = "raw, metadata"
+
+    with TestClient(app) as client:
+        headers = {"Accept-Language": "ru-RU, en"}
+        shell = client.get("/", headers=headers)
+        results = client.get("/?q=book", headers=headers)
+        fragment = client.get(
+            "/catalog-fragment?q=none",
+            headers={**headers, "HX-Request": "true"},
+        )
+        detail = client.get("/books/public-1", headers=headers)
+        selected_page = client.get("/selected", headers=headers)
+        selected_error = client.post(
+            "/selected/preview",
+            content=b"not-json",
+            headers={**headers, "Content-Type": "application/json"},
+        )
+        management = client.get("/manage", headers=headers)
+
+    assert '<html lang="ru">' in shell.text
+    assert ">Поиск по каталогу</h1>" in shell.text
+    assert 'aria-label="Язык интерфейса"' in shell.text
+    assert 'data-locale-choice="ru" aria-pressed="true"' in shell.text
+    assert "Загружено: 1 · Есть другие совпадения" in results.text
+    assert "Книги не найдены" in fragment.text
+    assert "Сведения о книге" in detail.text  # noqa: RUF001
+    for raw_value in ("A Book", "Тестов Тест", "Science fiction", "2024-02-03", "123 KB"):
+        assert raw_value in detail.text
+    assert "Выбранные книги" in selected_page.text
+    assert "Структура ZIP" in selected_page.text
+    assert "Некорректный запрос выбранных книг" in selected_error.text
+    assert "Управление каталогом" in management.text
+    assert "Ошибка" in management.text
+    assert "Вручную" in management.text
+    assert "raw parser failure" in management.text
+
+
+def test_russian_read_contexts_distinguish_action_from_import_metric() -> None:
+    imports = _Imports(_status(ImportState.SUCCEEDED, records_read=702_461))
+    app, _, _ = _app(imports)
+
+    with TestClient(app) as client:
+        headers = {"Accept-Language": "ru"}
+        detail = client.get("/books/public-1", headers=headers)
+        import_status = client.get("/imports/status", headers=headers)
+
+    assert 'rel="noopener noreferrer">Читать</a>' in detail.text
+    assert "<dt>Прочитано</dt><dd>702 461</dd>" in import_status.text
+    assert "<dt>Читать</dt>" not in import_status.text
+
+
+@pytest.mark.parametrize(
+    ("count", "wording"),
+    [
+        (1, "1 книга не может быть преобразована"),
+        (2, "2 книги не могут быть преобразованы"),
+        (5, "5 книг не могут быть преобразованы"),
+        (11, "11 книг не могут быть преобразованы"),
+        (21, "21 книга не может быть преобразована"),
+    ],
+)
+def test_russian_selected_preview_uses_server_plural_forms(count: int, wording: str) -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+    ids = [f"book-{index}" for index in range(count)]
+    request = ArchiveRequest(ids, "nested", "epub")
+    entries = tuple(
+        ArchivePreviewEntry(
+            public_id,
+            BookSummary(
+                public_id=public_id,
+                title=f"Book {index}",
+                authors=("Author,One,",),
+                series=None,
+                series_number=None,
+                language="en",
+                original_format="azw3",
+                size=1,
+            ),
+            ArchiveEntryStatus.UNSUPPORTED,
+        )
+        for index, public_id in enumerate(ids)
+    )
+    archive.preview_value = ArchiveManifest(request, 7, entries, (), 0)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/selected/preview",
+            json={"ids": ids, "preset": "nested", "format": "epub"},
+            headers={"Accept-Language": "ru"},
+        )
+
+    assert response.status_code == 200
+    assert wording in response.text
+    assert "EPUB" in response.text
+
+
+def test_localized_html_varies_without_setting_a_locale_cookie() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        responses = (
+            client.get("/", headers={"Accept-Language": "ru"}),
+            client.get("/catalog-fragment?q=book", headers={"Accept-Language": "ru"}),
+            client.get("/books/public-1", headers={"Cookie": "sopds_ui_language=ru"}),
+            client.get("/selected", headers={"Accept-Language": "ru"}),
+            client.get("/manage", headers={"Accept-Language": "ru"}),
+            client.get("/imports/status", headers={"Accept-Language": "ru"}),
+            client.post("/imports", headers={"Accept-Language": "ru"}),
+        )
+
+    for response in responses:
+        assert response.headers["vary"] == "Cookie, Accept-Language"
+        assert "set-cookie" not in response.headers
+    assert responses[3].headers["cache-control"] == "no-store"
+    assert responses[4].headers["cache-control"] == "no-store"
+    assert responses[6].headers["x-sopds-csrf-expired"] == "true"
+
+
+def test_cookie_locale_precedes_header_across_full_pages_and_fragments() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        russian = client.get(
+            "/", headers={"Cookie": "sopds_ui_language=ru", "Accept-Language": "en"}
+        )
+        english = client.get(
+            "/catalog-fragment?q=none",
+            headers={"Cookie": "sopds_ui_language=en", "Accept-Language": "ru"},
+        )
+
+    assert '<html lang="ru">' in russian.text
+    assert "Поиск по каталогу" in russian.text
+    assert "No books found" in english.text
+    assert "Книги не найдены" not in english.text
+
+
+def test_russian_catalog_errors_are_allowlisted_and_unknown_details_are_hidden() -> None:
+    app, catalog, _ = _app()
+
+    async def unknown_browse(request: CatalogRequest) -> CatalogPage:
+        catalog.requests.append(request)
+        raise CatalogInputError("/private/catalog diagnostic")
+
+    catalog.browse = unknown_browse  # type: ignore[method-assign]
+    with TestClient(app) as client:
+        response = client.get("/?q=book", headers={"Accept-Language": "ru"})
+        fragment = client.get(
+            "/catalog-fragment?q=book",
+            headers={"Accept-Language": "ru", "HX-Request": "true"},
+        )
+
+    assert response.status_code == 400
+    assert "Не удалось выполнить запрос к каталогу" in response.text  # noqa: RUF001
+    assert fragment.status_code == 200
+    assert "Не удалось выполнить запрос к каталогу" in fragment.text  # noqa: RUF001
+    assert "/private/catalog diagnostic" not in response.text + fragment.text
+    assert fragment.headers["HX-Push-Url"].startswith("/?q=book")
+    assert fragment.headers["vary"] == "Cookie, Accept-Language"
+
+
 def test_manage_statistics_race_keeps_retryable_management_shell() -> None:
     app, catalog, _ = _app()
     catalog.statistics_failures_remaining = 1

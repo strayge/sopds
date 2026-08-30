@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Manage catalog · SOPDS{% endblock %}
+{% block title %}{{ gettext("Manage catalog · SOPDS") }}{% endblock %}
 
-{% block page_heading %}Manage catalog{% endblock %}
-{% block page_subtitle %}Catalog operations{% endblock %}
+{% block page_heading %}{{ gettext("Manage catalog") }}{% endblock %}
+{% block page_subtitle %}{{ gettext("Catalog operations") }}{% endblock %}
 
 {% block content %}
   <section class="management-section" aria-labelledby="statistics-heading">
     <div class="management-section__heading">
-      <h2 id="statistics-heading">Statistics</h2>
+      <h2 id="statistics-heading">{{ gettext("Statistics") }}</h2>
     </div>
     {% if statistics_context %}
       {% with statistics=statistics_context.statistics, database_size=statistics_context.database_size %}
@@ -16,46 +16,26 @@
       {% endwith %}
     {% else %}
       <div class="management-statistics-error" role="alert">
-        <h3>Statistics unavailable</h3>
-        <a href="/manage">Refresh</a>
+        <h3>{{ gettext("Statistics unavailable") }}</h3>
+        <a href="/manage">{{ gettext("Refresh") }}</a>
       </div>
     {% endif %}
   </section>
 
   <section class="management-section" aria-labelledby="operations-heading">
     <div class="management-section__heading">
-      <h2 id="operations-heading">Operations</h2>
+      <h2 id="operations-heading">{{ gettext("Operations") }}</h2>
     </div>
-    <div class="management-operations" role="group" aria-label="Catalog operations">
-      <button
-        class="button-secondary"
-        type="button"
-        hx-post="/imports"
-        hx-target="#operation-status"
-        hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-      >Import changes</button>
-      <button
-        class="button-secondary"
-        type="button"
-        hx-post="/imports/force"
-        hx-target="#operation-status"
-        hx-confirm="Force a full catalog import?"
-        hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-      >Force import</button>
-      <button
-        class="button-secondary"
-        type="button"
-        hx-post="/database/vacuum"
-        hx-target="#operation-status"
-        hx-confirm="VACUUM the catalog database now?"
-        hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'
-      >Vacuum database</button>
+    <div class="management-operations" role="group" aria-label="{{ gettext('Catalog operations') }}">
+      <button class="button-secondary" type="button" hx-post="/imports" hx-target="#operation-status" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'>{{ gettext("Import changes") }}</button>
+      <button class="button-secondary" type="button" hx-post="/imports/force" hx-target="#operation-status" hx-confirm="{{ gettext('Force a full catalog import?') }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'>{{ gettext("Force import") }}</button>
+      <button class="button-secondary" type="button" hx-post="/database/vacuum" hx-target="#operation-status" hx-confirm="{{ gettext('VACUUM the catalog database now?') }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}'>{{ gettext("Vacuum database") }}</button>
     </div>
   </section>
 
   <section class="management-section" aria-labelledby="operation-status-heading">
     <div class="management-section__heading">
-      <h2 id="operation-status-heading">Import status</h2>
+      <h2 id="operation-status-heading">{{ gettext("Import status") }}</h2>
     </div>
     <div id="operation-status" class="operation-status surface">
       {% include "partials/import_status.html" %}

@@ -10,55 +10,29 @@
   {% if include_catalog_form_oob %}hx-swap-oob="outerHTML"{% endif %}
 >
   <div class="catalog-search__primary">
-    <label class="visually-hidden" for="catalog-query">Search the library</label>
+    <label class="visually-hidden" for="catalog-query">{{ gettext("Search the library") }}</label>
     <div class="catalog-search__row">
-      <input id="catalog-query" name="q" type="search" value="{{ catalog_request.query }}" maxlength="200" placeholder="Title, author, or series">
-      <button id="catalog-submit" type="submit">Search library</button>
+      <input id="catalog-query" name="q" type="search" value="{{ catalog_request.query }}" maxlength="200" placeholder="{{ gettext('Title, author, or series') }}">
+      <button id="catalog-submit" type="submit">{{ gettext("Search library") }}</button>
     </div>
   </div>
-
-  <div class="catalog-filter-toolbar" role="group" aria-label="Search options">
+  <div class="catalog-filter-toolbar" role="group" aria-label="{{ gettext('Search options') }}">
     <div class="catalog-quick-filters">
-      <label for="catalog-search-field"><span>Search in</span>
-        <select id="catalog-search-field" name="search_field">
-          <option value="all"{% if catalog_request.search_field.value == "all" %} selected{% endif %}>All fields</option>
-          <option value="title"{% if catalog_request.search_field.value == "title" %} selected{% endif %}>Title</option>
-          <option value="author"{% if catalog_request.search_field.value == "author" %} selected{% endif %}>Author</option>
-          <option value="series"{% if catalog_request.search_field.value == "series" %} selected{% endif %}>Series</option>
-        </select>
-      </label>
-      <label for="catalog-language"><span>Language</span>
-        <select id="catalog-language" name="language">
-          <option value="">All languages</option>
-          {% for option in filters.languages %}<option value="{{ option.value }}"{% if catalog_request.language == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
-        </select>
-      </label>
-      <label class="catalog-filter--genre" for="catalog-genre"><span>Genre</span>
-        <select id="catalog-genre" name="genre">
-          <option value="">All genres</option>
-          {% for option in filters.genres %}<option value="{{ option.value }}"{% if catalog_request.genre == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
-        </select>
-      </label>
-      <label for="catalog-format"><span>Format</span>
-        <select id="catalog-format" name="original_format">
-          <option value="">All formats</option>
-          {% for option in filters.original_formats %}<option value="{{ option.value }}"{% if catalog_request.original_format == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
-        </select>
-      </label>
+      <label for="catalog-search-field"><span>{{ gettext("Search in") }}</span><select id="catalog-search-field" name="search_field">
+        <option value="all"{% if catalog_request.search_field.value == "all" %} selected{% endif %}>{{ gettext("All fields") }}</option>
+        <option value="title"{% if catalog_request.search_field.value == "title" %} selected{% endif %}>{{ gettext("Title") }}</option>
+        <option value="author"{% if catalog_request.search_field.value == "author" %} selected{% endif %}>{{ gettext("Author") }}</option>
+        <option value="series"{% if catalog_request.search_field.value == "series" %} selected{% endif %}>{{ gettext("Series") }}</option>
+      </select></label>
+      <label for="catalog-language"><span>{{ gettext("Language") }}</span><select id="catalog-language" name="language"><option value="">{{ gettext("All languages") }}</option>{% for option in filters.languages %}<option value="{{ option.value }}"{% if catalog_request.language == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
+      <label class="catalog-filter--genre" for="catalog-genre"><span>{{ gettext("Genre") }}</span><select id="catalog-genre" name="genre"><option value="">{{ gettext("All genres") }}</option>{% for option in filters.genres %}<option value="{{ option.value }}"{% if catalog_request.genre == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
+      <label for="catalog-format"><span>{{ gettext("Format") }}</span><select id="catalog-format" name="original_format"><option value="">{{ gettext("All formats") }}</option>{% for option in filters.original_formats %}<option value="{{ option.value }}"{% if catalog_request.original_format == option.value %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
     </div>
-
-    <div class="catalog-availability-filters" aria-label="Availability options">
-      <label class="checkbox">
-        <input type="checkbox" name="include_missed" value="true"{% if catalog_request.include_missed %} checked{% endif %}>
-        Include missing
-      </label>
-      <label class="checkbox">
-        <input type="checkbox" name="include_hidden" value="true"{% if catalog_request.include_hidden %} checked{% endif %}>
-        Include hidden
-      </label>
+    <div class="catalog-availability-filters" aria-label="{{ gettext('Availability options') }}">
+      <label class="checkbox"><input type="checkbox" name="include_missed" value="true"{% if catalog_request.include_missed %} checked{% endif %}>{{ gettext("Include missing") }}</label>
+      <label class="checkbox"><input type="checkbox" name="include_hidden" value="true"{% if catalog_request.include_hidden %} checked{% endif %}>{{ gettext("Include hidden") }}</label>
     </div>
-
-    <span id="catalog-loading" class="htmx-indicator" role="status">Searching…</span>
-    <a id="catalog-clear-action" class="catalog-clear" href="/" data-catalog-criteria-link aria-label="Clear search and filters"{% if not criteria_active %} hidden{% endif %}>Clear all</a>
+    <span id="catalog-loading" class="htmx-indicator" role="status">{{ gettext("Searching…") }}</span>
+    <a id="catalog-clear-action" class="catalog-clear" href="/" data-catalog-criteria-link aria-label="{{ gettext('Clear search and filters') }}"{% if not criteria_active %} hidden{% endif %}>{{ gettext("Clear all") }}</a>
   </div>
 </form>

@@ -7,9 +7,15 @@ import pytest
 from babel.messages.pofile import PoFileError
 from starlette.requests import Request
 
+from sopds.catalog.contracts import CatalogInputError
+from sopds.imports.status import ImportState, ImportTrigger
 from sopds.web.i18n import (
     N_,
+    catalog_error_message,
     compile_catalogs_if_needed,
+    import_state_label,
+    import_trigger_label,
+    known_html_message,
     request_translation_context,
     resolve_locale,
     translation_context,
@@ -149,6 +155,39 @@ def test_locale_and_translations_remain_bound_to_each_request() -> None:
     assert english.translations is not russian.translations
     assert russian_again.translations is russian.translations
     assert N_("deferred") == "deferred"
+
+
+def test_public_html_presenters_translate_only_known_values() -> None:
+    russian = request_translation_context(_request(accept_language="ru"))
+
+    assert catalog_error_message(russian, CatalogInputError("Invalid catalog search")) == (
+        "Некорректный поиск по каталогу"
+    )
+    assert catalog_error_message(russian, CatalogInputError("private diagnostic")) == (
+        "Не удалось выполнить запрос к каталогу"  # noqa: RUF001
+    )
+    assert known_html_message(russian, "Service is shutting down") == ("Сервис завершает работу")
+    assert import_state_label(russian, ImportState.INTERRUPTED) == "Прервано"
+    assert import_trigger_label(russian, ImportTrigger.SCHEDULED) == "По расписанию"
+    with pytest.raises(ValueError, match="Unknown HTML message"):
+        known_html_message(russian, "private diagnostic")
+
+
+def test_russian_server_plural_rules_cover_one_few_and_many() -> None:
+    russian = request_translation_context(_request(accept_language="ru"))
+
+    assert [
+        russian.ngettext("%(count)s book loaded.", "%(count)s books loaded.", count)
+        % {"count": f"{count:,}".replace(",", " ")}
+        for count in (1, 2, 5, 11, 21, 1_002)
+    ] == [
+        "Загружена 1 книга.",
+        "Загружено 2 книги.",
+        "Загружено 5 книг.",
+        "Загружено 11 книг.",
+        "Загружена 21 книга.",
+        "Загружено 1 002 книги.",
+    ]
 
 
 def test_compiler_handles_missing_fresh_stale_and_forced_catalogs(tmp_path: Path) -> None:

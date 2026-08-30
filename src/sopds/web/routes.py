@@ -71,6 +71,13 @@ from sopds.conversion.registry import ConverterRegistry
 from sopds.conversion.service import ConversionService
 from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
 from sopds.web.csrf import issue_csrf_token, validate_csrf_token
+from sopds.web.i18n import (
+    catalog_error_message,
+    import_state_label,
+    import_trigger_label,
+    known_html_message,
+    request_translation_context,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -155,6 +162,66 @@ templates.env.filters["author_name"] = _format_author_name
 templates.env.filters["kilobytes"] = _format_kilobytes
 templates.env.filters["integer"] = _format_integer
 templates.env.filters["source_format_label"] = _source_format_label
+
+
+def _merge_vary(response: Response, *names: str) -> None:
+    values = [value.strip() for value in response.headers.get("Vary", "").split(",")]
+    merged = [value for value in values if value]
+    existing = {value.casefold() for value in merged}
+    for name in names:
+        if name.casefold() not in existing:
+            merged.append(name)
+            existing.add(name.casefold())
+    response.headers["Vary"] = ", ".join(merged)
+
+
+def _localized_template_response(
+    request: Request,
+    name: str,
+    context: dict[str, object] | None = None,
+    *,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+) -> Response:
+    """Bind translations to one render while preserving route response headers."""
+    translations = request_translation_context(request)
+    render_context = dict(context or {})
+    render_context.update(
+        {
+            "locale": translations.locale,
+            "gettext": translations.gettext,
+            "ngettext": translations.ngettext,
+            "pgettext": translations.pgettext,
+            "npgettext": translations.npgettext,
+        }
+    )
+    response = templates.TemplateResponse(
+        request=request,
+        name=name,
+        context=render_context,
+        status_code=status_code,
+        headers=headers,
+    )
+    _merge_vary(response, "Cookie", "Accept-Language")
+    return response
+
+
+def _known_html_message(request: Request, source: str) -> str:
+    return known_html_message(request_translation_context(request), source)
+
+
+def _catalog_error_message(request: Request, error: CatalogInputError) -> str:
+    return catalog_error_message(request_translation_context(request), error)
+
+
+def _status_presentation(request: Request, status: ImportStatus | None) -> dict[str, str]:
+    if status is None:
+        return {}
+    translations = request_translation_context(request)
+    return {
+        "state_label": import_state_label(translations, status.state),
+        "trigger_label": import_trigger_label(translations, status.trigger),
+    }
 
 
 def _catalog(request: Request) -> Catalog:
@@ -514,14 +581,14 @@ async def index(
         context = await _results_context(request, catalog_request, searched=searched)
         context.update(_shell_context(request, active_navigation="catalog"))
         context.update(await _catalog_form_context(request, catalog_request))
-        return templates.TemplateResponse(request=request, name="index.html", context=context)
+        return _localized_template_response(request, "index.html", context)
     except CatalogInputError as error:
-        return templates.TemplateResponse(
-            request=request,
-            name="catalog_error.html",
+        return _localized_template_response(
+            request,
+            "catalog_error.html",
             context={
                 **_shell_context(request, active_navigation="catalog"),
-                "message": str(error),
+                "message": _catalog_error_message(request, error),
             },
             status_code=400,
         )
@@ -654,16 +721,17 @@ def _selected_error_response(
     status_code: int,
     fragment: bool,
 ) -> Response:
+    message = _known_html_message(request, message)
     if fragment:
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/selected_preview.html",
+        return _localized_template_response(
+            request,
+            "partials/selected_preview.html",
             context={"manifest": None, "message": message},
             status_code=status_code,
         )
-    return templates.TemplateResponse(
-        request=request,
-        name="selected_error.html",
+    return _localized_template_response(
+        request,
+        "selected_error.html",
         context={
             **_shell_context(request, active_navigation="selected"),
             "message": message,
@@ -708,9 +776,9 @@ def _selected_input_error(
 
 @router.get("/selected", response_class=HTMLResponse)
 async def selected(request: Request) -> Response:
-    return templates.TemplateResponse(
-        request=request,
-        name="selected.html",
+    return _localized_template_response(
+        request,
+        "selected.html",
         context={
             **_shell_context(request, active_navigation="selected"),
             "csrf_token": _issue_csrf(request),
@@ -779,9 +847,9 @@ async def selected_preview(request: Request) -> Response:
             status_code=500,
             fragment=True,
         )
-    return templates.TemplateResponse(
-        request=request,
-        name="partials/selected_preview.html",
+    return _localized_template_response(
+        request,
+        "partials/selected_preview.html",
         context={
             "manifest": manifest,
             "message": None,
@@ -1050,16 +1118,21 @@ async def manage(request: Request) -> Response:
     except CatalogInputError:
         statistics_context = None
         status_code = 503
-    return templates.TemplateResponse(
-        request=request,
-        name="manage.html",
+    return _localized_template_response(
+        request,
+        "manage.html",
         context={
             **_shell_context(request, active_navigation="manage"),
             "statistics_context": statistics_context,
             "status": None if import_pending else current_import_status,
             "csrf_token": _issue_csrf(request),
             "ImportState": ImportState,
-            "message": "Catalog import is starting" if import_pending else None,
+            **_status_presentation(request, None if import_pending else current_import_status),
+            "message": (
+                _known_html_message(request, "Catalog import is starting")
+                if import_pending
+                else None
+            ),
             "poll": import_pending,
             "pending": import_pending,
             "poll_after_run_id": (
@@ -1075,9 +1148,9 @@ async def manage(request: Request) -> Response:
 
 @router.get("/catalog-statistics", response_class=HTMLResponse)
 async def catalog_statistics(request: Request) -> Response:
-    return templates.TemplateResponse(
-        request=request,
-        name="partials/catalog_statistics.html",
+    return _localized_template_response(
+        request,
+        "partials/catalog_statistics.html",
         context=await _statistics_context(request),
     )
 
@@ -1107,7 +1180,7 @@ async def catalog_fragment(
     try:
         context = await _results_context(request, catalog_request)
     except CatalogInputError as error:
-        error_context: dict[str, object] = {"message": str(error)}
+        error_context: dict[str, object] = {"message": _catalog_error_message(request, error)}
         if is_htmx:
             try:
                 error_context.update(await _catalog_form_context(request, catalog_request))
@@ -1116,9 +1189,9 @@ async def catalog_fragment(
             else:
                 error_context["catalog_request"] = catalog_request
                 error_context["include_catalog_form_oob"] = True
-        response = templates.TemplateResponse(
-            request=request,
-            name="partials/catalog_error.html",
+        response = _localized_template_response(
+            request,
+            "partials/catalog_error.html",
             context=error_context,
             status_code=200 if is_htmx else 400,
         )
@@ -1129,17 +1202,17 @@ async def catalog_fragment(
         try:
             context.update(await _catalog_form_context(request, catalog_request))
         except CatalogInputError as error:
-            response = templates.TemplateResponse(
-                request=request,
-                name="partials/catalog_error.html",
-                context={"message": str(error)},
+            response = _localized_template_response(
+                request,
+                "partials/catalog_error.html",
+                context={"message": _catalog_error_message(request, error)},
             )
             response.headers["HX-Push-Url"] = push_url
             return response
         context["include_catalog_form_oob"] = True
-    response = templates.TemplateResponse(
-        request=request,
-        name="partials/catalog_results.html",
+    response = _localized_template_response(
+        request,
+        "partials/catalog_results.html",
         context=context,
     )
     response.headers["HX-Push-Url"] = push_url
@@ -1205,9 +1278,9 @@ async def book_detail(
             include_missed=include_missed,
             include_hidden=include_hidden,
         )
-    return templates.TemplateResponse(
-        request=request,
-        name="book_detail.html",
+    return _localized_template_response(
+        request,
+        "book_detail.html",
         context={
             **_shell_context(request, active_navigation="catalog"),
             "book": book,
@@ -1538,13 +1611,14 @@ async def _status_response(
     pending: bool = False,
     poll_after_run_id: int | None = None,
 ) -> Response:
-    return templates.TemplateResponse(
-        request=request,
-        name="partials/import_status.html",
+    return _localized_template_response(
+        request,
+        "partials/import_status.html",
         context={
             "status": status,
             "ImportState": ImportState,
             "message": message,
+            **_status_presentation(request, status),
             "poll": poll,
             "pending": pending,
             "poll_after_run_id": poll_after_run_id,
@@ -1562,12 +1636,12 @@ async def import_status(request: Request, after_run_id: int | None = None) -> Re
             return await _status_response(
                 request,
                 status,
-                message="No catalog changes found",
+                message=_known_html_message(request, "No catalog changes found"),
             )
         return await _status_response(
             request,
             None,
-            message="Manual import is starting",
+            message=_known_html_message(request, "Manual import is starting"),
             poll=True,
             pending=True,
             poll_after_run_id=after_run_id,
@@ -1576,7 +1650,7 @@ async def import_status(request: Request, after_run_id: int | None = None) -> Re
         return await _status_response(
             request,
             None,
-            message="Catalog import is starting",
+            message=_known_html_message(request, "Catalog import is starting"),
             poll=True,
             pending=True,
         )
@@ -1596,10 +1670,13 @@ async def import_status(request: Request, after_run_id: int | None = None) -> Re
 
 
 def _csrf_operation_error(request: Request) -> Response:
-    return templates.TemplateResponse(
-        request=request,
-        name="partials/operation_result.html",
-        context={"message": _CSRF_ERROR_MESSAGE, "error": True},
+    return _localized_template_response(
+        request,
+        "partials/operation_result.html",
+        context={
+            "message": _known_html_message(request, _CSRF_ERROR_MESSAGE),
+            "error": True,
+        },
         status_code=403,
         headers={"X-SOPDS-CSRF-Expired": "true"},
     )
@@ -1614,12 +1691,12 @@ async def _start_import(request: Request, *, force: bool) -> Response:
     previous_status = await coordinator.get_status()
     accepted = coordinator.start_manual_import(force=force)
     if accepted:
-        mode = "Force import" if force else "Import check"
+        message = "Force import is starting" if force else "Import check is starting"
         return await _status_response(
             request,
             None,
             status_code=202,
-            message=f"{mode} is starting",
+            message=_known_html_message(request, message),
             poll=True,
             pending=True,
             poll_after_run_id=previous_status.run_id if previous_status is not None else 0,
@@ -1627,7 +1704,10 @@ async def _start_import(request: Request, *, force: bool) -> Response:
     return await _status_response(
         request,
         await coordinator.get_status(),
-        message="An import or database maintenance operation is already running",
+        message=_known_html_message(
+            request,
+            "An import or database maintenance operation is already running",
+        ),
         poll=coordinator.is_import_active(),
     )
 
@@ -1649,14 +1729,14 @@ async def vacuum_database(request: Request) -> Response:
     except _CsrfError:
         return _csrf_operation_error(request)
     vacuumed = await _imports(request).vacuum_database()
-    response = templates.TemplateResponse(
-        request=request,
-        name="partials/operation_result.html",
+    response = _localized_template_response(
+        request,
+        "partials/operation_result.html",
         context={
             "message": (
-                "Database VACUUM completed"
+                _known_html_message(request, "Database VACUUM completed")
                 if vacuumed
-                else "VACUUM skipped because catalog work is running"
+                else _known_html_message(request, "VACUUM skipped because catalog work is running")
             ),
             "error": not vacuumed,
         },
