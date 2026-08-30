@@ -1057,7 +1057,7 @@ class CatalogRepository:
         limit: int,
     ) -> list[tuple[int, str, str]]:
         sql = (
-            "SELECT b.id,b.title_sort,b.public_id FROM book_fts "
+            "SELECT DISTINCT b.id,b.title_sort,b.public_id FROM book_fts "
             "JOIN book b ON b.id=book_fts.book_id "
             "JOIN archive a ON a.id=b.archive_id "
             "WHERE book_fts MATCH ? AND b.generation_id=? "

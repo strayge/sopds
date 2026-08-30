@@ -211,6 +211,52 @@ async def _seed(repository: CatalogRepository) -> None:
     await repository.materialize_generation_summaries(staging.id)
 
 
+async def _seed_search_window(
+    repository: CatalogRepository, count: int
+) -> tuple[list[tuple[int, str, str]], CatalogGeneration, Archive]:
+    connection = repository._connection
+    active = await CatalogGeneration.create(using_db=connection, id=1, state=GenerationState.ACTIVE)
+    await CatalogState.filter(id=1).using_db(connection).update(active_generation_id=active.id)
+    archive = await Archive.create(
+        using_db=connection,
+        id=1,
+        generation=active,
+        relative_path="window.zip",
+        available=True,
+    )
+    entries = [
+        (index + 1, f"matching title {index // 2:04}", f"window-{count - index:04}")
+        for index in range(count)
+    ]
+    await Book.bulk_create(
+        [
+            Book(
+                id=book_id,
+                generation=active,
+                public_id=public_id,
+                archive=archive,
+                member_filename=f"{public_id}.fb2",
+                title=title_sort,
+                title_sort=title_sort,
+                size=1,
+                original_format="fb2",
+            )
+            for book_id, title_sort, public_id in reversed(entries)
+        ],
+        batch_size=500,
+        using_db=connection,
+    )
+    await connection.execute_many(
+        "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
+        "VALUES (?,?,?,?,?,?,?)",
+        [
+            [book_id, active.id, title_sort, "", "", "", ""]
+            for book_id, title_sort, _public_id in reversed(entries)
+        ],
+    )
+    return sorted(entries, key=lambda row: (row[1], row[2])), active, archive
+
+
 async def test_catalog_statistics_describe_active_generation_and_database(tmp_path: Path) -> None:
     async with _catalog(tmp_path / "statistics.sqlite3") as (catalog, repository):
         empty = await catalog.statistics()
@@ -453,9 +499,11 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         first = await catalog.browse(CatalogRequest())
         assert len(first.books) == 50
         assert first.next_cursor is not None
-        largest_page = await catalog.browse(CatalogRequest(page_size=200))
+        largest_page = await catalog.browse(CatalogRequest(page_size=1_000))
         assert len(largest_page.books) == 55
         assert largest_page.next_cursor is None
+        with pytest.raises(CatalogInputError, match="Invalid catalog page size"):
+            await catalog.browse(CatalogRequest(page_size=1_001))
         ten = await catalog.browse(CatalogRequest(page_size=10))
         assert len(ten.books) == 10
         assert ten.next_cursor is not None
@@ -569,6 +617,68 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         restarted = CatalogService(repository, b"different-cursor-key")
         with pytest.raises(CatalogInputError, match="Invalid catalog cursor"):
             await restarted.browse(CatalogRequest(cursor=first.next_cursor))
+
+
+async def test_search_window_deduplicates_before_cap_and_overflow(tmp_path: Path) -> None:
+    async with _catalog(tmp_path / "search-window.sqlite3") as (catalog, repository):
+        expected, active, archive = await _seed_search_window(repository, 1_000)
+        connection = repository._connection
+        first_book_id, first_title_sort, _first_public_id = expected[0]
+        await connection.execute_query(
+            "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [first_book_id, active.id, first_title_sort, "", "", "", ""],
+        )
+        original_summaries = repository.summaries
+        hydrated_batches: list[list[int]] = []
+
+        async def tracked_summaries(
+            generation_id: int,
+            book_ids: list[int],
+            *,
+            include_missed: bool = False,
+            include_hidden: bool = False,
+        ) -> list[BookSummary]:
+            hydrated_batches.append(book_ids)
+            return await original_summaries(
+                generation_id,
+                book_ids,
+                include_missed=include_missed,
+                include_hidden=include_hidden,
+            )
+
+        repository.summaries = tracked_summaries  # type: ignore[method-assign]
+        complete = await catalog.browse(CatalogRequest(query="matching", page_size=1_000))
+
+        expected_public_ids = [public_id for _book_id, _title_sort, public_id in expected]
+        assert [book.public_id for book in complete.books] == expected_public_ids
+        assert len(set(expected_public_ids)) == 1_000
+        assert complete.next_cursor is None
+
+        overflow = await Book.create(
+            using_db=connection,
+            id=1_001,
+            generation=active,
+            public_id="window-overflow",
+            archive=archive,
+            member_filename="window-overflow.fb2",
+            title="Matching title 9999",
+            title_sort="matching title 9999",
+            size=1,
+            original_format="fb2",
+        )
+        await connection.execute_query(
+            "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [overflow.id, active.id, overflow.title_sort, "", "", "", ""],
+        )
+
+        truncated = await catalog.browse(CatalogRequest(query="matching", page_size=1_000))
+
+        assert [book.public_id for book in truncated.books] == expected_public_ids
+        assert truncated.next_cursor is not None
+        assert [len(batch) for batch in hydrated_batches] == [1_000, 1_000]
+        assert all(len(set(batch)) == len(batch) for batch in hydrated_batches)
 
 
 @pytest.mark.parametrize("change", ["availability", "cleanup"])
