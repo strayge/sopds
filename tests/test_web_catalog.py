@@ -1585,6 +1585,8 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert 'data-selected-view="flat"' in page.text
     assert 'data-selected-view="tree"' in page.text
     assert 'data-selected-view="table"' in page.text
+    assert '<option value="nested" selected>Author + series folders</option>' in page.text
+    assert "Nested folders" not in page.text
     assert "data-selection-clear" in page.text
     assert "data-selected-request-status" in page.text
     assert "data-selected-download disabled" in page.text
@@ -1602,12 +1604,16 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert preview.text.count("data-selection-checkbox") == 2
     assert "Include Selected Book in archive" in preview.text
     assert "Include unknown selection missing in archive" in preview.text
-    assert preview.text.count("data-selection-remove") == 2
-    assert 'aria-label="Remove Selected Book"' in preview.text
-    assert 'aria-label="Remove unknown selection missing"' in preview.text
+    assert "data-selection-remove" not in preview.text
+    assert ">Remove<" not in preview.text
     assert 'data-selected-summary tabindex="-1"' in preview.text
     assert "Reader One/Selected Book.fb2" not in preview.text
-    assert 'href="/books/public-1"' in preview.text
+    assert 'href="/books/public-1/read" target="_blank"' in preview.text
+    assert 'href="/books/public-1/download"' in preview.text
+    assert 'href="/books/public-1/download/epub"' in preview.text
+    assert 'href="/books/public-1/download/azw3"' in preview.text
+    assert 'href="/books/public-1">Details</a>' in preview.text
+    assert ">Open details</a>" not in preview.text
     assert "return_to" not in preview.text
     assert download.status_code == 200
     assert download.content == archive.body
@@ -1743,7 +1749,8 @@ def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_path
     assert "Include Hidden Book in archive" in preview.text
     assert "Include Missed Book in archive" in preview.text
     assert "Include unknown selection unknown-1 in archive" in preview.text
-    assert preview.text.count("data-selection-remove") == 3
+    assert "data-selection-remove" not in preview.text
+    assert ">Remove<" not in preview.text
     assert 'data-status="downloadable" data-collision="true"' in preview.text
     assert 'data-status="unavailable" data-collision="false"' in preview.text
     assert 'data-status="unknown"' in preview.text
@@ -1751,9 +1758,11 @@ def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_path
     assert "unknown selection is excluded" in preview.text
     assert "Archive name collisions affect 1 book" in preview.text
     assert "Archive name conflicts; ZIP names will be made unique." in preview.text
-    assert 'aria-label="Remove Hidden Book"' in preview.text
-    assert 'aria-label="Remove Missed Book"' in preview.text
-    assert 'aria-label="Remove unknown selection unknown-1"' in preview.text
+    assert 'href="/books/hidden-1/read?include_hidden=true" target="_blank"' in preview.text
+    assert 'href="/books/hidden-1/download"' in preview.text
+    assert 'href="/books/hidden-1/download/azw3"' in preview.text
+    assert 'href="/books/missed-1/read' not in preview.text
+    assert 'href="/books/missed-1/download' not in preview.text
     assert "Writer Hidden/Hidden Book.epub" not in preview.text
     assert "private/path/key" not in preview.text
     assert 'href="/books/hidden-1?include_hidden=true"' in preview.text
@@ -1804,7 +1813,57 @@ def test_selected_preview_distinguishes_unsupported_rows_and_capabilities() -> N
     assert "1 book cannot produce EPUB and is excluded" in preview.text
     assert "cannot produce the selected ZIP format" in preview.text
     assert "Unsupported</span>" in preview.text
+    assert 'href="/books/azw3-1/download"' in preview.text
+    assert 'href="/books/azw3-1/read' not in preview.text
+    assert "data-selection-remove" not in preview.text
     assert "unavailable" not in preview.text.casefold()
+
+
+def test_selected_preview_omits_read_for_oversized_supported_books() -> None:
+    app, _, _ = _app()
+    archive: _Archive = app.state.archive
+    oversized = BookSummary(
+        public_id="large-1",
+        title="Large Book",
+        authors=("Writer,Large,",),
+        series=None,
+        series_number=None,
+        language="en",
+        original_format="fb2",
+        size=(64 * 1024 * 1024) + 1,
+    )
+    request = ArchiveRequest([oversized.public_id], "nested")
+    member = ArchiveMember(
+        oversized.public_id,
+        oversized,
+        "Writer Large/Large Book.fb2",
+        "Writer Large/Large Book.fb2",
+    )
+    archive.preview_value = ArchiveManifest(
+        request,
+        9,
+        (
+            ArchivePreviewEntry(
+                oversized.public_id,
+                oversized,
+                ArchiveEntryStatus.DOWNLOADABLE,
+            ),
+        ),
+        (member,),
+        oversized.size,
+    )
+
+    with TestClient(app) as client:
+        preview = client.post(
+            "/selected/preview",
+            json={"ids": [oversized.public_id], "preset": "nested"},
+        )
+
+    assert preview.status_code == 200
+    assert 'href="/books/large-1/download"' in preview.text
+    assert 'href="/books/large-1/download/epub"' in preview.text
+    assert 'href="/books/large-1/download/azw3"' in preview.text
+    assert 'href="/books/large-1/read' not in preview.text
 
 
 def test_selected_preview_empty_state_provides_focus_fallback() -> None:
@@ -1842,7 +1901,7 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         "previewGeneration",
         "requestGeneration !== previewGeneration",
         "pendingPreviewFocus",
-        "saveSelection([], {publicId: null}, true)",
+        "saveSelection([], true, true)",
         "resetPreviewState(page)",
         "restorePreviewFocus(target, requestIds)",
         'target.querySelector("[data-selected-preview-error]")',
@@ -1850,6 +1909,7 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         "mergeSelectedPreview(target, incomingContent)",
         "showPreservedPreviewError(target, incomingContent)",
         "createSelectedEmptyState()",
+        '"result-list selected-result-list selected-flat-view catalog-flat-view"',
         "const includedIds = new Set(selectedIds)",
         "hasExcludedDisplayedEntries()",
         "refreshSelectedPreview({preserveEntries})",
@@ -1866,7 +1926,6 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         "format: selectedFormat.value",
         'selectedFormat.addEventListener("change"',
         'content.dataset.archiveFormat === "original" ? "Size" : "Source size"',
-        "button.dataset.publicId === preferredId",
         'window.fetch("/selected/preview"',
         '"Content-Type": "application/json"',
         "response.text()",

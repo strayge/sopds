@@ -20,6 +20,7 @@ from sopds.acquisition.archive import (
     ArchiveError,
     ArchiveInputError,
     ArchiveLimitError,
+    ArchiveManifest,
     ArchiveRequest,
     ArchiveService,
     StagedArchive,
@@ -718,6 +719,35 @@ async def selected(request: Request) -> Response:
     )
 
 
+def _selected_row_action_context(
+    request: Request,
+    manifest: ArchiveManifest,
+) -> dict[str, object]:
+    additional_download_formats: dict[str, tuple[OutputChoice, ...]] = {}
+    read_urls: dict[str, str] = {}
+    for entry in manifest.entries:
+        book = entry.summary
+        if book is None or entry.status.value not in {"downloadable", "unsupported"}:
+            continue
+        additional_download_formats[book.public_id] = _additional_download_formats(
+            request, book.original_format
+        )
+        if (
+            _normalized_source_format(book.original_format) in {"fb2", "epub"}
+            and book.size <= _READER_SOURCE_LIMIT
+        ):
+            read_url, _download_url, _detail_url = _reader_book_urls(
+                book.public_id,
+                include_missed=False,
+                include_hidden=book.availability.value == "hidden",
+            )
+            read_urls[book.public_id] = read_url
+    return {
+        "additional_download_formats": additional_download_formats,
+        "read_urls": read_urls,
+    }
+
+
 @router.post("/selected/preview", response_class=HTMLResponse)
 async def selected_preview(request: Request) -> Response:
     try:
@@ -752,7 +782,11 @@ async def selected_preview(request: Request) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="partials/selected_preview.html",
-        context={"manifest": manifest, "message": None},
+        context={
+            "manifest": manifest,
+            "message": None,
+            **_selected_row_action_context(request, manifest),
+        },
     )
 
 

@@ -62,9 +62,6 @@
                 <p class="selected-entry-note">No current catalog record matches <code>{{ entry.public_id }}</code>.</p>
               </div>
               <p class="result-metadata">Not included in the ZIP</p>
-              <div class="result-row__actions">
-                <button class="selection-remove" type="button" data-selection-remove data-public-id="{{ entry.public_id }}" aria-label="Remove unknown selection {{ entry.public_id }}">Remove</button>
-              </div>
             </article>
           {% endif %}
         {% endfor %}

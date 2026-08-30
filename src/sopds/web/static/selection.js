@@ -225,7 +225,7 @@
     syncSelectedPageForm();
   }
 
-  function saveSelection(nextIds, previewFocus = null, preserveEntries = false) {
+  function saveSelection(nextIds, restoreFocus = false, preserveEntries = false) {
     const normalized = normalizeIds(nextIds);
     if (!storageReady) {
       showSelectionStatus("Book selection is unavailable in this browser.", true);
@@ -240,9 +240,9 @@
       return false;
     }
     selectedIds = normalized;
-    if (previewFocus) {
-      pendingPreviewFocus = {publicId: previewFocus.publicId, ids: [...selectedIds]};
-    } else if (pendingPreviewFocus && !sameIds(pendingPreviewFocus.ids, selectedIds)) {
+    if (restoreFocus) {
+      pendingPreviewFocus = [...selectedIds];
+    } else if (pendingPreviewFocus && !sameIds(pendingPreviewFocus, selectedIds)) {
       pendingPreviewFocus = null;
     }
     showSelectionStatus("");
@@ -276,33 +276,8 @@
     );
   }
 
-  function removeSelectedId(publicId, entry) {
-    const index = selectedIds.indexOf(publicId);
-    if (!isValidId(publicId)) {
-      syncInterface();
-      return;
-    }
-    if (index < 0) {
-      entry?.remove();
-      syncInterface();
-      if (!document.querySelector("[data-selected-entry]")) {
-        refreshSelectedPreview();
-      }
-      return;
-    }
-    const publicIdToFocus = selectedIds[index + 1] || selectedIds[index - 1] || null;
-    const saved = saveSelection(
-      selectedIds.filter((selectedId) => selectedId !== publicId),
-      {publicId: publicIdToFocus},
-      true,
-    );
-    if (saved) {
-      entry?.remove();
-    }
-  }
-
   function clearSelection() {
-    saveSelection([], {publicId: null}, true);
+    saveSelection([], true, true);
   }
 
   function formatSize(size) {
@@ -367,21 +342,10 @@
   }
 
   function restorePreviewFocus(target, requestIds) {
-    if (!pendingPreviewFocus || !sameIds(pendingPreviewFocus.ids, requestIds)) {
+    if (!pendingPreviewFocus || !sameIds(pendingPreviewFocus, requestIds)) {
       return;
     }
-    let focusTarget = null;
-    const preferredId = pendingPreviewFocus.publicId;
-    if (preferredId) {
-      for (const button of target.querySelectorAll("[data-selection-remove]")) {
-        if (button.dataset.publicId === preferredId) {
-          focusTarget = button;
-          break;
-        }
-      }
-    }
-    focusTarget =
-      focusTarget ||
+    const focusTarget =
       target.querySelector("[data-selected-empty]") ||
       target.querySelector("[data-selected-summary]") ||
       target.querySelector("[data-selected-preview-error]");
@@ -523,7 +487,7 @@
   }
 
   function renderSelectedFlat(entries) {
-    const list = selectedElement("div", "result-list selected-result-list selected-flat-view");
+    const list = selectedElement("div", "result-list selected-result-list selected-flat-view catalog-flat-view");
     entries.forEach((entry) => list.append(cloneSelectedEntry(entry)));
     return list;
   }
@@ -985,21 +949,6 @@
       }
       return;
     }
-    const remove = event.target.closest("[data-selection-remove]");
-    if (remove) {
-      let entry = remove.closest("[data-selected-entry]");
-      if (!entry && remove.closest("[data-selected-view-entry]")) {
-        for (const candidate of document.querySelectorAll("[data-selected-entry]")) {
-          if (candidate.dataset.publicId === remove.dataset.publicId) {
-            entry = candidate;
-            break;
-          }
-        }
-      }
-      removeSelectedId(remove.dataset.publicId, entry || remove.closest("[data-selected-view-entry]"));
-      renderSelectedView();
-      return;
-    }
     if (event.target.closest("[data-selection-clear]")) {
       clearSelection();
     }
@@ -1010,7 +959,7 @@
       return;
     }
     selectedIds = readSelection();
-    if (pendingPreviewFocus && !sameIds(pendingPreviewFocus.ids, selectedIds)) {
+    if (pendingPreviewFocus && !sameIds(pendingPreviewFocus, selectedIds)) {
       pendingPreviewFocus = null;
     }
     syncInterface();

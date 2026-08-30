@@ -139,7 +139,7 @@ not synchronize to other browsers or addresses.
 
 Available ZIP layouts are:
 
-- **Nested folders** — organize books by author and series.
+- **Author + series folders** — organize books by author and series.
 - **Author folders** — keep author folders while placing series information in
   filenames.
 - **Single list** — place every book at the archive root.

@@ -93,8 +93,24 @@
       {% endif %}
       <a class="result-row__action" href="/books/{{ row_book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">Open details</a>
     {% else %}
-      <a class="result-row__action" href="/books/{{ row_book.public_id|urlencode }}{% if row_book.availability.value == 'hidden' %}?include_hidden=true{% elif row_book.availability.value == 'missed' %}?include_missed=true{% endif %}">Open details</a>
-      <button class="selection-remove" type="button" data-selection-remove data-public-id="{{ row_entry.public_id }}" aria-label="Remove {{ row_book.title }}">Remove</button>
+      {% if read_urls.get(row_book.public_id) %}
+        <a class="result-row__action result-row__read" href="{{ read_urls[row_book.public_id] }}" target="_blank" rel="noopener noreferrer">Read</a>
+      {% endif %}
+      {% if row_entry.status.value in ("downloadable", "unsupported") %}
+        {% set conversion_targets = additional_download_formats.get(row_book.public_id, ()) %}
+        <div class="download-split">
+          <a class="result-row__download" href="/books/{{ row_book.public_id|urlencode }}/download" aria-label="Download original {{ row_book.original_format|source_format_label }} file for {{ row_book.title }}">{{ row_book.original_format|source_format_label }}</a>
+          {% if conversion_targets %}
+            <details class="download-menu">
+              <summary aria-label="More download formats for {{ row_book.title }}"><span aria-hidden="true">▼</span></summary>
+              <div class="download-menu__items">
+                {% for target in conversion_targets %}<a href="/books/{{ row_book.public_id|urlencode }}/download/{{ target.key }}" aria-label="Download {{ target.label }} conversion for {{ row_book.title }}">{{ target.label }}</a>{% endfor %}
+              </div>
+            </details>
+          {% endif %}
+        </div>
+      {% endif %}
+      <a class="result-row__action" href="/books/{{ row_book.public_id|urlencode }}{% if row_book.availability.value == 'hidden' %}?include_hidden=true{% elif row_book.availability.value == 'missed' %}?include_missed=true{% endif %}">Details</a>
     {% endif %}
   </div>
 </article>

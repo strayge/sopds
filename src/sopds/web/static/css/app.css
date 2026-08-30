@@ -1606,22 +1606,6 @@ dd {
   overflow-wrap: anywhere;
 }
 
-button.selection-remove {
-  flex: 1 1 0;
-  min-height: 2.125rem;
-  padding: 0.3rem 0.6rem;
-  border-color: var(--color-border-strong);
-  background: var(--color-surface-raised);
-  color: var(--color-terracotta-dark);
-  font-size: 0.78rem;
-  line-height: 1.1;
-}
-
-button.selection-remove:hover {
-  border-color: var(--color-terracotta);
-  background: var(--color-error-surface);
-}
-
 .selected-empty p:last-child {
   margin-top: var(--space-3);
 }
@@ -2312,7 +2296,6 @@ button.selection-remove:hover {
   .result-row__download,
   .download-menu summary,
   .selection-control,
-  button.selection-remove,
   .selected-download-form button {
     min-height: 2.75rem;
   }
