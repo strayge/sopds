@@ -4,7 +4,10 @@ import os
 from pathlib import Path
 
 import pytest
-from babel.messages.pofile import PoFileError
+from babel.messages.catalog import Catalog
+from babel.messages.extract import DEFAULT_KEYWORDS, extract_from_dir
+from babel.messages.frontend import parse_mapping_cfg
+from babel.messages.pofile import PoFileError, read_po, write_po
 from starlette.requests import Request
 
 from sopds.catalog.contracts import CatalogInputError
@@ -216,6 +219,48 @@ def test_russian_server_plural_rules_cover_one_few_and_many() -> None:
         "Загружена 21 книга.",
         "Загружено 1 002 книги.",
     ]
+
+
+def test_russian_catalog_covers_every_extracted_source_message(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    with (repo_root / "babel.cfg").open(encoding="utf-8") as config_file:
+        method_map, options_map = parse_mapping_cfg(  # type: ignore[no-untyped-call]
+            config_file, filename="babel.cfg"
+        )
+
+    extracted_catalog = Catalog()
+    keywords = {**DEFAULT_KEYWORDS, "N_": None}
+    for filename, line_number, message_id, comments, context in extract_from_dir(
+        repo_root,
+        method_map=method_map,
+        options_map=options_map,
+        keywords=keywords,
+    ):
+        extracted_catalog.add(
+            message_id,
+            locations=[(filename, line_number)],
+            auto_comments=comments,
+            context=context,
+        )
+
+    pot_path = tmp_path / "messages.pot"
+    with pot_path.open("wb") as pot_file:
+        write_po(pot_file, extracted_catalog)
+    with pot_path.open("rb") as pot_file:
+        source_catalog = read_po(pot_file, abort_invalid=True)
+    russian_path = repo_root / "src/sopds/web/translations/ru/LC_MESSAGES/messages.po"
+    with russian_path.open("rb") as russian_file:
+        russian_catalog = read_po(russian_file, abort_invalid=True)
+
+    source_identities = {(message.context, message.id) for message in source_catalog if message.id}
+    russian_identities = {
+        (message.context, message.id) for message in russian_catalog if message.id
+    }
+    missing = source_identities - russian_identities
+    stale = russian_identities - source_identities
+
+    assert not missing, f"Russian catalog is missing active messages: {sorted(map(repr, missing))}"
+    assert not stale, f"Russian catalog has stale active messages: {sorted(map(repr, stale))}"
 
 
 def test_compiler_handles_missing_fresh_stale_and_forced_catalogs(tmp_path: Path) -> None:

@@ -28,6 +28,19 @@ browsers, OPDS reader apps, and an optional Telegram bot.
 
 ## Using the web catalog
 
+### Choose the interface language
+
+Use **EN** or **RU** in the catalog sidebar or reader toolbar to switch the
+interface between English and Russian. SOPDS initially follows the browser's
+language preferences and falls back to English when no supported language
+matches. A choice made with **EN** or **RU** is remembered in that browser.
+
+Interface translation covers catalog and reader controls, notices, and other
+SOPDS text. Book titles, authors, series, genres, languages, dates, keywords,
+and other catalog metadata remain as supplied by the library. Detailed reader
+errors from a book also remain in English so their original diagnostics are
+preserved.
+
 ### Find and download a book
 
 Use the search field and filters to narrow the catalog. Each web search loads
