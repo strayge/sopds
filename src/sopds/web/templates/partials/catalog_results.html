@@ -4,21 +4,37 @@
     <p>Enter a title, author, or series above, or narrow the library with the available filters.</p>
   </div>
 {% elif page.books %}
-  <p class="catalog-results__summary" role="status" aria-live="polite">Showing {{ page.books|length }} {% if page.books|length == 1 %}book{% else %}books{% endif %}</p>
-  <div class="result-list">
-    {% for book in page.books %}
-      {% with row_mode="catalog", row_book=book, row_index=loop.index0 %}
-        {% include "partials/book_row.html" %}
-      {% endwith %}
-    {% endfor %}
-  </div>
-  <nav class="catalog-pagination" aria-label="Catalog pagination">
-    {% if next_href %}
-      <a id="catalog-pagination-position" class="catalog-pagination__next" href="{{ next_href }}" hx-get="{{ next_hx_url }}" hx-target="#catalog-results" hx-swap="innerHTML">Next page</a>
+  <section class="catalog-explorer" data-catalog-root aria-labelledby="catalog-loaded-summary">
+    {% if truncated %}
+      <p id="catalog-loaded-summary" class="catalog-results__summary catalog-results__summary--truncated" role="status" aria-live="polite">Showing the first {{ page.books|length|integer }} matching books in title order. More books match. Refine the catalog search to search beyond this loaded set.</p>
     {% else %}
-      <p id="catalog-pagination-position" class="catalog-pagination__end" tabindex="-1">End of results</p>
+      <p id="catalog-loaded-summary" class="catalog-results__summary" role="status" aria-live="polite">Loaded {{ page.books|length|integer }} {% if page.books|length == 1 %}book{% else %}books{% endif %} in title order.</p>
     {% endif %}
-  </nav>
+
+    <div class="catalog-view-switcher" role="group" aria-label="Result view">
+      <button type="button" data-catalog-view="flat" aria-pressed="true">Flat</button>
+      <button type="button" data-catalog-view="tree" aria-pressed="false">Tree</button>
+      <button type="button" data-catalog-view="table" aria-pressed="false">Table</button>
+    </div>
+
+    <div class="catalog-local-filters" role="group" aria-label="Filter loaded books">
+      <label for="catalog-local-title">Title
+        <input id="catalog-local-title" type="search" maxlength="200" autocomplete="off" data-catalog-filter="title">
+      </label>
+      <label for="catalog-local-author">Author
+        <input id="catalog-local-author" type="search" maxlength="200" autocomplete="off" data-catalog-filter="author">
+      </label>
+      <label for="catalog-local-series">Series
+        <input id="catalog-local-series" type="search" maxlength="200" autocomplete="off" data-catalog-filter="series">
+      </label>
+      <button type="button" data-catalog-clear-filters>Clear local filters</button>
+    </div>
+
+    <div class="catalog-sort-controls" data-catalog-sort-controls></div>
+    <div class="catalog-result-view" data-catalog-result-view></div>
+    <script id="catalog-result-payload" type="application/json" data-catalog-payload>{{ catalog_payload|tojson }}</script>
+    <noscript><p class="catalog-results__message">JavaScript is required to display catalog results. Enable JavaScript, then reload this page.</p></noscript>
+  </section>
 {% else %}
   <div class="catalog-results__message" role="status" aria-live="polite">
     <h2>No books found</h2>

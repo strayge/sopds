@@ -14,7 +14,7 @@
         {% if row_mode == "catalog" %}
           <a href="/books/{{ row_book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">{{ row_book.title }}</a>
         {% else %}
-          <a href="/books/{{ row_book.public_id|urlencode }}?return_to=%2Fselected{% if row_book.availability.value == 'hidden' %}&amp;include_hidden=true{% endif %}{% if row_book.availability.value == 'missed' %}&amp;include_missed=true{% endif %}">{{ row_book.title }}</a>
+          <a href="/books/{{ row_book.public_id|urlencode }}{% if row_book.availability.value == 'hidden' %}?include_hidden=true{% elif row_book.availability.value == 'missed' %}?include_missed=true{% endif %}">{{ row_book.title }}</a>
         {% endif %}
       </h2>
       {% if row_book.availability.value != "active" %}
@@ -85,7 +85,7 @@
       {% endif %}
       <a class="result-row__action" href="/books/{{ row_book.public_id }}{% if detail_query %}?{{ detail_query }}{% endif %}">Open details</a>
     {% else %}
-      <a class="result-row__action" href="/books/{{ row_book.public_id|urlencode }}?return_to=%2Fselected{% if row_book.availability.value == 'hidden' %}&amp;include_hidden=true{% endif %}{% if row_book.availability.value == 'missed' %}&amp;include_missed=true{% endif %}">Open details</a>
+      <a class="result-row__action" href="/books/{{ row_book.public_id|urlencode }}{% if row_book.availability.value == 'hidden' %}?include_hidden=true{% elif row_book.availability.value == 'missed' %}?include_missed=true{% endif %}">Open details</a>
       <button class="selection-remove" type="button" data-selection-remove data-public-id="{{ row_entry.public_id }}" aria-label="Remove {{ row_book.title }}">Remove</button>
     {% endif %}
   </div>

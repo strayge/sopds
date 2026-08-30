@@ -14,17 +14,17 @@
 
   {% if catalog_request.author or catalog_request.series %}
     <div class="catalog-scopes" aria-label="Active catalog scopes">
-      <span class="catalog-scopes__label">Searching within</span>
+      <span class="catalog-scopes__label">Searching within — main searches stay in these scopes</span>
       {% if catalog_request.author %}
         <span class="scope-chip">
           Author: {{ catalog_request.author|author_name }}
-          <a href="{{ author_removal_href }}" aria-label="Remove author scope {{ catalog_request.author|author_name }}">Remove</a>
+          <a href="{{ author_removal_href }}" data-catalog-criteria-link aria-label="Remove author scope {{ catalog_request.author|author_name }}">Remove</a>
         </span>
       {% endif %}
       {% if catalog_request.series %}
         <span class="scope-chip">
           Series: {{ catalog_request.series }}
-          <a href="{{ series_removal_href }}" aria-label="Remove series scope {{ catalog_request.series }}">Remove</a>
+          <a href="{{ series_removal_href }}" data-catalog-criteria-link aria-label="Remove series scope {{ catalog_request.series }}">Remove</a>
         </span>
       {% endif %}
     </div>
@@ -80,6 +80,6 @@
     </div>
 
     <span id="catalog-loading" class="htmx-indicator" role="status">Searching…</span>
-    <a id="catalog-clear-action" class="catalog-clear" href="/" aria-label="Clear search and filters"{% if not criteria_active %} hidden{% endif %}>Clear all</a>
+    <a id="catalog-clear-action" class="catalog-clear" href="/" data-catalog-criteria-link aria-label="Clear search and filters"{% if not criteria_active %} hidden{% endif %}>Clear all</a>
   </div>
 </form>

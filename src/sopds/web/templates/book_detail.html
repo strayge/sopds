@@ -9,7 +9,7 @@
 {% block content %}
   <article class="book-detail">
     <nav class="book-detail__breadcrumb" aria-label="Breadcrumb">
-      <a data-testid="detail-back-link" href="{{ back_href }}"><span aria-hidden="true">←</span> {{ back_label }}</a>
+      <a data-testid="detail-back-link" href="/" data-detail-back><span aria-hidden="true">←</span> Back to results</a>
     </nav>
 
     <header class="book-detail__header">
@@ -23,13 +23,13 @@
         {% if book.authors %}
           <p class="book-detail__authors">
             <span class="visually-hidden">Authors:</span>
-            {% for author in book.authors %}<a href="/?author={{ author|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span> {% endif %}{% endfor %}
+            {% for author in book.authors %}<a href="/?author={{ author|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}" data-catalog-criteria-link>{{ author|author_name }}</a>{% if not loop.last %}<span aria-hidden="true">,</span> {% endif %}{% endfor %}
           </p>
         {% endif %}
         {% if book.series %}
           <p class="book-detail__series">
             <span class="book-detail__label">Series</span>
-            <a href="/?series={{ book.series|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}">{{ book.series }}</a>{% if book.series_number %} <span>#{{ book.series_number }}</span>{% endif %}
+            <a href="/?series={{ book.series|urlencode }}{% if availability_query %}&amp;{{ availability_query }}{% endif %}" data-catalog-criteria-link>{{ book.series }}</a>{% if book.series_number %} <span>#{{ book.series_number }}</span>{% endif %}
           </p>
         {% endif %}
       </div>

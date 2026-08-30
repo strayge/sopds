@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal, cast, override
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -43,6 +43,7 @@ from sopds.acquisition.contracts import (
 )
 from sopds.acquisition.service import content_disposition
 from sopds.catalog.contracts import (
+    BookSummary,
     Catalog,
     CatalogFilters,
     CatalogInputError,
@@ -51,6 +52,7 @@ from sopds.catalog.contracts import (
     FilterOption,
     SearchField,
 )
+from sopds.catalog.search import normalize_text
 from sopds.conversion.contracts import (
     ConversionResult,
     ConversionShutdownError,
@@ -72,7 +74,7 @@ from sopds.web.csrf import issue_csrf_token, validate_csrf_token
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _LOGGER = logging.getLogger(__name__)
-_WEB_PAGE_SIZE = 200
+_WEB_RESULT_LIMIT = 1_000
 _MAX_SELECTED_BODY_BYTES = 8_388_608
 _SELECTED_ARCHIVE_FILENAME = "selected-books.zip"
 _CSRF_ERROR_MESSAGE = "This page has expired. Reload it and try again."
@@ -220,7 +222,6 @@ def _catalog_request(
     series: str | None,
     include_missed: bool,
     include_hidden: bool,
-    cursor: str | None,
 ) -> CatalogRequest:
     return CatalogRequest(
         query=q,
@@ -232,19 +233,18 @@ def _catalog_request(
         series=series or None,
         include_missed=include_missed,
         include_hidden=include_hidden,
-        cursor=cursor or None,
-        page_size=_WEB_PAGE_SIZE,
+        cursor=None,
+        page_size=_WEB_RESULT_LIMIT,
     )
 
 
-def _catalog_url(path: str, catalog_request: CatalogRequest, cursor: str | None) -> str:
+def _catalog_url(path: str, catalog_request: CatalogRequest) -> str:
     values = {
         "q": catalog_request.query,
         "search_field": catalog_request.search_field.value,
         "language": catalog_request.language or "",
         "genre": catalog_request.genre or "",
         "original_format": catalog_request.original_format or "",
-        "cursor": cursor or "",
     }
     if catalog_request.author is not None:
         values["author"] = catalog_request.author
@@ -336,17 +336,6 @@ def _scope_removal_url(catalog_request: CatalogRequest, scope: Literal["author",
     return f"/?{urlencode(values)}"
 
 
-def _next_urls(
-    catalog_request: CatalogRequest, next_cursor: str | None
-) -> tuple[str | None, str | None]:
-    if next_cursor is None:
-        return None, None
-    return (
-        _catalog_url("/", catalog_request, next_cursor),
-        _catalog_url("/catalog-fragment", catalog_request, next_cursor),
-    )
-
-
 def _availability_query(include_missed: bool, include_hidden: bool) -> str:
     return urlencode(
         {
@@ -360,43 +349,121 @@ def _availability_query(include_missed: bool, include_hidden: bool) -> str:
     )
 
 
-def _detail_query(catalog_request: CatalogRequest) -> str:
-    values = {
-        "return_to": _catalog_url("/", catalog_request, catalog_request.cursor),
-    }
-    if catalog_request.include_missed:
+def _availability_suffix(include_missed: bool, include_hidden: bool) -> str:
+    query = _availability_query(include_missed, include_hidden)
+    return f"?{query}" if query else ""
+
+
+def _exact_scope_url(
+    scope: Literal["author", "series"],
+    value: str,
+    *,
+    include_missed: bool,
+    include_hidden: bool,
+) -> str:
+    values: dict[str, str] = {scope: value}
+    if include_missed:
         values["include_missed"] = "true"
-    if catalog_request.include_hidden:
+    if include_hidden:
         values["include_hidden"] = "true"
-    return urlencode(values)
+    return f"/?{urlencode(values)}"
 
 
-def _validated_return_url(value: str | None) -> str | None:
-    if (
-        not value
-        or value.startswith("//")
-        or "\\" in value
-        or "#" in value
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
-        return None
-    for index, character in enumerate(value):
-        if character == "%" and (
-            index + 2 >= len(value)
-            or any(digit not in "0123456789abcdefABCDEF" for digit in value[index + 1 : index + 3])
-        ):
-            return None
+def _normalized_source_format(value: str) -> str | None:
     try:
-        parsed = urlsplit(value)
+        return normalize_format(value)
     except ValueError:
         return None
-    if parsed.scheme or parsed.netloc or parsed.fragment:
-        return None
-    if parsed.path == "/selected":
-        return value if value == "/selected" else None
-    if parsed.path != "/":
-        return None
-    return value
+
+
+def _catalog_book_payload(
+    request: Request,
+    book: BookSummary,
+    catalog_request: CatalogRequest,
+) -> dict[str, object]:
+    path_id = quote(book.public_id, safe="")
+    suffix = _availability_suffix(
+        catalog_request.include_missed,
+        catalog_request.include_hidden,
+    )
+    available_download = book.downloadable and book.availability.value != "missed"
+    source_format = _normalized_source_format(book.original_format)
+    read_url = (
+        f"/books/{path_id}/read{suffix}"
+        if available_download
+        and source_format in {"fb2", "epub"}
+        and book.size <= _READER_SOURCE_LIMIT
+        else None
+    )
+    conversions = (
+        [
+            {
+                "url": f"/books/{path_id}/download/{choice.key}",
+                "label": choice.label,
+            }
+            for choice in _additional_download_formats(request, book.original_format)
+        ]
+        if available_download
+        else []
+    )
+    return {
+        "publicId": book.public_id,
+        "title": book.title,
+        "titleSortKey": normalize_text(book.title),
+        "authors": [
+            {
+                "raw": author,
+                "display": _format_author_name(author),
+                "sortKey": normalize_text(author),
+                "scopeUrl": _exact_scope_url(
+                    "author",
+                    author,
+                    include_missed=catalog_request.include_missed,
+                    include_hidden=catalog_request.include_hidden,
+                ),
+            }
+            for author in book.authors
+        ],
+        "series": (
+            {
+                "name": book.series,
+                "sortKey": normalize_text(book.series),
+                "number": book.series_number,
+                "scopeUrl": _exact_scope_url(
+                    "series",
+                    book.series,
+                    include_missed=catalog_request.include_missed,
+                    include_hidden=catalog_request.include_hidden,
+                ),
+            }
+            if book.series is not None
+            else None
+        ),
+        "language": book.language,
+        "sourceFormat": {
+            "key": source_format,
+            "label": _source_format_label(book.original_format),
+        },
+        "size": book.size,
+        "sizeLabel": _format_kilobytes(book.size),
+        "publishedDate": (
+            book.published_date.isoformat() if book.published_date is not None else None
+        ),
+        "availability": book.availability.value,
+        "selectable": available_download,
+        "downloadable": available_download,
+        "detailUrl": f"/books/{path_id}{suffix}",
+        "readUrl": read_url,
+        "originalDownload": (
+            {
+                "url": f"/books/{path_id}/download",
+                "label": _source_format_label(book.original_format),
+            }
+            if available_download
+            else None
+        ),
+        "conversions": conversions,
+    }
 
 
 async def _results_context(
@@ -410,22 +477,15 @@ async def _results_context(
         if searched
         else CatalogPage(books=(), next_cursor=None)
     )
-    next_href, next_hx_url = _next_urls(catalog_request, page.next_cursor)
     return {
         "request": request,
         "page": page,
         "catalog_request": catalog_request,
-        "next_href": next_href,
-        "next_hx_url": next_hx_url,
-        "availability_query": _availability_query(
-            catalog_request.include_missed,
-            catalog_request.include_hidden,
-        ),
-        "detail_query": _detail_query(catalog_request),
-        "additional_download_formats": {
-            book.public_id: _additional_download_formats(request, book.original_format)
-            for book in page.books
+        "catalog_payload": {
+            "books": [_catalog_book_payload(request, book, catalog_request) for book in page.books],
+            "truncated": page.next_cursor is not None,
         },
+        "truncated": page.next_cursor is not None,
         "searched": searched,
     }
 
@@ -466,7 +526,6 @@ async def index(
     series: str | None = None,
     include_missed: bool = False,
     include_hidden: bool = False,
-    cursor: str | None = None,
 ) -> Response:
     catalog_request = _catalog_request(
         q,
@@ -478,7 +537,6 @@ async def index(
         series,
         include_missed,
         include_hidden,
-        cursor,
     )
     searched = any(
         name in request.query_params
@@ -492,7 +550,6 @@ async def index(
             "series",
             "include_missed",
             "include_hidden",
-            "cursor",
         )
     )
     try:
@@ -1046,7 +1103,6 @@ async def catalog_fragment(
     series: str | None = None,
     include_missed: bool = False,
     include_hidden: bool = False,
-    cursor: str | None = None,
 ) -> Response:
     catalog_request = _catalog_request(
         q,
@@ -1058,10 +1114,9 @@ async def catalog_fragment(
         series,
         include_missed,
         include_hidden,
-        cursor,
     )
     is_htmx = request.headers.get("HX-Request") == "true"
-    push_url = _catalog_url("/", catalog_request, catalog_request.cursor)
+    push_url = _catalog_url("/", catalog_request)
     try:
         context = await _results_context(request, catalog_request)
     except CatalogInputError as error:
@@ -1147,7 +1202,6 @@ async def book_detail(
     public_id: str,
     include_missed: bool = False,
     include_hidden: bool = False,
-    return_to: str | None = None,
 ) -> Response:
     book = await _catalog(request).details(
         public_id,
@@ -1156,7 +1210,6 @@ async def book_detail(
     )
     if book is None:
         raise HTTPException(status_code=404, detail="Book not found")
-    validated_return_url = _validated_return_url(return_to)
     source_format = _reader_source_format(book.original_format)
     reader_url = None
     if book.downloadable and book.availability.value != "missed" and source_format is not None:
@@ -1172,10 +1225,6 @@ async def book_detail(
             **_shell_context(request, active_navigation="catalog"),
             "book": book,
             "reader_url": reader_url,
-            "back_href": validated_return_url or "/",
-            "back_label": (
-                "Back to results" if validated_return_url is not None else "Back to catalog"
-            ),
             "availability_query": _availability_query(include_missed, include_hidden),
             "additional_download_formats": _additional_download_formats(
                 request, book.original_format

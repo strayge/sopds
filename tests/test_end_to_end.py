@@ -1,12 +1,10 @@
 """No-network acceptance coverage across import, catalog, OPDS, and acquisition."""
 
 import asyncio
-import html
 import json
 import re
 import time
 from io import BytesIO
-from urllib.parse import parse_qs, urlsplit
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi.testclient import TestClient
@@ -158,21 +156,29 @@ def test_real_application_acceptance_path(app_config: AppConfig) -> None:
 
         search = client.get("/", params={"q": "Beacon"})
         assert search.status_code == 200
-        assert "Acceptance Beacon" in search.text
-        detail_link = re.search(rf'href="(/books/{public_id}\?[^"]+)"', search.text)
-        assert detail_link is not None
-        detail_href = html.unescape(detail_link.group(1))
-        return_to = parse_qs(urlsplit(detail_href).query)["return_to"][0]
-        assert return_to == (
-            "/?q=Beacon&search_field=all&language=&genre=&original_format=&cursor="
+        payload_match = re.search(
+            r'<script id="catalog-result-payload" type="application/json" '
+            r"data-catalog-payload>(.*?)</script>",
+            search.text,
+            re.S,
         )
+        assert payload_match is not None
+        payload = json.loads(payload_match.group(1))
+        assert payload["truncated"] is False
+        assert len(payload["books"]) == 1
+        book = payload["books"][0]
+        assert book["title"] == "Acceptance Beacon"
+        assert book["detailUrl"] == f"/books/{public_id}"
+        assert book["readUrl"] == f"/books/{public_id}/read"
+        assert book["originalDownload"]["url"] == f"/books/{public_id}/download"
+        assert "return_to" not in search.text
 
-        detail = client.get(detail_href)
+        detail = client.get(book["detailUrl"])
         assert detail.status_code == 200
         assert "Acceptance Author" in detail.text
         assert "Acceptance Series" in detail.text
         assert "Back to results" in detail.text
-        assert f'data-testid="detail-back-link" href="{html.escape(return_to)}"' in detail.text
+        assert 'data-testid="detail-back-link" href="/" data-detail-back' in detail.text
         assert (
             f'class="book-detail__download-action" '
             f'href="/books/{public_id}/download"' in detail.text

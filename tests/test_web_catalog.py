@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import override
+from typing import Any, override
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
@@ -92,6 +92,9 @@ class _Catalog:
         self.detail_libid: str | None = None
         self.detail_downloadable = True
         self.detail_size = 126_000
+        self.result_size = 126_000
+        self.result_title: str | None = None
+        self.truncated = True
         self.original_format = "fb2"
         self.available_filters = CatalogFilters(
             languages=(FilterOption("en", "en"),),
@@ -127,7 +130,7 @@ class _Catalog:
                 " Примеров,Пример,Примерович",
             )
         )
-        title = (
+        title = self.result_title or (
             "Очень длинное название книги для проверки многоязычного каталога"
             if request.query == "many-authors"
             else "A Book"
@@ -142,7 +145,9 @@ class _Catalog:
                     series_number="1",
                     language=None if request.query == "sparse-metadata" else "en",
                     original_format=self.original_format,
-                    size=126_000,
+                    size=self.result_size,
+                    member_filename="private/archive/member.fb2",
+                    libid="private-library-id",
                     published_date=(
                         None if request.query == "sparse-metadata" else date(2024, 2, 3)
                     ),
@@ -156,7 +161,7 @@ class _Catalog:
                     downloadable=request.query != "hidden-unavailable",
                 ),
             ),
-            next_cursor="next-token" if request.cursor is None else None,
+            next_cursor="next-token" if self.truncated else None,
         )
 
     async def details(
@@ -365,10 +370,26 @@ def _link_href(markup: str, test_id: str) -> str:
     return html.unescape(match.group(1))
 
 
-def _detail_href(markup: str) -> str:
-    match = re.search(r'href="(/books/public-1\?[^"]+)"', markup)
+def _catalog_payload(markup: str) -> dict[str, Any]:
+    match = re.search(
+        r'<script id="catalog-result-payload" type="application/json" '
+        r"data-catalog-payload>(.*?)</script>",
+        markup,
+        re.S,
+    )
     assert match is not None
-    return html.unescape(match.group(1))
+    payload = json.loads(match.group(1))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _detail_href(markup: str) -> str:
+    payload = _catalog_payload(markup)
+    books = payload["books"]
+    assert isinstance(books, list) and books
+    detail_url = books[0]["detailUrl"]
+    assert isinstance(detail_url, str)
+    return detail_url
 
 
 def _status(
@@ -436,196 +457,155 @@ def _csrf_form_suffix(app: FastAPI) -> str:
     return "&" + urlencode({"csrf_token": _csrf_token(app)})
 
 
-def test_full_page_fragment_filters_pagination_and_details() -> None:
+def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
     app, catalog, _ = _app()
     with TestClient(app) as client:
         page = client.get("/?q=book&search_field=title&language=en&genre=sf&original_format=fb2")
-        management = client.get("/manage")
         fragment = client.get("/catalog-fragment?q=book&search_field=author&language=en&genre=sf")
-        full_next = client.get(
-            "/?q=book&search_field=title&language=en&genre=sf&original_format=fb2&cursor=next-token"
-        )
+        ignored_cursor = client.get("/?q=book&cursor=next-token")
         detail = client.get("/books/public-1")
         missing = client.get("/books/missing")
         author_page = client.get("/", params={"author": "Тестов,Тест,"})
         series_page = client.get("/", params={"series": "Series"})
 
     assert page.status_code == 200
-    assert "A Book" in page.text
-    assert "Тестов Тест" in page.text
-    assert "Примеров Пример Примерович" in page.text
-    assert "Тестов,Тест" not in page.text
-    assert "2024-02-03" in page.text
-    assert "123 KB" in page.text
-    assert (
-        'href="/?author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"'
-        in page.text
-    )
-    assert 'href="/?series=Series"' in page.text
-    assert "Science fiction" in page.text
-    assert 'href="#main-content">Skip to main content</a>' in page.text
-    assert '<a href="/" aria-current="page">Catalog</a>' in page.text
-    assert '<a href="/manage">Manage</a>' in page.text
-    assert "/static/css/app.css" in page.text
-    assert "/static/vendor/htmx/htmx-2.0.10.min.js" in page.text
-    assert page.text.index('id="health"') < page.text.index('id="main-content"')
-    assert (
-        '<link rel="alternate" '
-        'type="application/atom+xml;profile=opds-catalog;kind=navigation" '
-        'href="https://catalog.example/root/opds/">'
-    ) in page.text
-    assert "next-token" in page.text
-    assert 'action="/"' in page.text
-    assert 'method="get"' in page.text
-    assert 'hx-get="/catalog-fragment"' in page.text
-    assert 'hx-target="#catalog-results"' in page.text
-    assert 'hx-indicator="#catalog-loading"' in page.text
-    assert 'hx-disabled-elt="#catalog-submit"' in page.text
-    assert 'id="catalog-submit" type="submit">Search library</button>' in page.text
-    assert "Catalog management" not in page.text
-    assert 'id="catalog-statistics"' not in page.text
-    assert 'id="operation-status"' not in page.text
-    assert 'hx-post="/imports"' not in page.text
-    assert 'hx-post="/imports/force"' not in page.text
-    assert 'hx-post="/database/vacuum"' not in page.text
-    assert "catalog-more-filters" not in page.text
-    assert "More filters" not in page.text
-    assert 'class="catalog-filter--genre" for="catalog-genre"' in page.text
-    assert '<option value="sf" selected>Science fiction</option>' in page.text
-    assert 'name="cursor"' not in page.text
-    assert '<option value="title" selected>Title</option>' in page.text
-    assert management.status_code == 200
-    assert management.headers["cache-control"] == "no-store"
-    assert "set-cookie" not in management.headers
-    assert "/static/csrf.js" in management.text
-    assert '<a href="/">Catalog</a>' in management.text
-    assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
-    assert "Manage catalog" in management.text
-    assert "Total books</dt><dd>20" in management.text
-    assert "Hidden books</dt><dd>3" in management.text
-    assert "Missed books</dt><dd>5" in management.text
-    assert "Active books</dt><dd>12" in management.text
-    assert "2.0 MiB" in management.text
-    assert 'datetime="2025-01-02T03:04:05+00:00"' in management.text
-    assert (
-        'id="catalog-statistics" class="catalog-statistics" hx-get="/catalog-statistics" '
-        'hx-trigger="catalogChanged from:body" hx-swap="outerHTML"' in management.text
-    )
-    assert 'hx-post="/imports"' in management.text
-    assert 'hx-post="/imports/force"' in management.text
-    assert 'hx-post="/database/vacuum"' in management.text
-    assert 'hx-confirm="Force a full catalog import?"' in management.text
-    assert 'hx-confirm="VACUUM the catalog database now?"' in management.text
-    assert "trusted network or an authenticating reverse proxy" not in management.text
-    assert "Access reminder" not in management.text
-    assert "management-trust-notice" not in management.text
-    assert management.text.count('hx-target="#operation-status"') == 3
-    assert management.text.count('hx-headers=\'{"X-CSRF-Token":"') == 3
-    assert management.text.index('id="operation-status"') > management.text.index(
-        'hx-post="/database/vacuum"'
-    )
-    assert 'class="import-status import-status--idle"' in management.text
-    assert 'role="status"' in management.text
-    assert "No import has run yet" in management.text
-    assert (
-        'href="/?q=book&amp;search_field=title&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
-        in page.text
-    )
-    assert (
-        'hx-get="/catalog-fragment?q=book&amp;search_field=title&amp;language=en&amp;genre=sf&amp;original_format=fb2&amp;cursor=next-token"'
-        in page.text
-    )
-    assert 'hx-push-url="true"' not in page.text
-    assert '<a id="catalog-pagination-position" class="catalog-pagination__next"' in page.text
-    assert (
-        '<p id="catalog-pagination-position" class="catalog-pagination__end" '
-        'tabindex="-1">End of results</p>' in full_next.text
-    )
-    assert "Next page" not in full_next.text
-    assert 'role="status" aria-live="polite">Showing 1 book' in page.text
-    assert 'class="book-tile book-tile--1" aria-hidden="true">A</div>' in page.text
-    metadata = re.search(
-        r'<ul class="result-metadata" aria-label="Book metadata">(.*?)</ul>',
-        page.text,
-        re.S,
-    )
-    assert metadata is not None
-    assert metadata.group(1).count('class="result-metadata__line"') == 2
-    assert metadata.group(1).count('class="result-metadata__separator"') == 2
-    assert metadata.group(1).index("Format:") < metadata.group(1).index("Language:")
-    assert metadata.group(1).index("Language:") < metadata.group(1).index("Published:")
-    assert metadata.group(1).index("Published:") < metadata.group(1).index("Size:")
-    assert "FB2" in metadata.group(1)
-    assert "EN" in metadata.group(1)
-    assert "2024-02-03" in metadata.group(1)
-    assert "123 KB" in metadata.group(1)
-    download_action = (
-        '<a class="result-row__download" href="/books/public-1/download" '
-        'aria-label="Download original FB2 file for A Book">FB2</a>'
-    )
-    detail_action = '<a class="result-row__action" href="/books/public-1'
-    assert download_action in page.text
-    assert ">Open details</a>" in page.text
-    assert page.text.index(download_action) < page.text.index(detail_action)
+    payload = _catalog_payload(page.text)
+    assert payload["truncated"] is True
+    assert payload["books"] == [
+        {
+            "publicId": "public-1",
+            "title": "A Book",
+            "titleSortKey": "a book",
+            "authors": [
+                {
+                    "raw": "Тестов,Тест,",
+                    "display": "Тестов Тест",
+                    "sortKey": "тестов,тест,",
+                    "scopeUrl": "/?author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C",
+                },
+                {
+                    "raw": " Примеров,Пример,Примерович",
+                    "display": "Примеров Пример Примерович",
+                    "sortKey": " примеров,пример,примерович",
+                    "scopeUrl": "/?author=+%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80%D0%BE%D0%B2%2C%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80%2C%D0%9F%D1%80%D0%B8%D0%BC%D0%B5%D1%80%D0%BE%D0%B2%D0%B8%D1%87",
+                },
+            ],
+            "series": {
+                "name": "Series",
+                "sortKey": "series",
+                "number": "1",
+                "scopeUrl": "/?series=Series",
+            },
+            "language": "en",
+            "sourceFormat": {"key": "fb2", "label": "FB2"},
+            "size": 126_000,
+            "sizeLabel": "123 KB",
+            "publishedDate": "2024-02-03",
+            "availability": "active",
+            "selectable": True,
+            "downloadable": True,
+            "detailUrl": "/books/public-1",
+            "readUrl": "/books/public-1/read",
+            "originalDownload": {"url": "/books/public-1/download", "label": "FB2"},
+            "conversions": [
+                {"url": "/books/public-1/download/epub", "label": "EPUB"},
+                {"url": "/books/public-1/download/azw3", "label": "AZW3"},
+            ],
+        }
+    ]
+    assert "Showing the first 1 matching books in title order" in page.text
+    assert 'aria-label="Result view"' in page.text
+    assert 'data-catalog-view="flat" aria-pressed="true"' in page.text
+    assert page.text.count("data-catalog-result-view") == 1
+    assert "JavaScript is required to display catalog results" in page.text
+    assert "result-row--catalog" not in page.text
+    assert "catalog-pagination" not in page.text
+    assert "next-token" not in page.text
+    assert "/static/catalog.js" in page.text
+    assert "private/archive/member.fb2" not in page.text
+    assert "private-library-id" not in page.text
     assert fragment.status_code == 200
     assert fragment.headers["HX-Push-Url"] == (
-        "/?q=book&search_field=author&language=en&genre=sf&original_format=&cursor="
+        "/?q=book&search_field=author&language=en&genre=sf&original_format="
     )
-    assert "/catalog-fragment" not in fragment.headers["HX-Push-Url"]
     assert "<html" not in fragment.text
-    assert full_next.status_code == 200
-    assert (
-        CatalogRequest(
-            query="book",
-            search_field=SearchField.TITLE,
-            language="en",
-            genre="sf",
-            original_format="fb2",
-            cursor="next-token",
-            page_size=200,
-        )
-        in catalog.requests
-    )
-    assert detail.status_code == 200
-    assert '<a href="/" aria-current="page">Catalog</a>' in detail.text
-    assert "/static/css/app.css" in detail.text
-    assert "/static/vendor/htmx/htmx-2.0.10.min.js" in detail.text
-    assert "Application is healthy" in detail.text
-    assert "/health-fragment" not in detail.text
-    assert "Original format" in detail.text
-    assert "Тестов Тест" in detail.text
-    assert "Примеров Пример Примерович" in detail.text
-    assert "Тестов,Тест" not in detail.text
-    assert (
-        'href="/?author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"'
-        in detail.text
-    )
-    assert 'href="/?series=Series"' in detail.text
-    assert "<dt>File size</dt>" in detail.text
-    assert "<dd>123 KB</dd>" in detail.text
-    assert "Back to catalog" in detail.text
-    assert "availability-badge--active" not in detail.text
-    assert "Original file · 123 KB" in detail.text
-    assert 'aria-label="Download original FB2 file for A Book">FB2</a>' in detail.text
-    assert 'href="/books/public-1/download/epub"' in detail.text
-    assert 'href="/books/public-1/download/azw3"' in detail.text
-    assert "Published" not in detail.text
-    assert "Rating" not in detail.text
-    assert "Keywords" not in detail.text
-    assert "Library ID" not in detail.text
-    assert missing.status_code == 404
+    assert ignored_cursor.status_code == 200
     assert author_page.status_code == 200
     assert series_page.status_code == 200
-    assert CatalogRequest(author="Тестов,Тест,", page_size=200) in catalog.requests
-    assert CatalogRequest(series="Series", page_size=200) in catalog.requests
+    assert all(request.cursor is None for request in catalog.requests)
+    assert CatalogRequest(author="Тестов,Тест,", page_size=1_000) in catalog.requests
+    assert CatalogRequest(series="Series", page_size=1_000) in catalog.requests
     assert catalog.requests[0] == CatalogRequest(
         query="book",
         search_field=SearchField.TITLE,
         language="en",
         genre="sf",
         original_format="fb2",
-        page_size=200,
+        page_size=1_000,
     )
+    assert detail.status_code == 200
+    assert _link_href(detail.text, "detail-back-link") == "/"
+    assert "Back to results" in detail.text
+    assert "return_to" not in detail.text
+    assert missing.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("source_format", "size", "readable"),
+    [
+        ("fb2", 64 * 1024 * 1024, True),
+        ("epub", 64 * 1024 * 1024, True),
+        ("fb2", 64 * 1024 * 1024 + 1, False),
+        ("azw3", 1, False),
+    ],
+)
+def test_catalog_payload_enforces_result_reader_eligibility(
+    source_format: str,
+    size: int,
+    readable: bool,
+) -> None:
+    app, catalog, _ = _app()
+    catalog.original_format = source_format
+    catalog.result_size = size
+
+    with TestClient(app) as client:
+        response = client.get("/?q=book")
+
+    book = _catalog_payload(response.text)["books"][0]
+    assert (book["readUrl"] is not None) is readable
+    assert book["downloadable"] is True
+    assert book["originalDownload"]["url"] == "/books/public-1/download"
+
+
+def test_catalog_payload_is_script_safe_and_complete_status_is_truthful() -> None:
+    app, catalog, _ = _app()
+    catalog.result_title = '</script><img src=x onerror="alert(1)"> Ёж'
+    catalog.truncated = False
+
+    with TestClient(app) as client:
+        response = client.get("/?q=hostile")
+
+    assert response.status_code == 200
+    assert "Loaded 1 book in title order." in response.text
+    assert "More books match" not in response.text
+    assert "</script><img" not in response.text
+    assert r"\u003c/script\u003e\u003cimg" in response.text
+    book = _catalog_payload(response.text)["books"][0]
+    assert book["title"] == catalog.result_title
+    assert book["titleSortKey"] == '</script><img src=x onerror="alert(1)"> еж'
+    assert _catalog_payload(response.text)["truncated"] is False
+
+
+def test_catalog_no_results_preserves_server_rendered_recovery_copy() -> None:
+    app, _, _ = _app()
+    with TestClient(app) as client:
+        response = client.get("/?q=none")
+
+    assert response.status_code == 200
+    assert "No books found" in response.text
+    assert "Try a broader search" in response.text
+    assert "data-catalog-root" not in response.text
+    assert "catalog-result-payload" not in response.text
 
 
 def test_manage_page_groups_counts_localizes_times_and_preserves_action_contracts() -> None:
@@ -742,7 +722,7 @@ def test_htmx_catalog_validation_error_swaps_complete_form_and_updates_history()
     assert htmx_response.status_code == 200
     assert 'class="error" role="alert">Invalid catalog search</p>' in htmx_response.text
     assert htmx_response.headers["HX-Push-Url"] == (
-        "/?q=invalid&search_field=title&language=en&genre=sf&original_format=fb2&cursor="
+        "/?q=invalid&search_field=title&language=en&genre=sf&original_format=fb2"
         "&include_missed=true&include_hidden=true"
     )
     form = htmx_response.text[htmx_response.text.index("<form") :]
@@ -819,7 +799,6 @@ def test_htmx_filter_generation_races_return_alert_without_incomplete_form(
     assert 'hx-swap-oob="outerHTML"' not in response.text
     assert response.headers["HX-Push-Url"] == (
         f"/?q={query}&search_field=title&language=en&genre=sf&original_format=fb2"
-        "&cursor=current-page"
     )
     assert recovered.status_code == 200
     assert catalog.filter_calls == 2
@@ -851,7 +830,7 @@ def test_htmx_catalog_response_replaces_complete_current_form_out_of_band() -> N
     assert 'hx-swap-oob="outerHTML"' not in initial.text
     assert active.status_code == 200
     assert active.headers["HX-Push-Url"].endswith(
-        "&cursor=next-token&author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"
+        "&author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"
         "&series=Series&include_missed=true&include_hidden=true"
     )
     form = active.text[active.text.index("<form") : active.text.index("</form>")]
@@ -873,7 +852,7 @@ def test_htmx_catalog_response_replaces_complete_current_form_out_of_band() -> N
     assert "Include hidden" in form
     assert (
         'id="catalog-clear-action" class="catalog-clear" href="/" '
-        'aria-label="Clear search and filters">Clear all</a>' in form
+        'data-catalog-criteria-link aria-label="Clear search and filters">Clear all</a>' in form
     )
     assert 'name="cursor"' not in form
 
@@ -929,26 +908,37 @@ def test_optional_missed_and_hidden_search_scopes_are_preserved() -> None:
     assert "catalog-more-filters" not in page.text
     assert "Include missing" in page.text
     assert "Include hidden" in page.text
-    assert 'class="availability-badge availability-badge--hidden">Hidden</span>' in page.text
-    detail_href = _detail_href(page.text)
-    detail_query = parse_qs(urlsplit(detail_href).query)
-    assert detail_query["include_missed"] == ["true"]
-    assert detail_query["include_hidden"] == ["true"]
-    assert detail_query["return_to"] == [
-        "/?q=hidden&search_field=all&language=&genre=&original_format=&cursor="
-        "&include_missed=true&include_hidden=true"
-    ]
+    hidden_book = _catalog_payload(page.text)["books"][0]
+    assert hidden_book["availability"] == "hidden"
+    assert hidden_book["detailUrl"] == ("/books/public-1?include_missed=true&include_hidden=true")
+    assert hidden_book["readUrl"] == (
+        "/books/public-1/read?include_missed=true&include_hidden=true"
+    )
+    assert parse_qs(urlsplit(hidden_book["authors"][0]["scopeUrl"]).query) == {
+        "author": ["Тестов,Тест,"],
+        "include_missed": ["true"],
+        "include_hidden": ["true"],
+    }
+    assert parse_qs(urlsplit(hidden_book["series"]["scopeUrl"]).query) == {
+        "series": ["Series"],
+        "include_missed": ["true"],
+        "include_hidden": ["true"],
+    }
     assert fragment.status_code == 200
-    assert 'class="availability-badge availability-badge--missed">Missed</span>' in fragment.text
-    assert 'class="result-row__download"' not in fragment.text
-    assert ">Open details</a>" in fragment.text
+    missed_book = _catalog_payload(fragment.text)["books"][0]
+    assert missed_book["availability"] == "missed"
+    assert missed_book["selectable"] is False
+    assert missed_book["downloadable"] is False
+    assert missed_book["readUrl"] is None
+    assert missed_book["originalDownload"] is None
+    assert missed_book["conversions"] == []
     assert fragment.headers["HX-Push-Url"].endswith("&include_missed=true&include_hidden=true")
     assert (
-        CatalogRequest(query="hidden", include_missed=True, include_hidden=True, page_size=200)
+        CatalogRequest(query="hidden", include_missed=True, include_hidden=True, page_size=1_000)
         in catalog.requests
     )
     assert (
-        CatalogRequest(query="missed", include_missed=True, include_hidden=True, page_size=200)
+        CatalogRequest(query="missed", include_missed=True, include_hidden=True, page_size=1_000)
         in catalog.requests
     )
 
@@ -961,14 +951,17 @@ def test_unavailable_hidden_book_has_no_catalog_or_detail_download_action() -> N
         detail = client.get("/books/public-1?include_hidden=true")
 
     assert results.status_code == 200
-    assert 'class="availability-badge availability-badge--hidden">Hidden</span>' in results.text
-    assert 'class="result-row__download"' not in results.text
+    book = _catalog_payload(results.text)["books"][0]
+    assert book["availability"] == "hidden"
+    assert book["selectable"] is False
+    assert book["originalDownload"] is None
+    assert book["conversions"] == []
     assert detail.status_code == 200
     assert "Original file unavailable" in detail.text
     assert 'href="/books/public-1/download"' not in detail.text
 
 
-def test_result_detail_link_preserves_exact_catalog_context() -> None:
+def test_result_detail_link_is_clean_and_preserves_only_availability_flags() -> None:
     app, catalog, _ = _app()
     params = {
         "q": "книга",
@@ -987,20 +980,10 @@ def test_result_detail_link_preserves_exact_catalog_context() -> None:
         detail_href = _detail_href(results.text)
         detail = client.get(detail_href)
 
-    expected_return = (
-        "/?q=%D0%BA%D0%BD%D0%B8%D0%B3%D0%B0&search_field=title&language=ru&genre=sf"
-        "&original_format=fb2&cursor=opaque%2Ftoken"
-        "&author=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%2C%D0%A2%D0%B5%D1%81%D1%82%2C"
-        "&series=Series+%26+More&include_missed=true&include_hidden=true"
-    )
-    query = parse_qs(urlsplit(detail_href).query)
-    assert query == {
-        "return_to": [expected_return],
-        "include_missed": ["true"],
-        "include_hidden": ["true"],
-    }
+    assert detail_href == "/books/public-1?include_missed=true&include_hidden=true"
+    assert "return_to" not in detail_href
     assert detail.status_code == 200
-    assert _link_href(detail.text, "detail-back-link") == expected_return
+    assert _link_href(detail.text, "detail-back-link") == "/"
     assert "Back to results" in detail.text
     assert catalog.detail_requests[-1] == (True, True)
     assert (
@@ -1010,42 +993,19 @@ def test_result_detail_link_preserves_exact_catalog_context() -> None:
     assert 'href="/?series=Series&amp;include_missed=true&amp;include_hidden=true"' in detail.text
 
 
-@pytest.mark.parametrize(
-    "return_to",
-    [
-        "https://example.invalid/?q=book",
-        "//example.invalid/?q=book",
-        "///?q=book",
-        "",
-        "?q=book",
-        "%2F%3Fq%3Dbook",
-        "/?q=book#section",
-        "/?q=book\\catalog",
-        "/?q=book\nnext",
-        "/manage?q=book",
-        "relative",
-        "/?q=%ZZ",
-        "//[invalid",
-    ],
-)
-def test_book_detail_rejects_unsafe_return_urls(return_to: str) -> None:
+def test_book_detail_ignores_obsolete_return_context() -> None:
     app, _, _ = _app()
     with TestClient(app) as client:
-        response = client.get("/books/public-1", params={"return_to": return_to})
+        response = client.get(
+            "/books/public-1",
+            params={"return_to": "https://example.invalid/?q=book"},
+        )
 
     assert response.status_code == 200
     assert _link_href(response.text, "detail-back-link") == "/"
-    assert "Back to catalog" in response.text
-
-
-def test_book_detail_accepts_catalog_root_without_a_query() -> None:
-    app, _, _ = _app()
-    with TestClient(app) as client:
-        response = client.get("/books/public-1", params={"return_to": "/"})
-
-    assert response.status_code == 200
-    assert _link_href(response.text, "detail-back-link") == "/"
+    assert "data-detail-back" in response.text
     assert "Back to results" in response.text
+    assert "example.invalid" not in response.text
 
 
 def test_book_detail_read_action_is_secondary_and_omits_return_context() -> None:
@@ -1397,8 +1357,8 @@ def test_active_scopes_are_visible_preserved_and_removable_without_cursor() -> N
     )
     assert 'name="cursor"' not in page.text
     assert (
-        'class="catalog-clear" href="/" aria-label="Clear search and filters">Clear all</a>'
-        in page.text
+        'class="catalog-clear" href="/" data-catalog-criteria-link '
+        'aria-label="Clear search and filters">Clear all</a>' in page.text
     )
 
 
@@ -1408,26 +1368,17 @@ def test_long_author_lists_use_native_overflow_disclosure() -> None:
         page = client.get("/?q=many-authors")
 
     assert page.status_code == 200
-    assert "Очень длинное название книги для проверки многоязычного каталога" in page.text
-    assert 'aria-hidden="true">\u041e</div>' in page.text
-    assert "Тестов Тест" in page.text
-    assert "Примеров Пример Примерович" in page.text
-    assert "Third Author" in page.text
-    assert '<details class="author-overflow">' in page.text
-    assert "<summary>+2 more</summary>" in page.text
-    assert page.text.count('class="result-row__author-token"') == 5
-    assert re.search(
-        r'class="result-row__author-token"><a [^>]+>Тестов Тест</a>'
-        r'<span aria-hidden="true">,</span></span>',
-        page.text,
-    )
-    assert re.search(
-        r'class="result-row__author-token"><a [^>]+>Fourth Author</a>'
-        r'<span aria-hidden="true">,</span></span>',
-        page.text,
-    )
-    assert "Fourth Author" in page.text
-    assert "Fifth Author" in page.text
+    book = _catalog_payload(page.text)["books"][0]
+    assert book["title"] == "Очень длинное название книги для проверки многоязычного каталога"
+    assert [author["display"] for author in book["authors"]] == [
+        "Тестов Тест",
+        "Примеров Пример Примерович",
+        "Third Author",
+        "Fourth Author",
+        "Fifth Author",
+    ]
+    assert "author-overflow" not in page.text
+    assert "result-row__author-token" not in page.text
 
 
 def test_catalog_metadata_groups_two_lines_without_dangling_separators() -> None:
@@ -1436,18 +1387,13 @@ def test_catalog_metadata_groups_two_lines_without_dangling_separators() -> None
         page = client.get("/?q=sparse-metadata")
 
     assert page.status_code == 200
-    metadata = re.search(
-        r'<ul class="result-metadata" aria-label="Book metadata">(.*?)</ul>',
-        page.text,
-        re.S,
-    )
-    assert metadata is not None
-    assert metadata.group(1).count('class="result-metadata__line"') == 2
-    assert "Format:" in metadata.group(1)
-    assert "Size:" in metadata.group(1)
-    assert "Language:" not in metadata.group(1)
-    assert "Published:" not in metadata.group(1)
-    assert "result-metadata__separator" not in metadata.group(1)
+    book = _catalog_payload(page.text)["books"][0]
+    assert book["sourceFormat"] == {"key": "fb2", "label": "FB2"}
+    assert book["size"] == 126_000
+    assert book["sizeLabel"] == "123 KB"
+    assert book["language"] is None
+    assert book["publishedDate"] is None
+    assert "result-metadata" not in page.text
 
 
 def test_utility_workspace_structure_keeps_catalog_and_management_separate() -> None:
@@ -1475,12 +1421,10 @@ def test_utility_workspace_structure_keeps_catalog_and_management_separate() -> 
     assert toolbar_start < catalog.text.index('id="catalog-loading"') < form_end
     assert toolbar_start < catalog.text.index('id="catalog-clear-action"') < form_end
     assert "catalog-search__footer" not in catalog.text
-    assert re.search(
-        r'class="result-row__body">.*?</div>\s*<ul class="result-metadata"',
-        catalog.text,
-        re.S,
-    )
-    assert ">Open details</a>" in catalog.text
+    assert "data-catalog-sort-controls" in catalog.text
+    assert "data-catalog-result-view" in catalog.text
+    assert "data-catalog-payload" in catalog.text
+    assert "result-row__body" not in catalog.text
     assert 'id="catalog-statistics"' not in catalog.text
 
     assert management.status_code == 200
@@ -1595,7 +1539,8 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert 'aria-label="Remove unknown selection missing"' in preview.text
     assert 'data-selected-summary tabindex="-1"' in preview.text
     assert "Reader One/Selected Book.fb2" not in preview.text
-    assert 'href="/books/public-1?return_to=%2Fselected"' in preview.text
+    assert 'href="/books/public-1"' in preview.text
+    assert "return_to" not in preview.text
     assert download.status_code == 200
     assert download.content == archive.body
     assert download.headers["content-type"] == "application/zip"
@@ -1649,11 +1594,14 @@ def test_catalog_selection_hooks_only_render_for_downloadable_non_missed_books()
         unavailable = client.get("/?q=hidden-unavailable&include_hidden=true")
         management = client.get("/manage")
 
-    assert 'data-selection-checkbox data-public-id="public-1"' in available.text
-    assert "data-selection-control hidden" in available.text
-    assert "availability-badge--active" not in available.text
-    assert "data-selection-checkbox" not in missed.text
-    assert "data-selection-checkbox" not in unavailable.text
+    available_book = _catalog_payload(available.text)["books"][0]
+    missed_book = _catalog_payload(missed.text)["books"][0]
+    unavailable_book = _catalog_payload(unavailable.text)["books"][0]
+    assert available_book["selectable"] is True
+    assert missed_book["selectable"] is False
+    assert unavailable_book["selectable"] is False
+    for response in (available, missed, unavailable):
+        assert "data-selection-checkbox" not in response.text
     for response in (available, missed, unavailable, management):
         assert "<span data-selection-count hidden>0</span>" in response.text
         assert (
@@ -1740,8 +1688,9 @@ def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_path
     assert 'aria-label="Remove unknown selection unknown-1"' in preview.text
     assert "Writer Hidden/Hidden Book.epub" not in preview.text
     assert "private/path/key" not in preview.text
-    assert 'href="/books/hidden-1?return_to=%2Fselected&amp;include_hidden=true"' in preview.text
-    assert 'href="/books/missed-1?return_to=%2Fselected&amp;include_missed=true"' in preview.text
+    assert 'href="/books/hidden-1?include_hidden=true"' in preview.text
+    assert 'href="/books/missed-1?include_missed=true"' in preview.text
+    assert "return_to" not in preview.text
 
 
 def test_selected_preview_distinguishes_unsupported_rows_and_capabilities() -> None:
@@ -2497,17 +2446,15 @@ def test_selected_download_closes_staged_archive_if_response_creation_fails(
     assert archive.last_file is not None and archive.last_file.closed
 
 
-def test_book_detail_accepts_exact_selected_return_url() -> None:
+def test_book_detail_selected_return_context_is_client_owned() -> None:
     app, _, _ = _app()
     with TestClient(app) as client:
         selected = client.get("/books/public-1", params={"return_to": "/selected"})
-        selected_query = client.get(
-            "/books/public-1", params={"return_to": "/selected?unexpected=true"}
-        )
 
-    assert _link_href(selected.text, "detail-back-link") == "/selected"
+    assert _link_href(selected.text, "detail-back-link") == "/"
+    assert "data-detail-back" in selected.text
     assert "Back to results" in selected.text
-    assert _link_href(selected_query.text, "detail-back-link") == "/"
+    assert "return_to" not in selected.text
 
 
 @pytest.mark.parametrize(
@@ -2530,13 +2477,18 @@ def test_download_controls_show_only_actual_non_duplicate_conversions(
         detail = client.get("/books/public-1")
 
     label = source_format.upper()
-    assert f'aria-label="Download original {label} file for A Book">{label}</a>' in page.text
+    book = _catalog_payload(page.text)["books"][0]
+    assert book["originalDownload"] == {
+        "url": "/books/public-1/download",
+        "label": label,
+    }
+    assert [conversion["url"].rsplit("/", 1)[-1] for conversion in book["conversions"]] == [
+        target for target in ("epub", "azw3") if target in targets
+    ]
     assert f'aria-label="Download original {label} file for A Book">{label}</a>' in detail.text
     for target in ("epub", "azw3"):
         path = f"/books/public-1/download/{target}"
-        assert (path in page.text) is (target in targets)
         assert (path in detail.text) is (target in targets)
-    assert ('<details class="download-menu">' in page.text) is bool(targets)
     assert ('<details class="download-menu download-menu--detail">' in detail.text) is bool(targets)
 
 
