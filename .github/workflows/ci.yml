@@ -19,6 +19,9 @@ jobs:
           python-version: "3.14"
           cache: pip
           cache-dependency-path: requirements.dev.freeze.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - name: Install dependencies
         run: python -m pip install -r requirements.dev.freeze.txt
       - name: Ruff lint
@@ -29,5 +32,7 @@ jobs:
         run: mypy src tests
       - name: Import boundaries
         run: lint-imports
+      - name: Browser behavior tests
+        run: node --test tests/*.test.mjs
       - name: Tests
         run: pytest
