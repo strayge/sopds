@@ -20,6 +20,7 @@ from sopds.conversion.adapters import (
     Fb2ToEpubConverter,
 )
 from sopds.conversion.cache import ArtifactCache
+from sopds.conversion.contracts import Converter
 from sopds.conversion.policy import OUTPUT_POLICY
 from sopds.conversion.registry import ConverterRegistry
 from sopds.conversion.service import ConversionService
@@ -58,13 +59,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 repository, ZipOriginalStore(config.catalog.archive_root)
             )
             resources.push_async_callback(_observed_cleanup, "acquisition", acquisition.shutdown)
-            registry = ConverterRegistry(
-                (
-                    Fb2ToEpubConverter("/usr/local/bin/fbc"),
-                    Fb2ToAzw3Converter("/usr/local/bin/fbc", "/usr/local/bin/kindling-cli"),
-                    EpubToAzw3Converter("/usr/local/bin/kindling-cli"),
-                )
+            converter_candidates: tuple[Converter, ...] = (
+                Fb2ToEpubConverter("/usr/local/bin/fbc"),
+                Fb2ToAzw3Converter("/usr/local/bin/fbc", "/usr/local/bin/kindling-cli"),
+                EpubToAzw3Converter("/usr/local/bin/kindling-cli"),
             )
+            healthy_converters: list[Converter] = []
+            for converter in converter_candidates:
+                try:
+                    healthy = converter.check_health()
+                except Exception as error:
+                    _LOGGER.warning(
+                        f"Converter health check failed phase=converter_health "
+                        f"converter={converter.identity.name} "
+                        f"failure_type={type(error).__name__}"
+                    )
+                    continue
+                if not healthy:
+                    _LOGGER.warning(
+                        f"Converter health check failed phase=converter_health "
+                        f"converter={converter.identity.name} reason=executable_unavailable"
+                    )
+                    continue
+                healthy_converters.append(converter)
+            registry = ConverterRegistry(healthy_converters)
             conversion_cache = ArtifactCache(
                 config.conversion.cache_dir, config.conversion.cache_ttl_seconds
             )

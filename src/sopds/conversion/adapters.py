@@ -31,6 +31,13 @@ def _invalid_output() -> InvalidConversionOutputError:
     return InvalidConversionOutputError("Converter produced invalid output")
 
 
+def _executable_file(path: str) -> bool:
+    try:
+        return stat.S_ISREG(Path(path).stat().st_mode) and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
 def _open_regular_artifact(path: Path) -> tuple[BinaryIO, int]:
     """Bind validation to one nonblocking descriptor without following substitutions."""
     nofollow = getattr(os, "O_NOFOLLOW", None)
@@ -215,6 +222,9 @@ class Fb2ToEpubConverter:
     def capabilities(self) -> tuple[ConversionCapability, ...]:
         return (_EPUB_CAPABILITY,)
 
+    def check_health(self) -> bool:
+        return _executable_file(self._executable)
+
     async def convert(self, source_path: Path, target_format: str, output_path: Path) -> None:
         del target_format
         await _remove(output_path)
@@ -252,6 +262,9 @@ class EpubToAzw3Converter:
     @property
     def capabilities(self) -> tuple[ConversionCapability, ...]:
         return (_EPUB_AZW3_CAPABILITY,)
+
+    def check_health(self) -> bool:
+        return _executable_file(self._executable)
 
     async def convert(self, source_path: Path, target_format: str, output_path: Path) -> None:
         del target_format
@@ -293,6 +306,11 @@ class Fb2ToAzw3Converter:
     @property
     def capabilities(self) -> tuple[ConversionCapability, ...]:
         return (_FB2_AZW3_CAPABILITY,)
+
+    def check_health(self) -> bool:
+        return _executable_file(self._fbc_executable) and _executable_file(
+            self._kindling_executable
+        )
 
     async def convert(self, source_path: Path, target_format: str, output_path: Path) -> None:
         del target_format

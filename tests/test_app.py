@@ -110,6 +110,9 @@ def test_lifecycle_registers_pinned_converters_without_a_separate_conversion_api
             "sopds.conversion.process.asyncio.create_subprocess_exec",
             new_callable=AsyncMock,
         ) as execute,
+        patch("sopds.lifecycle.Fb2ToEpubConverter.check_health", return_value=True),
+        patch("sopds.lifecycle.Fb2ToAzw3Converter.check_health", return_value=True),
+        patch("sopds.lifecycle.EpubToAzw3Converter.check_health", return_value=True),
         TestClient(app),
     ):
         registry = app.state.converter_registry
@@ -130,6 +133,25 @@ def test_lifecycle_registers_pinned_converters_without_a_separate_conversion_api
             for route in app.routes
             if isinstance(route, APIRoute)
         )
+
+
+def test_lifecycle_warns_and_skips_unhealthy_converters(
+    migrated_app_config: AppConfig,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(migrated_app_config)
+    with (
+        patch("sopds.lifecycle.Fb2ToEpubConverter.check_health", return_value=True),
+        patch("sopds.lifecycle.Fb2ToAzw3Converter.check_health", return_value=False),
+        patch("sopds.lifecycle.EpubToAzw3Converter.check_health", return_value=False),
+        TestClient(app),
+    ):
+        assert len(app.state.converter_registry) == 1
+
+    assert caplog.text.count("Converter health check failed") == 2
+    assert "converter=fb2cng-kindling" in caplog.text
+    assert "converter=kindling" in caplog.text
+    assert "reason=executable_unavailable" in caplog.text
 
 
 def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig) -> None:

@@ -66,6 +66,27 @@ def _output_after(argv: tuple[str, ...], flag: str) -> Path:
     return Path(argv[argv.index(flag) + 1])
 
 
+def test_adapter_health_requires_executable_regular_files(tmp_path: Path) -> None:
+    fbc = tmp_path / "fbc"
+    kindling = tmp_path / "kindling-cli"
+    fbc.write_bytes(b"converter")
+    kindling.write_bytes(b"converter")
+    fbc.chmod(0o755)
+    kindling.chmod(0o755)
+
+    assert Fb2ToEpubConverter(str(fbc)).check_health()
+    assert EpubToAzw3Converter(str(kindling)).check_health()
+    assert Fb2ToAzw3Converter(str(fbc), str(kindling)).check_health()
+
+    kindling.chmod(0o644)
+
+    assert Fb2ToEpubConverter(str(fbc)).check_health()
+    assert not EpubToAzw3Converter(str(kindling)).check_health()
+    assert not Fb2ToAzw3Converter(str(fbc), str(kindling)).check_health()
+    assert not Fb2ToEpubConverter(str(tmp_path)).check_health()
+    assert not Fb2ToEpubConverter(str(tmp_path / "missing")).check_health()
+
+
 async def test_direct_adapters_use_exact_argv_and_pinned_identities(tmp_path: Path) -> None:
     source = tmp_path / "source input.epub"
     source.write_bytes(b"source")

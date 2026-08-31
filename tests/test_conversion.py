@@ -97,6 +97,9 @@ class _Converter:
     def capabilities(self) -> tuple[ConversionCapability, ...]:
         return self._capabilities
 
+    def check_health(self) -> bool:
+        return True
+
     async def convert(self, source_path: Path, target_format: str, output_path: Path) -> None:
         self.calls += 1
         self.started.set()
