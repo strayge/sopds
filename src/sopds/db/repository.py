@@ -804,13 +804,6 @@ class CatalogRepository:
             await CatalogState.filter(id=1).using_db(transaction).update(updated_at=revision)
             return summary
 
-    async def active_generation_id(self) -> int | None:
-        values = await (
-            CatalogState.filter(id=1).using_db(self._connection).values("active_generation_id")
-        )
-        value = values[0]["active_generation_id"] if values else None
-        return int(value) if value is not None else None
-
     async def active_snapshot(self) -> CatalogSnapshot:
         rows = await (
             CatalogState.filter(id=1)

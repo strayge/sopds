@@ -140,10 +140,6 @@ class ArtifactCache:
         self._shutdown_task: asyncio.Task[None] | None = None
         self._started = False
 
-    @property
-    def directory(self) -> Path:
-        return self._dir
-
     async def _worker(
         self,
         function: Callable[[], _T],

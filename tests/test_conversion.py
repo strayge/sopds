@@ -177,11 +177,6 @@ def test_output_policy_represents_canonical_choices_and_decision_table() -> None
     assert OUTPUT_POLICY.decision("azw3", "azw3") is OutputDecision.PASSTHROUGH
     assert OUTPUT_POLICY.decision("azw3", "epub") is OutputDecision.UNSUPPORTED
     assert OUTPUT_POLICY.decision("pdf", "epub") is OutputDecision.UNSUPPORTED
-    assert tuple(choice.key for choice in OUTPUT_POLICY.targets_for("epub")) == (
-        "original",
-        "epub",
-        "azw3",
-    )
 
 
 def test_registry_is_empty_and_normalizes_without_execution() -> None:
@@ -190,9 +185,7 @@ def test_registry_is_empty_and_normalizes_without_execution() -> None:
     registry = ConverterRegistry([converter])
 
     assert len(empty) == 0
-    assert empty.capabilities() == ()
     assert registry.resolve(" .FB2 ", "EPUB").converter is converter
-    assert registry.capabilities() == (_CAPABILITY,)
     assert converter.calls == 0
     with pytest.raises(UnsupportedConversionError):
         empty.resolve("fb2", "epub")

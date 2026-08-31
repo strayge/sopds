@@ -66,14 +66,6 @@ class OutputPolicy:
             return OutputDecision.CONVERT
         return OutputDecision.UNSUPPORTED
 
-    def targets_for(self, source_format: str) -> tuple[OutputChoice, ...]:
-        """Return every supported choice, including represented same-format pass-throughs."""
-        return tuple(
-            choice
-            for choice in self._ordered_choices
-            if self.decision(source_format, choice.key) is not OutputDecision.UNSUPPORTED
-        )
-
 
 OUTPUT_POLICY = OutputPolicy()
 

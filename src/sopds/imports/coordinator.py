@@ -76,9 +76,6 @@ class ImportCoordinator:
     async def check_for_changes(self) -> ImportResult:
         return await self._request(ImportTrigger.SCHEDULED, force=False)
 
-    async def force_import(self) -> ImportResult:
-        return await self._request(ImportTrigger.MANUAL, force=True)
-
     async def _run_reserved_manual_import(self, *, force: bool) -> ImportResult:
         try:
             return await self._request(ImportTrigger.MANUAL, force=force)

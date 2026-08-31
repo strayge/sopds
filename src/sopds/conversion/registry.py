@@ -50,9 +50,6 @@ class ConverterRegistry:
         except KeyError:
             raise UnsupportedConversionError("Requested conversion is unsupported") from None
 
-    def capabilities(self) -> tuple[ConversionCapability, ...]:
-        return tuple(self._registrations[key].capability for key in sorted(self._registrations))
-
     def __len__(self) -> int:
         return len(self._registrations)
 

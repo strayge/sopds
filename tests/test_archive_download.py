@@ -27,7 +27,6 @@ from sopds.acquisition.archive import (
     ArchiveRequest,
     ArchiveService,
     StagedArchive,
-    archive_base_path,
     build_manifest,
     normalize_extension,
     portable_path_key,
@@ -283,6 +282,10 @@ async def _archive_bytes(staged: StagedArchive) -> bytes:
     return b"".join([chunk async for chunk in staged])
 
 
+def _base_path(book: BookSummary, preset: ArchivePreset) -> str:
+    return _manifest([book.public_id], [book], preset).members[0].base_path
+
+
 @pytest.mark.parametrize(
     ("preset", "expected"),
     [
@@ -292,7 +295,7 @@ async def _archive_bytes(staged: StagedArchive) -> bytes:
     ],
 )
 def test_all_presets_use_confirmed_series_layouts(preset: ArchivePreset, expected: str) -> None:
-    assert archive_base_path(_book("book"), preset) == expected
+    assert _base_path(_book("book"), preset) == expected
 
 
 @pytest.mark.parametrize(
@@ -307,7 +310,7 @@ def test_missing_author_and_series_use_role_fallback_and_no_series_layout(
     preset: ArchivePreset, expected: str
 ) -> None:
     book = _book("book", authors=(), series=None, series_number=None)
-    assert archive_base_path(book, preset) == expected
+    assert _base_path(book, preset) == expected
 
 
 @pytest.mark.parametrize(
@@ -319,13 +322,13 @@ def test_missing_author_and_series_use_role_fallback_and_no_series_layout(
     ],
 )
 def test_missing_series_number_omits_adjacent_spacing(preset: ArchivePreset, expected: str) -> None:
-    assert archive_base_path(_book("book", series_number=None), preset) == expected
-    assert archive_base_path(_book("book", series_number=""), preset) == expected
+    assert _base_path(_book("book", series_number=None), preset) == expected
+    assert _base_path(_book("book", series_number=""), preset) == expected
 
 
 def test_empty_series_and_title_use_component_role_fallbacks() -> None:
     book = _book("book", title=" . ", series="", series_number=None)
-    assert archive_base_path(book, ArchivePreset.NESTED) == "Last First/Series/book.fb2"
+    assert _base_path(book, ArchivePreset.NESTED) == "Last First/Series/book.fb2"
 
 
 @pytest.mark.parametrize(
@@ -333,7 +336,7 @@ def test_empty_series_and_title_use_component_role_fallbacks() -> None:
     [("1", "01"), ("12", "12"), ("123", "123"), ("Part-A", "Part-A")],
 )
 def test_numeric_series_numbers_have_minimum_width_two(number: str, expected: str) -> None:
-    path = archive_base_path(_book("book", series_number=number), ArchivePreset.FLATTEN)
+    path = _base_path(_book("book", series_number=number), ArchivePreset.FLATTEN)
     assert path == f"Last First/Series {expected} - Title.fb2"
 
 
@@ -429,7 +432,7 @@ def test_windows_superscript_device_aliases_are_prefixed(
 
 def test_reserved_author_and_title_are_prefixed() -> None:
     book = _book("book", title="NUL", authors=("CON",), series=None)
-    assert archive_base_path(book, ArchivePreset.NESTED) == "_CON/_NUL.fb2"
+    assert _base_path(book, ArchivePreset.NESTED) == "_CON/_NUL.fb2"
 
 
 def test_unicode_normalization_and_casefold_create_base_collisions() -> None:
@@ -477,7 +480,7 @@ def test_sanitizer_created_collision_is_reported_and_disambiguated() -> None:
 def test_utf8_truncation_keeps_the_longest_codepoint_boundary(
     byte_limit: int, expected: str
 ) -> None:
-    assert archive_module._truncate_utf8("é界a", byte_limit) == expected
+    assert archive_module._truncate_utf8_with_length("é界a", byte_limit)[0] == expected
 
 
 def test_path_fitting_removes_from_left_component_first_on_byte_ties() -> None:
@@ -495,7 +498,7 @@ def test_component_and_complete_paths_respect_utf8_byte_limits() -> None:
         series="本" * 200,
         original_format="VERYLONGEXTENSION123456",
     )
-    path = archive_base_path(book, ArchivePreset.NESTED)
+    path = _base_path(book, ArchivePreset.NESTED)
 
     assert len(path.encode()) <= MAX_PATH_BYTES
     assert all(len(component.encode()) <= MAX_COMPONENT_BYTES for component in path.split("/"))

@@ -109,6 +109,10 @@ async def _coordinator(
         await close_database(context)
 
 
+async def _run_forced_import(coordinator: ImportCoordinator) -> ImportResult:
+    return await coordinator._request(ImportTrigger.MANUAL, force=True)
+
+
 def _query(path: Path, sql: str) -> list[tuple[object, ...]]:
     with sqlite3.connect(path) as connection:
         return connection.execute(sql).fetchall()
@@ -263,7 +267,7 @@ async def test_bulk_and_single_record_batches_persist_identical_catalogs(
         _line(FILE="third", TITLE="Third", SERIES="", SERNO="", LANG="en"),
     )
     async with _coordinator(app_config, batch_size=1) as (coordinator, _):
-        assert (await coordinator.force_import()).outcome is ImportOutcome.IMPORTED
+        assert (await _run_forced_import(coordinator)).outcome is ImportOutcome.IMPORTED
     single_record_batches = _catalog_snapshot(app_config.database.path)
 
     bulk_config = app_config.model_copy(
@@ -274,7 +278,7 @@ async def test_bulk_and_single_record_batches_persist_identical_catalogs(
         }
     )
     async with _coordinator(bulk_config, batch_size=2_000) as (coordinator, _):
-        assert (await coordinator.force_import()).outcome is ImportOutcome.IMPORTED
+        assert (await _run_forced_import(coordinator)).outcome is ImportOutcome.IMPORTED
 
     assert _catalog_snapshot(bulk_config.database.path) == single_record_batches
 
@@ -407,7 +411,7 @@ async def test_fingerprint_fast_paths_and_forced_generation(app_config: AppConfi
         stat = app_config.catalog.inpx_path.stat()
         os.utime(app_config.catalog.inpx_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         same_content = await coordinator.check_for_changes()
-        forced = await coordinator.force_import()
+        forced = await _run_forced_import(coordinator)
 
     assert first.outcome is ImportOutcome.IMPORTED
     assert unchanged.outcome is ImportOutcome.UNCHANGED
@@ -520,7 +524,7 @@ async def test_source_mutation_during_count_validation_prevents_activation(
                 )
 
         monkeypatch.setattr(repository, "validate_generation_counts", validate_then_mutate)
-        result = await coordinator.force_import()
+        result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
     assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
@@ -541,7 +545,7 @@ async def test_concurrent_request_is_not_queued(app_config: AppConfig) -> None:
             return await original(trigger, fingerprint)
 
         coordinator._service.import_source = blocked  # type: ignore[method-assign]
-        first_task = asyncio.create_task(coordinator.force_import())
+        first_task = asyncio.create_task(_run_forced_import(coordinator))
         await entered.wait()
         second = await coordinator.check_for_changes()
         release.set()
@@ -739,7 +743,7 @@ async def test_cancellation_around_atomic_setup_cleans_known_state(
                 return await original_id_counters()
 
             monkeypatch.setattr(repository, "id_counters", blocked_id_counters)
-        task = asyncio.create_task(coordinator.force_import())
+        task = asyncio.create_task(_run_forced_import(coordinator))
         await entered.wait()
         task.cancel()
         release.set()
@@ -776,7 +780,7 @@ async def test_repeated_cancellation_during_parser_cleanup_keeps_terminal_log(
     monkeypatch.setattr(service_module._ParserWorker, "_run_close", blocked_close)
     caplog.set_level("INFO", logger="sopds.imports")
     async with _coordinator(app_config) as (coordinator, _):
-        task = asyncio.create_task(coordinator.force_import())
+        task = asyncio.create_task(_run_forced_import(coordinator))
         await entered.wait()
         task.cancel()
         await asyncio.sleep(0)
@@ -826,7 +830,7 @@ async def test_cancellation_around_activation_never_fails_an_activated_generatio
                     await release.wait()
 
             monkeypatch.setattr(repository, "activate", blocked_activate)
-        task = asyncio.create_task(coordinator.force_import())
+        task = asyncio.create_task(_run_forced_import(coordinator))
         await entered.wait()
         task.cancel()
         if stage != "before":
@@ -883,7 +887,7 @@ async def test_activation_failure_while_cancellation_is_pending_uses_failure_pat
 
         monkeypatch.setattr(repository, "activate", failing_activate)
         monkeypatch.setattr(repository, "finish_failed", tracking_finish_failed)
-        task = asyncio.create_task(coordinator.force_import())
+        task = asyncio.create_task(_run_forced_import(coordinator))
         await activation_entered.wait()
         task.cancel()
         activation_release.set()
@@ -926,7 +930,7 @@ async def test_cancellation_during_failure_finalization_waits_for_database_outco
 
         monkeypatch.setattr(repository, "validate_generation_counts", failing_validation)
         monkeypatch.setattr(repository, "finish_failed", blocked_finish_failed)
-        task = asyncio.create_task(coordinator.force_import())
+        task = asyncio.create_task(_run_forced_import(coordinator))
         await finalization_entered.wait()
         task.cancel()
         await asyncio.sleep(0)
@@ -949,7 +953,7 @@ async def test_status_read_failure_after_activation_does_not_fail_catalog(
             raise sqlite3.OperationalError("status unavailable")
 
         monkeypatch.setattr(coordinator._repository, "latest_status", broken_status)
-        result = await coordinator.force_import()
+        result = await _run_forced_import(coordinator)
 
     assert result == ImportResult(ImportOutcome.IMPORTED, None)
     assert _query(app_config.database.path, "SELECT state FROM import_run") == [("succeeded",)]
@@ -983,7 +987,7 @@ async def test_oversize_mapped_metadata_fails_safely_without_activation(
 ) -> None:
     _write_inpx(app_config.catalog.inpx_path, _line(**{field: value}))
     async with _coordinator(app_config) as (coordinator, _):
-        result = await coordinator.force_import()
+        result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
     assert result.status is not None
@@ -1007,7 +1011,7 @@ async def test_nul_in_searchable_metadata_fails_safely_without_activation(
         value += ":"
     _write_inpx(app_config.catalog.inpx_path, _line(**{field: value}))
     async with _coordinator(app_config) as (coordinator, _):
-        result = await coordinator.force_import()
+        result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
     assert result.status is not None
@@ -1035,7 +1039,7 @@ async def test_failed_batch_counters_include_only_committed_books(
 ) -> None:
     _write_inpx(app_config.catalog.inpx_path, *lines)
     async with _coordinator(app_config, batch_size=batch_size) as (coordinator, _):
-        result = await coordinator.force_import()
+        result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
     assert _query(
@@ -1059,7 +1063,7 @@ async def test_projection_count_mismatch_prevents_activation(
             await original(generation_id, expected)
 
         monkeypatch.setattr(repository, "validate_generation_counts", corrupt_projection)
-        result = await coordinator.force_import()
+        result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
     assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
@@ -1076,7 +1080,7 @@ async def test_archive_symlink_escape_is_unavailable_on_import_and_refresh(
     (outside / "books.zip").touch()
     (app_config.catalog.archive_root / "nested").symlink_to(outside, target_is_directory=True)
     async with _coordinator(app_config) as (coordinator, _):
-        assert (await coordinator.force_import()).outcome is ImportOutcome.IMPORTED
+        assert (await _run_forced_import(coordinator)).outcome is ImportOutcome.IMPORTED
         imported = _query(app_config.database.path, "SELECT available FROM archive")
         await coordinator.refresh_archive_availability()
         refreshed = _query(app_config.database.path, "SELECT available FROM archive")

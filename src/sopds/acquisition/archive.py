@@ -536,12 +536,6 @@ def format_series_number(value: str | None) -> str:
     return sanitized.zfill(2) if sanitized.isdecimal() else sanitized
 
 
-def archive_base_path(book: BookSummary, preset: ArchivePreset) -> str:
-    parts = _book_path_parts(book, preset)
-    fitted = _fit_parts(parts)
-    return _parts_path(fitted)
-
-
 def portable_path_key(path: str) -> str:
     return unicodedata.normalize("NFC", path).casefold()
 
@@ -844,10 +838,6 @@ def _parts_path(parts: _PathParts, suffix: str = "") -> str:
     components = [*parts.components]
     components[-1] = f"{components[-1]}{suffix}.{parts.extension}"
     return "/".join(components)
-
-
-def _truncate_utf8(value: str, byte_limit: int) -> str:
-    return _truncate_utf8_with_length(value, byte_limit)[0]
 
 
 def _truncate_utf8_with_length(value: str, byte_limit: int) -> tuple[str, int]:

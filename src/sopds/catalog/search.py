@@ -23,10 +23,6 @@ def query_tokens(value: str) -> tuple[str, ...]:
     return tokens
 
 
-def normalized_query(value: str) -> str:
-    return " ".join(query_tokens(value))
-
-
 def fts_match_expression(
     tokens: tuple[str, ...], search_field: SearchField = SearchField.ALL
 ) -> str | None:
