@@ -60,10 +60,11 @@ def _file_signature(path: Path) -> _FileSignature | None:
 
 def _snapshot_files(package_path: Path, config_path: Path) -> _FileSnapshot:
     snapshot: _FileSnapshot = {}
-    for path in package_path.rglob("*.py"):
-        signature = _file_signature(path)
-        if signature is not None:
-            snapshot[path.resolve()] = signature
+    for pattern in ("*.py", "*.po"):
+        for path in package_path.rglob(pattern):
+            signature = _file_signature(path)
+            if signature is not None:
+                snapshot[path.resolve()] = signature
 
     config_signature = _file_signature(config_path)
     if config_signature is not None:

@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reload",
         action="store_true",
-        help="restart the development server when Python or configuration files change",
+        help="restart the development server when Python, translation, or configuration files change",
     )
     return parser
 
