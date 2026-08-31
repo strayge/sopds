@@ -10,10 +10,6 @@
     <section class="selected-toolbar" aria-labelledby="selected-options-heading">
       <div class="selected-toolbar__heading">
         <h2 id="selected-options-heading">{{ gettext("Archive options") }}</h2>
-        <p class="selected-toolbar__summary" aria-live="polite">
-          <strong data-selected-downloadable-count>0</strong> {{ gettext("downloadable") }} ·
-          <span data-selected-total-label>{{ gettext("Size") }}</span>: <span data-selected-total-size>0 bytes</span>
-        </p>
       </div>
       <form id="selected-download-form" class="selected-download-form" method="post" action="/selected/download" enctype="application/x-www-form-urlencoded">
         <input id="selected-ids" type="hidden" name="ids" value="[]" data-selected-ids>

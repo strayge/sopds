@@ -1731,6 +1731,9 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert '<option value="nested" selected>Author + series folders</option>' in page.text
     assert "Nested folders" not in page.text
     assert "data-selection-clear" in page.text
+    assert "selected-toolbar__summary" not in page.text
+    assert "data-selected-downloadable-count" not in page.text
+    assert "data-selected-total-size" not in page.text
     assert "data-selected-request-status" in page.text
     assert "data-selected-download disabled" in page.text
     assert "public-1" not in page.text

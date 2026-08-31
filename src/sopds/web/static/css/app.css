@@ -1411,7 +1411,7 @@ dd {
 }
 
 .selected-toolbar {
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-small);
   background: var(--color-surface);
@@ -1426,24 +1426,15 @@ dd {
   margin-bottom: var(--space-2);
 }
 
-.selected-toolbar__heading h2,
-.selected-toolbar__summary {
-  margin: 0;
-}
-
 .selected-toolbar__heading h2 {
+  margin: 0;
   font-size: 1rem;
-}
-
-.selected-toolbar__summary {
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
 }
 
 .selected-download-form {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-2) var(--space-4);
   align-items: end;
 }
 
@@ -1470,6 +1461,10 @@ dd {
   margin: var(--space-1) 0 0;
   color: var(--color-text-muted);
   font-size: 0.75rem;
+}
+
+.selected-request-status:empty {
+  display: none;
 }
 
 .selected-request-status--error {
