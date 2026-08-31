@@ -325,6 +325,25 @@ test("author filtering checks all authors rather than only displayed overflow au
   assert.equal(behavior.matchesFilters(book, {author: "hidden sixth"}), true);
 });
 
+test("rendered author commas stay attached to the preceding author token", () => {
+  const authors = ["A", "B", "C", "D", "E"].map((name) => ({
+    raw: name, display: name, sortKey: name.toLowerCase(), scopeUrl: `/?q=${name}&search_field=author`,
+  }));
+  const [book] = books(rawBook("many", {authors}));
+  const row = behavior.buildBookRow(book);
+  const visible = row.querySelector(".result-row__authors");
+  const overflow = row.querySelector(".author-overflow__links");
+
+  assert.deepEqual(
+    visible.children.filter((child) => child.matches(".result-row__author-token")).map((token) => token.textContent),
+    ["A,", "B,", "C"],
+  );
+  assert.deepEqual(
+    overflow.querySelectorAll(".result-row__author-token").map((token) => token.textContent),
+    ["D,", "E"],
+  );
+});
+
 test("Unicode scalar and natural text helpers do not depend on ambient locale or Number precision", () => {
   assert.equal(behavior.unicodeScalarCompare("\u{10000}", "\uE000"), 1);
   assert.ok(behavior.naturalTextCompare("Part 2", "Part 10") < 0);

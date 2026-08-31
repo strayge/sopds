@@ -548,8 +548,10 @@
   function appendAuthors(container, book, limit, i18n = DEFAULT_CATALOG_I18N) {
     const visible = book.authors.slice(0, limit);
     visible.forEach((author, index) => {
-      container.append(metadataLink(author.display, author.scopeUrl));
-      if (index < visible.length - 1) container.append(document.createTextNode(", "));
+      const token = element("span", "result-row__author-token");
+      token.append(metadataLink(author.display, author.scopeUrl));
+      if (index < visible.length - 1) token.append(document.createTextNode(","));
+      container.append(token);
     });
     if (book.authors.length > limit) {
       const disclosure = element("details", "author-overflow");
@@ -557,8 +559,10 @@
       disclosure.append(summary);
       const links = element("span", "author-overflow__links");
       book.authors.slice(limit).forEach((author, index, values) => {
-        links.append(metadataLink(author.display, author.scopeUrl));
-        if (index < values.length - 1) links.append(document.createTextNode(", "));
+        const token = element("span", "result-row__author-token");
+        token.append(metadataLink(author.display, author.scopeUrl));
+        if (index < values.length - 1) token.append(document.createTextNode(","));
+        links.append(token);
       });
       disclosure.append(links);
       container.append(disclosure);
