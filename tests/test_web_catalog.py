@@ -1586,6 +1586,18 @@ def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() 
         re.S,
     )
     assert re.search(
+        r"\.selected-table \.result-row__heading,\s*"
+        r"\.catalog-table \.result-row__heading \{[^}]*display: flex;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.selected-table \.result-row__title,\s*"
+        r"\.catalog-table \.result-row__title \{[^}]*font-size: 0\.8rem;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
         r"\.catalog-tree-author > summary > input\.catalog-tree-select,[^{]*"
         r"\.catalog-tree-series > summary > input\.catalog-tree-select \{[^}]*"
         r"margin: 0 var\(--space-3\);",
@@ -1897,6 +1909,8 @@ def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_path
     assert "Writer Hidden/Hidden Book.epub" not in preview.text
     assert "private/path/key" not in preview.text
     assert 'href="/books/hidden-1?include_hidden=true"' in preview.text
+    assert 'data-title-sort-key="hidden book"' in preview.text
+    assert "<span data-series-number>#2</span>" in preview.text
     assert 'href="/books/missed-1?include_missed=true"' in preview.text
     assert "return_to" not in preview.text
 

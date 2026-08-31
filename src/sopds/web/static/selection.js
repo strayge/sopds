@@ -11,6 +11,7 @@
   const SELECTED_VIEWS = new Set(["flat", "tree", "table"]);
   const SELECTED_TABLE_SORTS = new Set(["author", "title", "series"]);
   const SORT_DIRECTIONS = new Set(["asc", "desc"]);
+  const NATURAL_CHUNKS = /[0-9]+|[^0-9]+/g;
   const SELECTION_MESSAGE_FALLBACKS = Object.freeze({
     savedSelectionRepaired: "Saved selection was repaired.",
     selectionUnavailable: "Book selection is unavailable in this browser.",
@@ -25,6 +26,7 @@
     browseCatalog: "Browse the catalog",
     unknownAuthor: "Unknown author",
     manyAuthors: "Many authors (6+)",
+    moreAuthors: "+{count} more",
     booksWithoutSeries: "Books without series",
     unknownSelection: "Unknown selection",
     selectAllAuthor: "Select all books by {label}",
@@ -94,6 +96,11 @@
     let text = selectionI18n.messages[key] || SELECTION_MESSAGE_FALLBACKS[key] || "";
     for (const [name, value] of Object.entries(values)) text = text.replaceAll(`{${name}}`, String(value));
     return text;
+  }
+
+  function selectedTableStatusKey(status) {
+    if (status === "downloadable") return null;
+    return Object.hasOwn(SELECTION_MESSAGE_FALLBACKS, status) ? status : "unknown";
   }
 
   function formatInteger(value) {
@@ -481,6 +488,74 @@
     return normalizedLeft < normalizedRight ? -1 : 1;
   }
 
+  function selectedUnicodeScalarCompare(left, right) {
+    const leftPoints = Array.from(String(left), (value) => value.codePointAt(0));
+    const rightPoints = Array.from(String(right), (value) => value.codePointAt(0));
+    const length = Math.min(leftPoints.length, rightPoints.length);
+    for (let index = 0; index < length; index += 1) {
+      if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] < rightPoints[index] ? -1 : 1;
+    }
+    return Math.sign(leftPoints.length - rightPoints.length);
+  }
+
+  function selectedIntegerCompare(left, right) {
+    const normalizedLeft = left.replace(/^0+/, "") || "0";
+    const normalizedRight = right.replace(/^0+/, "") || "0";
+    if (normalizedLeft.length !== normalizedRight.length) {
+      return normalizedLeft.length < normalizedRight.length ? -1 : 1;
+    }
+    return selectedUnicodeScalarCompare(normalizedLeft, normalizedRight);
+  }
+
+  function selectedNaturalTextCompare(left, right) {
+    const normalizedLeft = String(left ?? "").normalize("NFKC").toLowerCase().replaceAll("ё", "е");
+    const normalizedRight = String(right ?? "").normalize("NFKC").toLowerCase().replaceAll("ё", "е");
+    const leftChunks = normalizedLeft.match(NATURAL_CHUNKS) || [];
+    const rightChunks = normalizedRight.match(NATURAL_CHUNKS) || [];
+    const length = Math.min(leftChunks.length, rightChunks.length);
+    for (let index = 0; index < length; index += 1) {
+      const leftChunk = leftChunks[index];
+      const rightChunk = rightChunks[index];
+      const leftDigits = /^[0-9]+$/.test(leftChunk);
+      const rightDigits = /^[0-9]+$/.test(rightChunk);
+      let compared;
+      if (leftDigits && rightDigits) {
+        compared = selectedIntegerCompare(leftChunk, rightChunk)
+          || selectedUnicodeScalarCompare(leftChunk, rightChunk);
+      } else if (leftDigits !== rightDigits) compared = leftDigits ? -1 : 1;
+      else compared = selectedUnicodeScalarCompare(leftChunk, rightChunk);
+      if (compared) return compared;
+    }
+    return Math.sign(leftChunks.length - rightChunks.length);
+  }
+
+  function selectedSeriesNumber(value) {
+    if (value === null || value === undefined || String(value).trim() === "") {
+      return {bucket: "missing", raw: "", digits: "", suffix: ""};
+    }
+    const raw = String(value).trim();
+    const match = raw.match(/^([0-9]+)(.*)$/s);
+    if (!match) return {bucket: "text", raw, digits: "", suffix: raw};
+    const digits = match[1];
+    return {bucket: /[1-9]/.test(digits) ? "positive" : "zero", raw, digits, suffix: match[2]};
+  }
+
+  function compareSelectedSeriesNumbers(left, right) {
+    const leftNumber = selectedSeriesNumber(left);
+    const rightNumber = selectedSeriesNumber(right);
+    const ranks = {positive: 0, text: 1, zero: 2, missing: 3};
+    if (ranks[leftNumber.bucket] !== ranks[rightNumber.bucket]) {
+      return ranks[leftNumber.bucket] - ranks[rightNumber.bucket];
+    }
+    if (leftNumber.bucket === "missing") return 0;
+    let compared = 0;
+    if (leftNumber.bucket === "positive") {
+      compared = selectedIntegerCompare(leftNumber.digits, rightNumber.digits);
+      if (!compared) compared = selectedNaturalTextCompare(leftNumber.suffix, rightNumber.suffix);
+    } else compared = selectedNaturalTextCompare(leftNumber.raw, rightNumber.raw);
+    return compared || selectedUnicodeScalarCompare(leftNumber.raw, rightNumber.raw);
+  }
+
   function selectedOptionalTextCompare(left, right) {
     if (!left || !right) {
       if (!left && !right) return 0;
@@ -501,8 +576,9 @@
       compared = selectedTextCompare(leftTitle, rightTitle);
     } else if (sort === "series") {
       compared = selectedOptionalTextCompare(leftSeries, rightSeries)
-        || selectedTextCompare(leftTitle, rightTitle)
-        || selectedOptionalTextCompare(leftAuthor, rightAuthor);
+        || compareSelectedSeriesNumbers(left.series?.number, right.series?.number)
+        || selectedOptionalTextCompare(leftAuthor, rightAuthor)
+        || selectedTextCompare(leftTitle, rightTitle);
     } else {
       compared = selectedOptionalTextCompare(leftAuthor, rightAuthor)
         || selectedOptionalTextCompare(leftSeries, rightSeries)
@@ -545,33 +621,93 @@
     return link;
   }
 
-  function selectedEntryMetadata(entry) {
-    const authorLinks = [...entry.querySelectorAll(".result-row__authors a")];
-    let authors = authorLinks.map((link) => ({
+  function selectedEntryAuthors(entry) {
+    return [...entry.querySelectorAll(".result-row__authors a")].map((link) => ({
       key: selectedGroupKey("author", link.textContent),
       label: link.textContent,
       searchUrl: link.getAttribute("href"),
     }));
+  }
+
+  function selectedTableAuthorModel(entry, limit = 2) {
+    const authors = selectedEntryAuthors(entry);
+    return {visible: authors.slice(0, limit), overflow: authors.slice(limit)};
+  }
+
+  function selectedAuthorToken(author, trailingComma) {
+    const token = selectedElement("span", "result-row__author-token");
+    if (author.searchUrl) {
+      const link = selectedElement("a", "", author.label);
+      link.href = author.searchUrl;
+      token.append(link);
+    } else token.append(document.createTextNode(author.label));
+    if (trailingComma) {
+      const separator = selectedElement("span", "", ",");
+      separator.setAttribute("aria-hidden", "true");
+      token.append(separator);
+    }
+    return token;
+  }
+
+  function selectedTableAuthors(entry) {
+    const source = entry.querySelector(".result-row__authors");
+    if (!source) return null;
+    const authors = selectedElement("div", "result-row__authors");
+    const accessible = source.querySelector(".visually-hidden")?.cloneNode(true);
+    if (accessible) authors.append(accessible);
+    const model = selectedTableAuthorModel(entry);
+    model.visible.forEach((author, index) => {
+      authors.append(selectedAuthorToken(author, index < model.visible.length - 1));
+    });
+    if (model.overflow.length) {
+      const disclosure = selectedElement("details", "author-overflow");
+      disclosure.append(selectedElement(
+        "summary",
+        "",
+        selectionMessage("moreAuthors", {count: formatInteger(model.overflow.length)}),
+      ));
+      const links = selectedElement("span", "author-overflow__links");
+      model.overflow.forEach((author, index) => {
+        links.append(selectedAuthorToken(author, index < model.overflow.length - 1));
+      });
+      disclosure.append(links);
+      authors.append(disclosure);
+    }
+    return authors;
+  }
+
+  function selectedEntryMetadata(entry) {
+    let authors = selectedEntryAuthors(entry);
     if (authors.length === 0) {
       authors = [{key: "synthetic-author:unknown", label: selectionMessage("unknownAuthor"), sortLabel: "Unknown author", searchUrl: null}];
     } else if (authors.length >= 6) {
       authors = [{key: "synthetic-author:many", label: selectionMessage("manyAuthors"), sortLabel: "Many authors (6+)", searchUrl: null}];
     }
     const seriesLink = entry.querySelector(".result-row__series a");
+    const seriesNumber = entry.querySelector("[data-series-number]")?.textContent.trim().replace(/^#/, "") || null;
     const renderedTitle = entry.querySelector(".result-row__title")?.textContent.trim();
     const unknownEntry = entry.dataset.status === "unknown";
     return {
       publicId: entry.dataset.publicId,
       title: renderedTitle || selectionMessage("unknownSelection"),
-      titleSort: unknownEntry ? "Unknown selection" : renderedTitle || "Unknown selection",
+      titleSort: unknownEntry ? "unknown selection" : entry.dataset.titleSortKey || renderedTitle || "unknown selection",
       authors,
       series: seriesLink ? {
         key: selectedGroupKey("series", seriesLink.textContent),
         label: seriesLink.textContent,
         sortLabel: seriesLink.textContent,
+        number: seriesNumber,
         searchUrl: seriesLink.getAttribute("href"),
       } : null,
     };
+  }
+
+  function compareSelectedTreeEntries(left, right) {
+    const leftMetadata = selectedEntryMetadata(left);
+    const rightMetadata = selectedEntryMetadata(right);
+    return compareSelectedSeriesNumbers(leftMetadata.series?.number, rightMetadata.series?.number)
+      || selectedUnicodeScalarCompare(leftMetadata.titleSort, rightMetadata.titleSort)
+      || selectedUnicodeScalarCompare(leftMetadata.publicId, rightMetadata.publicId);
   }
 
   function cloneSelectedEntry(entry) {
@@ -642,7 +778,7 @@
         summary.append(selectedElement("span", "catalog-tree-count", ` (${formatInteger(new Set(leaf.entries.map((entry) => entry.dataset.publicId)).size)})`));
         const books = selectedElement("div", "catalog-tree-books");
         [...leaf.entries]
-          .sort((left, right) => selectedTextCompare(selectedEntryMetadata(left).titleSort, selectedEntryMetadata(right).titleSort))
+          .sort(compareSelectedTreeEntries)
           .forEach((entry) => books.append(cloneSelectedEntry(entry)));
         series.append(summary, books);
         author.append(series);
@@ -712,16 +848,18 @@
       row.dataset.publicId = entry.dataset.publicId;
       row.dataset.included = entry.dataset.included || "true";
       selectedTableCell(row, entry.querySelector("[data-selection-control]")?.cloneNode(true), "catalog-table__selection");
-      selectedTableCell(row, entry.querySelector(".result-row__authors")?.cloneNode(true));
+      selectedTableCell(row, selectedTableAuthors(entry));
       selectedTableCell(row, entry.querySelector(".result-row__heading")?.cloneNode(true));
       selectedTableCell(row, entry.querySelector(".result-row__series")?.cloneNode(true));
       const status = selectedElement("div", "selected-table__status");
-      const statusValue = entry.dataset.status || "unknown";
-      status.append(selectedElement(
-        "strong",
-        "selected-table__status-label",
-        selectionMessage(Object.hasOwn(SELECTION_MESSAGE_FALLBACKS, statusValue) ? statusValue : "unknown"),
-      ));
+      const statusKey = selectedTableStatusKey(entry.dataset.status || "unknown");
+      if (statusKey) {
+        status.append(selectedElement(
+          "strong",
+          "selected-table__status-label",
+          selectionMessage(statusKey),
+        ));
+      }
       status.append(entry.querySelector(".result-metadata")?.cloneNode(true) || document.createTextNode(selectionMessage("unknown")));
       const note = entry.querySelector(".selected-entry-note")?.cloneNode(true);
       if (note) status.append(note);

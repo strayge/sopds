@@ -342,6 +342,10 @@ test("rendered author commas stay attached to the preceding author token", () =>
     overflow.querySelectorAll(".result-row__author-token").map((token) => token.textContent),
     ["D,", "E"],
   );
+  const firstSeparator = visible.children
+    .find((child) => child.matches(".result-row__author-token"))
+    .children.at(-1);
+  assert.equal(firstSeparator.getAttribute("aria-hidden"), "true");
 });
 
 test("Unicode scalar and natural text helpers do not depend on ambient locale or Number precision", () => {
@@ -639,42 +643,37 @@ test("controller keeps exactly one active renderer and emits once per complete r
   assert.equal(dispatched.length, 2);
 });
 
-test("Flat and Table top-level sort controls restore focus after changing sort and direction", () => {
-  for (const {view, sortKey, directionKey, choice} of [
-    {view: "flat", sortKey: "flatSort", directionKey: "flatDir", choice: "author"},
-    {view: "table", sortKey: "tableSort", directionKey: "tableDir", choice: "number"},
-  ]) {
-    const fixture = controllerRoot();
-    const controller = new behavior.CatalogController(
-      fixture.root,
-      {books: books(rawBook("one"), rawBook("two")), truncated: false},
-      behavior.parseFragment(`#view=${view}`),
-    );
-    const sortMount = fixture.root.querySelector("[data-catalog-sort-controls]");
+test("Flat top-level sort controls restore focus after changing sort and direction", () => {
+  const fixture = controllerRoot();
+  const controller = new behavior.CatalogController(
+    fixture.root,
+    {books: books(rawBook("one"), rawBook("two")), truncated: false},
+    behavior.parseFragment("#view=flat"),
+  );
+  const sortMount = fixture.root.querySelector("[data-catalog-sort-controls]");
 
-    const initialSelect = sortMount.querySelector("[data-catalog-sort]");
-    initialSelect.value = choice;
-    initialSelect.focus();
-    sortMount.dispatch("change", {target: initialSelect});
-    const replacementSelect = sortMount.querySelector("[data-catalog-sort]");
-    assert.notEqual(replacementSelect, initialSelect);
-    assert.equal(documentStub.activeElement, replacementSelect);
-    assert.equal(controller.state[sortKey], choice);
-    assert.equal(
-      [...replacementSelect.querySelectorAll("option")].find((option) => option.selected)?.value,
-      choice,
-    );
+  const initialSelect = sortMount.querySelector("[data-catalog-sort]");
+  initialSelect.value = "author";
+  initialSelect.focus();
+  sortMount.dispatch("change", {target: initialSelect});
+  const replacementSelect = sortMount.querySelector("[data-catalog-sort]");
+  assert.notEqual(replacementSelect, initialSelect);
+  assert.equal(documentStub.activeElement, replacementSelect);
+  assert.equal(controller.state.flatSort, "author");
+  assert.equal(
+    [...replacementSelect.querySelectorAll("option")].find((option) => option.selected)?.value,
+    "author",
+  );
 
-    const initialDirection = sortMount.querySelector("[data-catalog-direction]");
-    initialDirection.focus();
-    sortMount.dispatch("click", {target: initialDirection});
-    const replacementDirection = sortMount.querySelector("[data-catalog-direction]");
-    assert.notEqual(replacementDirection, initialDirection);
-    assert.equal(documentStub.activeElement, replacementDirection);
-    assert.equal(controller.state[directionKey], "desc");
-    assert.equal(replacementDirection.textContent, "Descending");
-    controller.destroy();
-  }
+  const initialDirection = sortMount.querySelector("[data-catalog-direction]");
+  initialDirection.focus();
+  sortMount.dispatch("click", {target: initialDirection});
+  const replacementDirection = sortMount.querySelector("[data-catalog-direction]");
+  assert.notEqual(replacementDirection, initialDirection);
+  assert.equal(documentStub.activeElement, replacementDirection);
+  assert.equal(controller.state.flatDir, "desc");
+  assert.equal(replacementDirection.textContent, "Descending");
+  controller.destroy();
 });
 
 test("Table sorting restores focus to the replacement header and retains sort state", () => {
@@ -765,17 +764,30 @@ test("Tree parent checkboxes contain unique visible selectable IDs", () => {
   controller.destroy();
 });
 
-test("Table places book selection in the first column and excludes it from actions", () => {
+test("Table uses header sorting, shared title markup, and exceptional availability badges", () => {
   const fixture = controllerRoot();
   const controller = new behavior.CatalogController(
     fixture.root,
-    {books: books(rawBook("one")), truncated: false},
+    {books: books(rawBook("active"), rawBook("hidden", {availability: "hidden"})), truncated: false},
     behavior.parseFragment("#view=table"),
   );
-  const row = fixture.mount.querySelector("tbody").children[0];
-  assert.equal(row.children[0].className, "catalog-table__selection");
-  assert.equal(row.children[0].querySelectorAll("[data-selection-checkbox]").length, 1);
-  assert.equal(row.children.at(-1).querySelectorAll("[data-selection-checkbox]").length, 0);
+  const rows = fixture.mount.querySelector("tbody").children;
+  const active = rows.find((row) => row.dataset.publicId === "active");
+  const hidden = rows.find((row) => row.dataset.publicId === "hidden");
+  const title = active.children[2];
+
+  assert.equal(fixture.root.querySelector("[data-catalog-sort-controls]").children.length, 0);
+  assert.equal(fixture.mount.querySelectorAll("[data-catalog-table-sort]").length, 3);
+  assert.equal(active.children[0].className, "catalog-table__selection");
+  assert.equal(title.className, "catalog-table__title");
+  assert.ok(title.querySelector(".result-row__heading"));
+  assert.ok(title.querySelector(".result-row__title"));
+  assert.equal(active.children[3].textContent, "Series #1");
+  assert.equal(active.children[3].querySelector("[data-series-number]").textContent, "#1");
+  assert.equal(title.querySelectorAll(".availability-badge").length, 0);
+  assert.equal(hidden.children[2].querySelector(".availability-badge--hidden").textContent, "Hidden");
+  assert.equal(active.children[0].querySelectorAll("[data-selection-checkbox]").length, 1);
+  assert.equal(active.children.at(-1).querySelectorAll("[data-selection-checkbox]").length, 0);
   controller.destroy();
 });
 

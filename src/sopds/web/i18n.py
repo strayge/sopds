@@ -151,6 +151,7 @@ _SELECTION_BROWSER_MESSAGES = {
     "browseCatalog": N_("Browse the catalog"),
     "unknownAuthor": N_("Unknown author"),
     "manyAuthors": N_("Many authors (6+)"),
+    "moreAuthors": N_("+{count} more"),
     "booksWithoutSeries": N_("Books without series"),
     "unknownSelection": N_("Unknown selection"),
     "selectAllAuthor": N_("Select all books by {label}"),

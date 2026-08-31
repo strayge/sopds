@@ -200,6 +200,7 @@ def test_compact_browser_payloads_are_allowlisted_and_have_russian_plural_catego
         "other": "Загружено {count} книги из {total}.",
     }
     assert selection["selectionLimit"] == "Можно выбрать не более 10 000 книг."
+    assert selection["moreAuthors"] == "+ещё {count}"
     assert "Browse and manage the SOPDS private library catalog." not in catalog.values()
     assert "Browse and manage the SOPDS private library catalog." not in selection.values()
 

@@ -945,10 +945,6 @@ dd {
   overflow-wrap: anywhere;
 }
 
-.catalog-table td:nth-child(5) {
-  width: 5rem;
-}
-
 .catalog-table td:last-child {
   width: 17rem;
   min-width: 17rem;
@@ -1530,13 +1526,15 @@ dd {
   grid-template-columns: 2rem minmax(0, 1fr) 11.25rem 15rem;
 }
 
-.selected-table .result-row__heading {
+.selected-table .result-row__heading,
+.catalog-table .result-row__heading {
   display: flex;
   gap: var(--space-1);
   align-items: baseline;
 }
 
-.selected-table .result-row__title {
+.selected-table .result-row__title,
+.catalog-table .result-row__title {
   font-size: 0.8rem;
 }
 

@@ -165,6 +165,7 @@ templates.env.filters["author_name"] = _format_author_name
 templates.env.filters["kilobytes"] = _format_kilobytes
 templates.env.filters["integer"] = _format_integer
 templates.env.filters["source_format_label"] = _source_format_label
+templates.env.filters["sort_key"] = normalize_text
 
 
 def _merge_vary(response: Response, *names: str) -> None:

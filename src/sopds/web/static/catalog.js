@@ -545,12 +545,18 @@
     return anchor;
   }
 
+  function authorSeparator() {
+    const separator = element("span", "", ",");
+    separator.setAttribute("aria-hidden", "true");
+    return separator;
+  }
+
   function appendAuthors(container, book, limit, i18n = DEFAULT_CATALOG_I18N) {
     const visible = book.authors.slice(0, limit);
     visible.forEach((author, index) => {
       const token = element("span", "result-row__author-token");
       token.append(metadataLink(author.display, author.scopeUrl));
-      if (index < visible.length - 1) token.append(document.createTextNode(","));
+      if (index < visible.length - 1) token.append(authorSeparator());
       container.append(token);
     });
     if (book.authors.length > limit) {
@@ -561,7 +567,7 @@
       book.authors.slice(limit).forEach((author, index, values) => {
         const token = element("span", "result-row__author-token");
         token.append(metadataLink(author.display, author.scopeUrl));
-        if (index < values.length - 1) token.append(document.createTextNode(","));
+        if (index < values.length - 1) token.append(authorSeparator());
         links.append(token);
       });
       disclosure.append(links);
@@ -727,16 +733,14 @@
       this.sortMount.addEventListener("change", (event) => {
         const select = event.target.closest("[data-catalog-sort]");
         if (!select) return;
-        if (this.state.view === "flat" && FLAT_SORTS.has(select.value)) this.state.flatSort = select.value;
-        if (this.state.view === "table" && TABLE_SORTS.has(select.value)) this.state.tableSort = select.value;
+        if (FLAT_SORTS.has(select.value)) this.state.flatSort = select.value;
         this.commit();
         this.render();
         this.sortMount.querySelector("[data-catalog-sort]")?.focus();
       }, options);
       this.sortMount.addEventListener("click", (event) => {
         if (!event.target.closest("[data-catalog-direction]")) return;
-        const key = this.state.view === "flat" ? "flatDir" : "tableDir";
-        this.state[key] = this.state[key] === "asc" ? "desc" : "asc";
+        this.state.flatDir = this.state.flatDir === "asc" ? "desc" : "asc";
         this.commit();
         this.render();
         this.sortMount.querySelector("[data-catalog-direction]")?.focus();
@@ -777,14 +781,13 @@
 
     renderSortControls() {
       this.sortMount.replaceChildren();
-      if (this.state.view === "tree") return;
-      const table = this.state.view === "table";
-      const sort = table ? this.state.tableSort : this.state.flatSort;
-      const direction = table ? this.state.tableDir : this.state.flatDir;
+      if (this.state.view !== "flat") return;
+      const sort = this.state.flatSort;
+      const direction = this.state.flatDir;
       const label = element("label", "catalog-sort-control", message(this.i18n, "sortBy"));
       const select = element("select");
       select.dataset.catalogSort = "";
-      const choices = table ? ["author", "title", "series", "number"] : ["title", "author", "series"];
+      const choices = ["title", "author", "series"];
       for (const choice of choices) {
         const option = element("option", "", message(this.i18n, choice === "series" ? "seriesColumn" : choice));
         option.value = choice;
@@ -881,7 +884,7 @@
       const caption = element("caption", "visually-hidden", message(this.i18n, "loadedCatalogBooks"));
       const head = element("thead");
       const headerRow = element("tr");
-      for (const name of ["select", "author", "title", "series", "number", "actions"]) {
+      for (const name of ["select", "author", "title", "series", "actions"]) {
         const cell = element("th");
         cell.scope = "col";
         if (name === "select") cell.append(element("span", "visually-hidden", message(this.i18n, "select")));
@@ -920,15 +923,31 @@
         if (selectionControl) selection.append(selectionControl);
         const authors = element("td");
         appendAuthors(authors, book, 2, this.i18n);
-        const title = element("td");
-        title.append(safeAnchor(book.title, book.detailUrl));
-        if (book.availability !== "active") title.append(document.createTextNode(` — ${message(this.i18n, book.availability === "missed" ? "missed" : "hidden")}`));
+        const title = element("td", "catalog-table__title");
+        const titleHeading = element("div", "result-row__heading");
+        const titleText = element("h2", "result-row__title");
+        titleText.append(safeAnchor(book.title, book.detailUrl));
+        titleHeading.append(titleText);
+        if (book.availability !== "active") {
+          titleHeading.append(element(
+            "span",
+            `availability-badge availability-badge--${book.availability}`,
+            message(this.i18n, book.availability === "missed" ? "missed" : "hidden"),
+          ));
+        }
+        title.append(titleHeading);
         const series = element("td");
-        if (book.series) series.append(metadataLink(book.series.name, book.series.scopeUrl));
-        const number = element("td", "", book.series?.number || "");
+        if (book.series) {
+          series.append(metadataLink(book.series.name, book.series.scopeUrl));
+          if (book.series.number) {
+            const number = element("span", "", `#${book.series.number}`);
+            number.dataset.seriesNumber = "";
+            series.append(document.createTextNode(" "), number);
+          }
+        }
         const actions = element("td");
         actions.append(buildActions(book, false, this.i18n));
-        row.append(selection, authors, title, series, number, actions);
+        row.append(selection, authors, title, series, actions);
         body.append(row);
       }
       table.append(caption, head, body);

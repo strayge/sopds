@@ -11,6 +11,10 @@ const exportHook = `
     syncFormatSelector,
     readSelectionI18n,
     selectionMessage,
+    selectedTableStatusKey,
+    selectedTableAuthorModel,
+    compareSelectedSeriesNumbers,
+    compareSelectedTreeEntries,
     formatInteger,
     formatSize,
     compareSelectedMetadata,
@@ -279,6 +283,13 @@ function makeSelectionCheckbox(publicId, checked = false) {
   };
 }
 
+test("selected Table leaves the normal downloadable state implicit", () => {
+  assert.equal(behavior.selectedTableStatusKey("downloadable"), null);
+  assert.equal(behavior.selectedTableStatusKey("unsupported"), "unsupported");
+  assert.equal(behavior.selectedTableStatusKey("unavailable"), "unavailable");
+  assert.equal(behavior.selectedTableStatusKey("broken"), "unknown");
+});
+
 test("selection messages localize safely, group integers with ASCII spaces, and preserve size output", () => {
   behavior.setI18n({dataset: {
     uiLocale: "ru",
@@ -345,24 +356,85 @@ test("selected Tree metadata groups visible names and merges availability search
   assert.equal(behavior.mergeSelectedSearchUrls([]), null);
 });
 
-function renderedSelectedEntry(publicId, status, title, author = null) {
-  const authorLink = author === null ? null : {
+function renderedSelectedEntry(
+  publicId,
+  status,
+  title,
+  authors = null,
+  seriesName = null,
+  seriesNumber = null,
+) {
+  const authorNames = authors === null ? [] : Array.isArray(authors) ? authors : [authors];
+  const authorLinks = authorNames.map((author) => ({
     textContent: author,
     getAttribute(name) {
       return name === "href" ? `/?q=${author}&search_field=author` : null;
     },
+  }));
+  const seriesLink = seriesName === null ? null : {
+    textContent: seriesName,
+    getAttribute(name) {
+      return name === "href" ? `/?q=${seriesName}&search_field=series` : null;
+    },
   };
   return {
-    dataset: {publicId, status},
+    dataset: {
+      publicId,
+      status,
+      titleSortKey: title.normalize("NFKC").toLowerCase().replaceAll("ё", "е"),
+    },
     querySelectorAll(selector) {
-      return selector === ".result-row__authors a" && authorLink ? [authorLink] : [];
+      return selector === ".result-row__authors a" ? authorLinks : [];
     },
     querySelector(selector) {
       if (selector === ".result-row__title") return {textContent: title};
+      if (selector === ".result-row__series a") return seriesLink;
+      if (selector === "[data-series-number]" && seriesNumber !== null) {
+        return {textContent: `#${seriesNumber}`};
+      }
       return null;
     },
   };
 }
+
+test("selected Table shows two authors before the overflow disclosure", () => {
+  const model = behavior.selectedTableAuthorModel(renderedSelectedEntry(
+    "many",
+    "downloadable",
+    "Many authors",
+    ["A", "B", "C", "D"],
+  ));
+
+  assert.deepEqual(Array.from(model.visible, (author) => author.label), ["A", "B"]);
+  assert.deepEqual(Array.from(model.overflow, (author) => author.label), ["C", "D"]);
+});
+
+test("selected Tree follows catalog series-number ordering before title", () => {
+  assert.ok(behavior.compareSelectedSeriesNumbers("2", "10") < 0);
+  assert.ok(behavior.compareSelectedSeriesNumbers("10", "appendix") < 0);
+  assert.ok(behavior.compareSelectedSeriesNumbers("appendix", "0") < 0);
+  assert.ok(behavior.compareSelectedSeriesNumbers("0", null) < 0);
+
+  const entries = [
+    renderedSelectedEntry("ten", "downloadable", "First title", "Author", "Series", "10"),
+    renderedSelectedEntry("two-b", "downloadable", "Beta title", "Author", "Series", "2"),
+    renderedSelectedEntry("two-a", "downloadable", "Alpha title", "Author", "Series", "2"),
+    renderedSelectedEntry("missing", "downloadable", "Missing number", "Author", "Series"),
+  ];
+  assert.deepEqual(
+    entries.sort(behavior.compareSelectedTreeEntries).map((entry) => entry.dataset.publicId),
+    ["two-a", "two-b", "ten", "missing"],
+  );
+
+  const normalizedTitles = [
+    renderedSelectedEntry("fir", "downloadable", "Ель"),
+    renderedSelectedEntry("hedgehog", "downloadable", "Ёж"),
+  ];
+  assert.deepEqual(
+    normalizedTitles.sort(behavior.compareSelectedTreeEntries).map((entry) => entry.dataset.publicId),
+    ["hedgehog", "fir"],
+  );
+});
 
 test("selected Table metadata sorting supports three columns and both directions", () => {
   const values = [
@@ -380,6 +452,25 @@ test("selected Table metadata sorting supports three columns and both directions
   assert.deepEqual(sorted("title", "desc"), ["c", "b", "a"]);
   assert.deepEqual(sorted("series", "asc"), ["c", "b", "a"]);
   assert.deepEqual(sorted("series", "desc"), ["a", "b", "c"]);
+
+  const numbered = [
+    {publicId: "two", title: "Alpha", authors: [{label: "Author"}], series: {label: "Дозоры", number: "2"}},
+    {publicId: "one", title: "Delta", authors: [{label: "Author"}], series: {label: "Дозоры", number: "1"}},
+    {publicId: "four", title: "Beta", authors: [{label: "Author"}], series: {label: "Дозоры", number: "4"}},
+    {publicId: "three", title: "Gamma", authors: [{label: "Author"}], series: {label: "Дозоры", number: "3"}},
+  ];
+  assert.deepEqual(
+    [...numbered]
+      .sort((left, right) => behavior.compareSelectedMetadata(left, right, "series", "asc"))
+      .map((value) => value.publicId),
+    ["one", "two", "three", "four"],
+  );
+  assert.deepEqual(
+    [...numbered]
+      .sort((left, right) => behavior.compareSelectedMetadata(left, right, "series", "desc"))
+      .map((value) => value.publicId),
+    ["four", "three", "two", "one"],
+  );
 });
 
 test("rendered unknown selections keep Table and Tree metadata order across locales", () => {
