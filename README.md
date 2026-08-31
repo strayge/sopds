@@ -1,216 +1,100 @@
 # SOPDS
 
-SOPDS turns an INPX ebook library into a private, self-hosted catalog for web
-browsers, OPDS reader apps, and an optional Telegram bot.
+SOPDS turns an INPX ebook library into a private, self-hosted catalog for the
+web, OPDS readers, and an optional Telegram bot.
 
 > [!IMPORTANT]
-> SOPDS does not provide user accounts or authentication. Run it only on a
-> trusted network, restrict access with a firewall, or place it behind an
+> SOPDS has no authentication. Use a trusted network, firewall, or
 > authenticating reverse proxy.
 
 ## Features
 
-- **Fast catalog search** — find books by title, author, or series and narrow
-  results by language, genre, format, and availability.
-- **Compact reader-focused web interface** — browse results, inspect book
-  details, and return without losing the current search, filters, or view
-  context.
-- **Reader-ready downloads** — keep the stored format as the primary action,
-  with EPUB and AZW3 choices when SOPDS can produce them.
-- **Multiple-book ZIP downloads** — build one original-, EPUB-, or AZW3-format
-  archive from books selected across different searches.
-- **OPDS 1.2 catalog** — browse the library and use its additional EPUB and
-  AZW3 acquisitions from compatible ebook readers.
-- **Telegram access** — allow selected chats to search for books and choose an
-  available download format from a bot.
-- **Safe catalog updates** — refresh the library while readers continue using
-  the previous catalog if an update fails.
+- Fast search and filters for large libraries.
+- Compact Flat, Tree, and Table web views.
+- Original, EPUB, and AZW3 downloads.
+- Multi-book ZIP downloads.
+- Built-in FB2 and EPUB reader.
+- OPDS 1.2 and optional Telegram access.
+- Safe catalog updates that preserve the previous catalog on failure.
 
-## Using the web catalog
+## Web catalog
 
-### Choose the interface language
+Use **EN** or **RU** to change the interface language. SOPDS follows the first
+supported browser language, falls back to English, and remembers an explicit
+choice in that browser. Book metadata is never translated.
 
-Use **EN** or **RU** in the catalog sidebar or reader toolbar to switch the
-interface between English and Russian. SOPDS initially follows the browser's
-language preferences and falls back to English when no supported language
-matches. A choice made with **EN** or **RU** is remembered in that browser.
+### Search and download
 
-Interface translation covers catalog and reader controls, notices, and other
-SOPDS text. Book titles, authors, series, genres, languages, dates, keywords,
-and other catalog metadata remain as supplied by the library. Detailed reader
-errors from a book also remain in English so their original diagnostics are
-preserved.
+- Search by title, author, or series; filter by language, genre, format, or
+  availability.
+- Each search loads up to 1,000 books. Refine the search when more match.
+- **Flat** is a reading list, **Tree** groups by author and series, and **Table**
+  provides sortable columns.
+- **Title**, **Author**, and **Series** apply local filters to loaded books;
+  **Clear** removes them.
+- Open a book for full metadata. Use its format button for the original file and
+  the adjacent menu for available EPUB or AZW3 conversions.
+- Catalog view, sorting, and local filters are stored in the page address.
 
-### Find and download a book
+Supported conversions are FB2 to EPUB2 or AZW3 and EPUB to AZW3. Existing EPUB
+and AZW3 files pass through unchanged when selected as output.
 
-Use the search field and filters to narrow the catalog. Each web search loads
-at most the first 1,000 matching books in title order. When more books match,
-the catalog says:
+**Include hidden** shows source-deleted records. **Include missing** shows
+records labeled **Missed**, whose source archives are unavailable. Missed books
+cannot be downloaded.
 
-> 1 000 loaded · More match — refine search
+### Read books
 
-This is a loaded collection rather than an exact total. Refine the catalog
-search to reach books outside the loaded collection.
+**Read** supports stored FB2 and reflowable EPUB 2/3 files. Results offer it up
+to 64 MiB; book details also offer it for larger files but open a recovery page
+with **Download original** and **Back to book**.
 
-Choose **Flat**, **Tree**, or **Table** to explore the loaded books. **Flat** is
-the reader-oriented list, **Tree** groups books by author and series, and
-**Table** provides compact columns that can be sorted from their headings. Tree
-authors start collapsed. Author and series checkboxes select their currently
-visible matching books and show a mixed state when only some are selected. Use
-the **Title**, **Author**, and **Series** fields to apply local phrase filters;
-they apply only to the books already loaded and can be combined. Filtering does
-not change expanded Tree branches. Click an author or series name to run an
-ordinary catalog search with **Search in** set to **Author** or **Series**; the
-current Language, Genre, Format, and availability filters remain selected.
-**Clear** removes the local filters. If a local filter finds no book in an
-overflowed collection, additional catalog matches may simply not have been
-loaded.
+The reader provides **Contents**, **Pages** and **Scroll** modes, progress, text
+sizing, keyboard controls, and touch controls. Position, mode, and text size are saved
+in the current browser. Use **Retry**, **Download original**, or **Back to book**
+after an error.
 
-Open a result to see its full metadata, or use the source-format button, such as
-**FB2** or **EPUB**, to get the stored file unchanged. When more formats are
-available, the adjacent menu offers **EPUB** or **AZW3** without repeating the
-source format.
-
-FB2 books can become EPUB2 or AZW3. Existing EPUB files pass through unchanged
-when EPUB is selected and can become AZW3. Existing AZW3 files pass through
-unchanged when AZW3 is selected. Other combinations are not offered.
-
-The selected view, local filters, and sorting choices are kept in the page
-address, so a bookmark or browser history can restore useful catalog context.
-In the same tab, **Back to results** and browser Back restore the prior search,
-filters, and view context. A direct or new-tab visit uses a safe catalog
-fallback.
-
-### Read a stored book
-
-Catalog results show **Read** as a secondary action only for downloadable stored
-FB2 and EPUB sources no larger than 64 MiB; the original-format download remains
-primary. Book details keep **Read** available for downloadable stored FB2 and
-EPUB sources even when they exceed 64 MiB. For a source over 64 MiB, **Read**
-opens a recovery page instead of the reader, explaining that the book is too
-large to read in-browser and offering **Download original** or **Back to book**.
-For supported sources within the limit, **Read** opens the reader in a new
-browser tab. The reader supports stored FB2 and reflowable EPUB 2/3 without
-converting the book. An FB2 cover and introductory annotation are shown at the
-start when the stored book provides them. Converted downloads and other source
-formats cannot be read there.
-
-The compact toolbar shows the book title, **Contents**, a **Pages** or **Scroll**
-action, reading progress, **Smaller text**, and **Larger text**. The mode action
-names the view it will switch to. The first use defaults to Scroll mode; if you
-select Pages, that preference is reopened in this browser. Switching modes keeps
-your approximate position. Scroll mode is section-local: wheel or touch movement
-scrolls the current section, and an outward gesture at its edge automatically
-moves to the adjacent section. Its right-edge scrollbar shows progress through
-the whole book; dragging previews a percentage and chapter name when available,
-and releasing jumps to that position. Pages mode provides **Previous** and **Next**
-controls, with a page dock generally available and edge controls on desktop.
-Arrow Left/Right, Page Up/Down, Space for the next page, and touch navigation
-are also supported. In Scroll mode, Space keeps the last complete line as the
-first line of the next screen when ordinary body text allows it. The
-reader follows the browser's light or dark appearance.
-
-The reader automatically resumes a saved position, remembers the selected reader
-mode, and remembers the font-size setting in this browser. These settings are not
-synchronized between browsers, devices, or users. Clearing SOPDS site data removes
-them.
-
-Fixed-layout and encrypted EPUB files are not supported. Sources larger than 64
-MiB cannot be opened in the reader; use the original download instead. If a book
-cannot be opened, use **Retry**, **Download original**, or **Back to book**.
-
-Current Chromium and Firefox on desktop are manually validated. Android Chromium
-and Firefox are the target baseline, but physical-device validation remains
-pending.
-
-The catalog normally shows books whose source archives are available. Use
-**Include hidden** or **Include missing** when you need to inspect exceptional
-records:
-
-- **Hidden** books were marked as deleted by the source catalog.
-- **Missed** books refer to source archives that are not currently available.
-
-Unavailable books remain discoverable but cannot be downloaded.
+Fixed-layout or encrypted EPUB files and converted books are unsupported.
+Desktop Chromium and Firefox are manually validated. Android Chromium and
+Firefox are targeted but not yet validated on physical devices.
 
 ### Download several books
 
-Select downloadable books from the catalog's loaded collection. The **Selected**
-entry in the navigation shows how many books are currently selected.
+Select books, then open **Selected** to choose a view, output format, and ZIP
+layout. Uncheck books to exclude them or use **Clear all**. Selections belong to
+the current browser profile.
 
-On the selected-books page you can:
+ZIP layouts are **Author + series folders**, **Author folders**, and **Single
+list**. **Original** preserves mixed source formats. EPUB and AZW3 archives
+exclude unsupported, unknown, or unavailable books. Filename conflicts are
+resolved automatically.
 
-- switch the selected books between **Flat**, **Tree**, and **Table** views and sort the Table by its **Author**, **Title**, or **Series** heading;
-- uncheck books that should not be included in the next ZIP;
-- remove individual books or clear the selection;
-- review unavailable, unsupported, and conflicting books;
-- choose a ZIP layout and one output format;
-- download all currently included supported books together.
+A ZIP can contain up to 10,000 books and 10 GB of eligible source files. Reload
+and retry if the page reports that it has expired.
 
-Unchecked rows remain visible until the page is reloaded, making it easy to
-change your mind. The selection belongs to the current browser profile and does
-not synchronize to other browsers or addresses.
+## OPDS
 
-Available ZIP layouts are:
+Add the deployment's `/opds/` address to an OPDS 1.2-compatible reader. It
+supports browsing, search, metadata, and available download formats.
 
-- **Author + series folders** — organize books by author and series.
-- **Author folders** — keep author folders while placing series information in
-  filenames.
-- **Single list** — place every book at the archive root.
+## Telegram
 
-The source option is labeled with that format, such as **FB2**, when all checked,
-downloadable books share it; mixed sources use **Original**. EPUB and AZW3 are
-shown when at least one included book supports them. A selected EPUB or AZW3 ZIP
-contains only that format: unsupported books are identified and excluded.
-Because preview does not run conversions, converted selections report **source
-size**, not the final ZIP size.
+Approved chats can search, open book details, and request available formats.
+Other chats are ignored. Telegram files are limited to 50 MiB; larger files are
+reported as too large.
 
-Filename conflicts are resolved automatically. Unknown or unavailable books
-are also left out. If no selected book can be downloaded in the chosen format,
-SOPDS reports an error instead of producing an empty archive.
+## Catalog management
 
-A single ZIP can contain up to 10,000 books and 10 GB of eligible source files.
-If the page reports that it has expired, reload it and retry the download.
+SOPDS checks the INPX source at startup and at the configured interval. Readers
+can keep using the previous catalog while an import runs or after it fails. If
+no import has ever succeeded, the catalog is empty.
 
-## Using an OPDS reader
+The management page provides **Import changes**, **Force import**, and **Vacuum
+database**. Reload and retry if the page reports that it has expired.
 
-Add the OPDS catalog address shown in the deployment instructions to any
-OPDS 1.2-compatible reader. You can browse by author, series, or title, search
-the catalog, open book metadata, and use the original acquisition plus any
-additional EPUB or AZW3 acquisitions supported for that book.
+## Docker Compose
 
-## Using Telegram
-
-When Telegram support is enabled, authorized chats can:
-
-- send text to search the catalog;
-- open matching book details;
-- use format buttons for the source format, EPUB, or AZW3 when available.
-
-Unauthorized chats are ignored. The 50 MiB limit applies to the actual file
-sent: originals are checked before upload, while converted files are checked
-after conversion. Larger files are reported as too large and are not replaced
-with an external download link.
-
-## Managing the catalog
-
-SOPDS checks the configured INPX source when it starts and then at the configured
-interval. Readers can continue browsing while a catalog update runs.
-
-The management page provides these actions:
-
-- **Import changes** — check the source immediately and import it when needed.
-- **Force import** — rebuild the catalog even when the source appears unchanged.
-- **Vacuum database** — reclaim database space during maintenance.
-
-A failed update leaves the previous catalog available. If no catalog has ever
-been imported, SOPDS starts with an empty catalog. If the management page
-reports that it has expired, reload it and retry the operation.
-
-## Deploy with Docker Compose
-
-### Prepare files
-
-The container runs as UID 1000. From the repository directory:
+The container runs as UID 1000. Prepare the deployment:
 
 ```shell
 cp config.example.toml config.toml
@@ -219,76 +103,46 @@ sudo chown -R 1000:1000 config.toml library data
 sudo chmod 600 config.toml
 ```
 
-Edit `config.toml`, then place the INPX file and all ZIP archives it references
-inside `library/`. Preserve the paths and filenames expected by the INPX source.
+Edit `config.toml`, then place the INPX file and referenced ZIP archives in
+`library/` with the paths expected by the source.
 
-### Start SOPDS
+Start SOPDS:
 
 ```shell
 docker compose up --build -d
 ```
 
-On the Docker host, open the web catalog at <http://localhost:8000/>. From
-another device, replace `localhost` with the server's reachable hostname or IP
-address.
+Open <http://localhost:8000/>. Replace `localhost` with the server hostname or
+IP address for other devices. The OPDS address is the same URL with `/opds/`.
 
-Use the same reachable address with `/opds/` appended when configuring an OPDS
-reader. For example:
+Compose exposes port 8000 on all interfaces. Restrict it when needed. Run one
+container only; multi-worker and scaled deployments are unsupported. The image
+supports `linux/amd64` because converters are architecture-specific.
 
-```text
-http://books.example.test:8000/opds/
-```
+Default mounts:
 
-The Compose deployment publishes port 8000 on all host interfaces. Restrict
-that port when the catalog should not be reachable by the whole network.
+- `config.toml` → `/config/config.toml` (read-only);
+- `library/` → `/library` (read-only);
+- `data/` → `/data` (writable).
 
-Run exactly one SOPDS container. Multi-worker and horizontally scaled
-deployments are not supported. The Docker image currently supports only
-`linux/amd64` because its converter binaries are architecture-specific.
-
-### Mounted storage
-
-The default deployment mounts:
-
-- `config.toml` at `/config/config.toml` as read-only configuration;
-- `library/` at `/library` as the read-only source library;
-- `data/` at `/data` as writable application data.
-
-UID 1000 must be able to read the configuration and library and write to the
-data directory. Adapt ownership when your container runtime uses a different
-UID mapping.
-
-Allow enough free space in `data/` for catalog updates and cached conversion
-artifacts. Conversions briefly stage source and output files there; successful
-artifacts remain cached until their configured expiry, so simultaneous and
-varied format requests increase storage use. Multiple-book downloads use the
-container's temporary filesystem. A maximum-size download can require slightly
-more than 10 GB after ZIP overhead, and simultaneous downloads multiply that
-requirement.
+UID 1000 needs the corresponding access. Allow space in `data/` for catalog
+updates and cached conversions. Multi-book ZIPs use temporary container storage;
+a maximum-size ZIP needs slightly more than 10 GB.
 
 ## Configuration
 
-SOPDS reads `config.toml` and rejects unknown settings. Environment-variable
-overrides are not supported.
+SOPDS reads `config.toml`, rejects unknown settings, and has no environment
+variable overrides. Settings cover the server URL, INPX source, archives,
+import interval, SQLite database, conversion-cache location and lifetime, and
+optional Telegram access.
 
-The main settings control:
+The example uses Docker paths. Publish SOPDS at the hostname root; web path
+prefixes are unsupported. Set `server.base_url` to the reachable catalog URL.
 
-- the listening host, port, and externally visible base address;
-- the INPX source, archive directory, and automatic check interval;
-- the SQLite database and conversion-cache locations and cache lifetime;
-- optional Telegram access and the allowed chat IDs.
+To enable Telegram, set `telegram.enabled = true`, provide a bot token, and add
+numeric IDs to `allowed_chat_ids`.
 
-Paths in `config.example.toml` are container paths used by the default Compose
-deployment.
-
-Publish SOPDS at the root of its hostname; reverse-proxy path prefixes are not
-supported by the web interface. Use the externally reachable catalog address in
-`server.base_url` and when configuring clients.
-
-To enable Telegram, set `telegram.enabled = true`, provide the bot token, and
-list at least one numeric chat ID in `allowed_chat_ids`.
-
-## Run locally without Docker
+## Local run
 
 SOPDS requires Python 3.14.
 
@@ -297,42 +151,28 @@ python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.freeze.txt
 cp config.example.toml config.toml
-# Change the container paths in config.toml to local paths.
+# Change container paths in config.toml to local paths.
 PYTHONPATH=src python -m sopds --config config.toml
 ```
 
-Open <http://localhost:8000/> after startup.
-
-Original-only local runs need no converter binaries. Converted downloads require
-installing the pinned compatible `fb2cng` 1.6.1 (`fbc`) and Kindling 0.38.0
-(`kindling-cli`) binaries at `/usr/local/bin/fbc` and
-`/usr/local/bin/kindling-cli`; Docker bundles them.
+Open <http://localhost:8000/>. Conversions require `fb2cng` 1.6.1 (`fbc`) and
+Kindling 0.38.0 (`kindling-cli`) in `/usr/local/bin/`; Docker includes both.
 
 ## Backup and restore
 
-Stop SOPDS before creating a backup, then copy:
-
-- `config.toml`;
-- the database file configured by `database.path`;
-- the INPX source and all referenced ZIP archives.
-
-The INPX file and ZIP archives remain the source library, while the database
-contains the catalog built from that source. Restore both when moving the
-service to another host.
+Stop SOPDS and copy `config.toml`, the database configured by `database.path`,
+the INPX source, and all referenced ZIP archives. Restore the source library and
+database together.
 
 ## Acknowledgments
 
-- [fb2cng](https://github.com/rupor-github/fb2cng) (GPL-3.0) — converts
-  FB2 books to EPUB.
-- [Kindling](https://github.com/ciscoriordan/kindling) (MIT) — converts EPUB
-  books to AZW3.
-- [Foliate-js](https://github.com/johnfactotum/foliate-js) (MIT) — renders FB2
-  and EPUB books in the web reader.
-- [zip.js](https://github.com/gildas-lormeau/zip.js) (BSD-3-Clause) — reads EPUB
-  archives in the web reader.
-- [htmx](https://htmx.org/) (0BSD) — updates catalog and management pages
-  without full-page reloads.
+- [fb2cng](https://github.com/rupor-github/fb2cng) (GPL-3.0) — FB2 to EPUB.
+- [Kindling](https://github.com/ciscoriordan/kindling) (MIT) — EPUB to AZW3.
+- [Foliate-js](https://github.com/johnfactotum/foliate-js) (MIT) — web reader.
+- [zip.js](https://github.com/gildas-lormeau/zip.js) (BSD-3-Clause) — EPUB ZIP
+  support.
+- [htmx](https://htmx.org/) (0BSD) — dynamic web updates.
 - [IBM Plex Sans](https://github.com/IBM/plex),
   [Literata](https://github.com/googlefonts/literata), and
   [Noto Serif](https://github.com/notofonts/latin-greek-cyrillic) (OFL-1.1) —
-  provide the web interface typography.
+  web typography.
