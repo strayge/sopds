@@ -3295,7 +3295,7 @@ def test_russian_server_rendered_surfaces_preserve_catalog_data() -> None:
 
     assert '<html lang="ru">' in shell.text
     assert "<title>Каталог · SOPDS</title>" in shell.text
-    assert "Большие библиотеки — простой поиск книг" in shell.text
+    assert "Большая библиотека — простой поиск" in shell.text
     assert "<title>A Book · SOPDS</title>" in detail.text
     assert "<title>Выбранные книги · SOPDS</title>" in selected_page.text
     assert "<title>Управление каталогом · SOPDS</title>" in management.text

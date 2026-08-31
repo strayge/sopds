@@ -490,8 +490,8 @@ msgid "SOPDS catalog home"
 msgstr "Главная каталога SOPDS"
 
 #: src/sopds/web/templates/base.html:23
-msgid "Large libraries, simple discovery"
-msgstr "Большие библиотеки — простой поиск книг"
+msgid "Large library, simple discovery"
+msgstr "Большая библиотека — простой поиск"
 
 #: src/sopds/web/templates/base.html:25
 msgid "Primary navigation"
@@ -944,8 +944,7 @@ msgid ""
 "Enter a title, author, or series above, or narrow the library with the "
 "available filters."
 msgstr ""
-"Введите название, автора или серию либо сузьте список доступными "
-"фильтрами."
+"Введите название, автора или серию, опционально добавьте фильтры."
 
 #: src/sopds/web/templates/partials/catalog_results.html:10
 msgid "Result view"

@@ -113,7 +113,7 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
 
     assert response.status_code == 200
     assert "<title>Catalog · SOPDS</title>" in response.text
-    assert "Large libraries, simple discovery" in response.text
+    assert "Large library, simple discovery" in response.text
     assert 'href="#main-content">Skip to main content</a>' in response.text
     assert '<a href="/" aria-current="page">Catalog</a>' in response.text
     assert '<a href="/manage">Manage</a>' in response.text
