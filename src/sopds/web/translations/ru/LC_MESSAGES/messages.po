@@ -802,12 +802,8 @@ msgid "Selected books · SOPDS"
 msgstr "Выбранные книги · SOPDS"
 
 #: src/sopds/web/templates/selected.html:6
-msgid ""
-"Uncheck books to exclude them from this ZIP. Unchecked rows disappear "
-"when you reload."
-msgstr ""
-"Снимите отметку с книг, которые не нужно добавлять в ZIP. После "
-"обновления неотмеченные строки исчезнут."
+msgid "Uncheck books to exclude them from the ZIP."
+msgstr "Снимите отметку, чтобы исключить книги из ZIP."
 
 #: src/sopds/web/templates/selected.html:12
 msgid "Archive options"
