@@ -1,6 +1,6 @@
 """Database-free contracts for acquiring original book files."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -108,6 +108,13 @@ class AcquisitionRepository(Protocol):
         expected_generation_id: int | None = None,
     ) -> AcquisitionTarget | None: ...
 
+    async def acquisition_targets(
+        self,
+        public_ids: Sequence[str],
+        *,
+        expected_generation_id: int | None = None,
+    ) -> Mapping[str, AcquisitionTarget]: ...
+
 
 class OriginalStore(Protocol):
     async def describe(self, target: AcquisitionTarget) -> SourceRevision: ...
@@ -141,3 +148,16 @@ class Acquisition(Protocol):
         *,
         expected_generation_id: int | None = None,
     ) -> AcquiredOriginal: ...
+
+
+class BulkAcquisition(Protocol):
+    """Supply archive construction with targets resolved before streaming begins."""
+
+    async def resolve_targets(
+        self,
+        public_ids: Sequence[str],
+        *,
+        expected_generation_id: int | None = None,
+    ) -> Mapping[str, AcquisitionTarget]: ...
+
+    async def acquire_target(self, target: AcquisitionTarget) -> AcquiredOriginal: ...

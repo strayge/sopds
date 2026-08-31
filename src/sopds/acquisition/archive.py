@@ -13,12 +13,13 @@ from functools import partial
 from typing import IO, BinaryIO, Protocol, Self
 
 from sopds.acquisition.contracts import (
-    Acquisition,
     AcquisitionMemberNotFoundError,
     AcquisitionNotFoundError,
     AcquisitionSizeMismatchError,
+    AcquisitionTarget,
     AcquisitionUnavailableError,
     AsyncByteStream,
+    BulkAcquisition,
 )
 from sopds.catalog.contracts import (
     BookAvailability,
@@ -222,7 +223,7 @@ class ArchiveService:
     def __init__(
         self,
         catalog: BulkCatalog,
-        acquisition: Acquisition,
+        acquisition: BulkAcquisition,
         conversion: FormatConversion | None = None,
         output_policy: OutputPolicy = OUTPUT_POLICY,
     ) -> None:
@@ -285,9 +286,22 @@ class ArchiveService:
         primary: BaseException | None = None
         included = 0
         try:
+            original_ids = tuple(
+                member.public_id
+                for member in manifest.members
+                if member.decision in {OutputDecision.ORIGINAL, OutputDecision.PASSTHROUGH}
+            )
+            prepared_targets = (
+                await self._acquisition.resolve_targets(
+                    original_ids,
+                    expected_generation_id=manifest.generation_id,
+                )
+                if original_ids
+                else {}
+            )
             for member in sorted(manifest.members, key=lambda candidate: candidate.path):
                 try:
-                    source = await self._acquire_member(manifest, member)
+                    source = await self._acquire_member(manifest, member, prepared_targets)
                 except (
                     AcquisitionNotFoundError,
                     AcquisitionUnavailableError,
@@ -317,13 +331,16 @@ class ArchiveService:
         return StagedArchive(staged_file, content_length)
 
     async def _acquire_member(
-        self, manifest: ArchiveManifest, member: ArchiveMember
+        self,
+        manifest: ArchiveManifest,
+        member: ArchiveMember,
+        prepared_targets: Mapping[str, AcquisitionTarget],
     ) -> _OwnedArchiveInput:
         if member.decision in {OutputDecision.ORIGINAL, OutputDecision.PASSTHROUGH}:
-            return await self._acquisition.acquire(
-                member.public_id,
-                expected_generation_id=manifest.generation_id,
-            )
+            target = prepared_targets.get(member.public_id)
+            if target is None:
+                raise AcquisitionNotFoundError("Original is unavailable")
+            return await self._acquisition.acquire_target(target)
         if member.decision is OutputDecision.CONVERT and self._conversion is not None:
             return await self._conversion.convert(
                 member.public_id,

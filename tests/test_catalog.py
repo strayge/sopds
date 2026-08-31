@@ -370,6 +370,24 @@ async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Pat
         assert await repository.acquisition_target("book-001", expected_generation_id=1) is None
 
 
+async def test_acquisition_targets_are_bounded_and_exclude_unavailable_books(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _catalog(tmp_path / "bulk-targets.sqlite3") as (_catalog_service, repository):
+        await _seed(repository)
+        monkeypatch.setattr("sopds.db.repository.PUBLIC_ID_LOOKUP_BATCH_SIZE", 2)
+
+        targets = await repository.acquisition_targets(
+            ["book-000", "book-001", "book-002", "hidden", "missing"]
+        )
+
+        assert set(targets) == {"book-000", "book-001", "book-002"}
+        assert targets["book-001"].generation_id == 1
+        assert targets["book-001"].archive_relative_path == "available.zip"
+        assert targets["book-001"].member_filename == "book-001.fb2"
+
+
 async def test_bulk_summaries_include_all_current_records_in_input_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

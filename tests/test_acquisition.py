@@ -8,6 +8,7 @@ import struct
 import threading
 import zipfile
 import zlib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
@@ -65,6 +66,7 @@ def _target(
 class _TargetRepository:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int | None]] = []
+        self.bulk_calls: list[tuple[tuple[str, ...], int | None]] = []
 
     async def acquisition_target(
         self,
@@ -74,6 +76,15 @@ class _TargetRepository:
     ) -> AcquisitionTarget | None:
         self.calls.append((public_id, expected_generation_id))
         return _target()
+
+    async def acquisition_targets(
+        self,
+        public_ids: Sequence[str],
+        *,
+        expected_generation_id: int | None = None,
+    ) -> dict[str, AcquisitionTarget]:
+        self.bulk_calls.append((tuple(public_ids), expected_generation_id))
+        return {public_id: _target() for public_id in public_ids}
 
 
 class _DescriptionStore:
@@ -111,6 +122,17 @@ async def test_acquisition_service_forwards_optional_expected_generation() -> No
 
     assert current.public_id == expected.public_id == "public"
     assert repository.calls == [("public", None), ("public", 3)]
+
+
+async def test_acquisition_service_resolves_targets_in_bulk() -> None:
+    repository = _TargetRepository()
+    service = AcquisitionService(repository, _DescriptionStore())
+
+    targets = await service.resolve_targets(["first", "second"], expected_generation_id=3)
+
+    assert tuple(targets) == ("first", "second")
+    assert repository.bulk_calls == [(("first", "second"), 3)]
+    assert repository.calls == []
 
 
 async def test_description_revision_uses_archive_and_member_crc32(tmp_path: Path) -> None:

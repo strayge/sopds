@@ -892,6 +892,21 @@ class CatalogRepository:
     async def vacuum(self) -> None:
         await self._connection.execute_script("VACUUM")
 
+    @staticmethod
+    def _acquisition_target(
+        row: tuple[int, object, object, int, object, object, object],
+    ) -> AcquisitionTarget:
+        generation_id, public_id, title, size, original_format, archive_path, member = row
+        return AcquisitionTarget(
+            generation_id=int(generation_id),
+            public_id=str(public_id),
+            title=str(title),
+            expected_size=int(size),
+            original_format=str(original_format),
+            archive_relative_path=str(archive_path),
+            member_filename=str(member),
+        )
+
     async def acquisition_target(
         self,
         public_id: str,
@@ -919,18 +934,38 @@ class CatalogRepository:
                 "member_filename",
             )
         )
-        if not rows:
-            return None
-        generation_id, row_public_id, title, size, original_format, archive_path, member = rows[0]
-        return AcquisitionTarget(
-            generation_id=int(generation_id),
-            public_id=str(row_public_id),
-            title=str(title),
-            expected_size=int(size),
-            original_format=str(original_format),
-            archive_relative_path=str(archive_path),
-            member_filename=str(member),
-        )
+        return self._acquisition_target(rows[0]) if rows else None
+
+    async def acquisition_targets(
+        self,
+        public_ids: Sequence[str],
+        *,
+        expected_generation_id: int | None = None,
+    ) -> dict[str, AcquisitionTarget]:
+        """Keep bulk target lookups below the database parameter limit."""
+        targets: dict[str, AcquisitionTarget] = {}
+        for offset in range(0, len(public_ids), PUBLIC_ID_LOOKUP_BATCH_SIZE):
+            chunk = public_ids[offset : offset + PUBLIC_ID_LOOKUP_BATCH_SIZE]
+            query = Book.filter(
+                public_id__in=chunk,
+                archive__available=True,
+                generation__active_catalog_states__id=1,
+            )
+            if expected_generation_id is not None:
+                query = query.filter(generation_id=expected_generation_id)
+            rows = await query.using_db(self._connection).values_list(
+                "generation_id",
+                "public_id",
+                "title",
+                "size",
+                "original_format",
+                "archive__relative_path",
+                "member_filename",
+            )
+            for row in rows:
+                target = self._acquisition_target(row)
+                targets[target.public_id] = target
+        return targets
 
     def _visible_books(
         self,

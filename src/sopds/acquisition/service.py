@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from collections.abc import Mapping, Sequence
 from urllib.parse import quote
 
 from sopds.acquisition.contracts import (
@@ -32,6 +33,11 @@ def _safe_filename_character(character: str) -> str:
     return character
 
 
+def _validate_public_id(public_id: str) -> None:
+    if not public_id or len(public_id) > 64 or "\x00" in public_id:
+        raise AcquisitionNotFoundError("Original is unavailable")
+
+
 class AcquisitionService:
     """Resolve one active snapshot and transfer ownership of its opened stream."""
 
@@ -44,8 +50,7 @@ class AcquisitionService:
         public_id: str,
         expected_generation_id: int | None,
     ) -> AcquisitionTarget:
-        if not public_id or len(public_id) > 64 or "\x00" in public_id:
-            raise AcquisitionNotFoundError("Original is unavailable")
+        _validate_public_id(public_id)
         target = (
             await self._repository.acquisition_target(public_id)
             if expected_generation_id is None
@@ -57,6 +62,20 @@ class AcquisitionService:
         if target is None:
             raise AcquisitionNotFoundError("Original is unavailable")
         return target
+
+    async def resolve_targets(
+        self,
+        public_ids: Sequence[str],
+        *,
+        expected_generation_id: int | None = None,
+    ) -> Mapping[str, AcquisitionTarget]:
+        """Validate identifiers before resolving the archive's original sources in bulk."""
+        for public_id in public_ids:
+            _validate_public_id(public_id)
+        return await self._repository.acquisition_targets(
+            public_ids,
+            expected_generation_id=expected_generation_id,
+        )
 
     async def describe(
         self,
@@ -81,6 +100,10 @@ class AcquisitionService:
         expected_generation_id: int | None = None,
     ) -> AcquiredOriginal:
         target = await self._target(public_id, expected_generation_id)
+        return await self.acquire_target(target)
+
+    async def acquire_target(self, target: AcquisitionTarget) -> AcquiredOriginal:
+        """Open a target already resolved against the requested catalog snapshot."""
         stream = await self._store.open(target)
         return AcquiredOriginal(
             filename=safe_download_filename(target.title, target.original_format),

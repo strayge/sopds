@@ -46,6 +46,7 @@ from sopds.acquisition.contracts import (
     AcquisitionSourceIOError,
     AcquisitionStoreShutdownError,
     AcquisitionSymlinkMemberError,
+    AcquisitionTarget,
     AcquisitionUnavailableError,
     AcquisitionUnsafePathError,
     OriginalDescription,
@@ -211,6 +212,7 @@ class _Acquisition:
         self._values = values
         self._sizes = sizes or {}
         self.calls: list[tuple[str, int | None]] = []
+        self.target_calls: list[tuple[tuple[str, ...], int | None]] = []
         self.streams: list[_Stream] = []
         self._acquire_entered = acquire_entered
         self._acquire_release = acquire_release
@@ -223,26 +225,52 @@ class _Acquisition:
     ) -> OriginalDescription:
         raise AssertionError("Archive builds do not describe originals")
 
+    async def resolve_targets(
+        self,
+        public_ids: Sequence[str],
+        *,
+        expected_generation_id: int | None = None,
+    ) -> dict[str, AcquisitionTarget]:
+        self.target_calls.append((tuple(public_ids), expected_generation_id))
+        return {
+            public_id: AcquisitionTarget(
+                generation_id=expected_generation_id or 0,
+                public_id=public_id,
+                title="Title",
+                expected_size=self._sizes.get(public_id, 0),
+                original_format="fb2",
+                archive_relative_path="books.zip",
+                member_filename=f"{public_id}.fb2",
+            )
+            for public_id in public_ids
+        }
+
     async def acquire(
         self,
         public_id: str,
         *,
         expected_generation_id: int | None = None,
     ) -> AcquiredOriginal:
-        self.calls.append((public_id, expected_generation_id))
+        target = (
+            await self.resolve_targets([public_id], expected_generation_id=expected_generation_id)
+        )[public_id]
+        return await self.acquire_target(target)
+
+    async def acquire_target(self, target: AcquisitionTarget) -> AcquiredOriginal:
+        self.calls.append((target.public_id, target.generation_id))
         if self._acquire_release is not None:
             if self._acquire_entered is not None:
                 self._acquire_entered.set()
             await self._acquire_release.wait()
-        value = self._values[public_id]
+        value = self._values[target.public_id]
         if isinstance(value, BaseException):
             raise value
         stream = value if isinstance(value, _Stream) else _Stream((value,))
         stream.open()
         self.streams.append(stream)
-        size = self._sizes[public_id] if isinstance(value, _Stream) else len(value)
+        size = self._sizes[target.public_id] if isinstance(value, _Stream) else len(value)
         return AcquiredOriginal(
-            f"{public_id}.fb2",
+            f"{target.public_id}.fb2",
             "application/octet-stream",
             size,
             stream,
@@ -846,6 +874,7 @@ async def test_converted_download_uses_target_bytes_extension_and_manifest_gener
 
     assert conversion.calls == [("book", "epub", 23)]
     assert acquisition.calls == []
+    assert acquisition.target_calls == []
     assert conversion.streams[0].closed
     with zipfile.ZipFile(io.BytesIO(payload)) as built:
         assert built.namelist() == ["Last First/Title.epub"]
@@ -955,15 +984,17 @@ async def test_download_acquires_and_closes_originals_sequentially() -> None:
         for public_id in ("c", "a", "b")
     }
     books = tuple(_book(public_id, title=public_id, series=None, size=1) for public_id in streams)
+    acquisition = _Acquisition(streams, {public_id: 1 for public_id in streams})
     service = ArchiveService(
         _Catalog((CatalogSummaryBatch(8, books),)),
-        _Acquisition(streams, {public_id: 1 for public_id in streams}),
+        acquisition,
     )
 
     staged = await service.download(ArchiveRequest(["c", "a", "b"], "nested"))
 
     assert maximum == 1
     assert active == 0
+    assert acquisition.target_calls == [(("c", "a", "b"), 8)]
     await staged.aclose()
 
 
