@@ -852,7 +852,7 @@ dd {
 }
 
 .catalog-flat-view > .result-row {
-  grid-template-columns: 2rem minmax(0, 1fr) 11.25rem 15rem;
+  grid-template-columns: 2rem minmax(0, 1fr) 11.25rem 17rem;
 }
 
 .tree-book-row {
@@ -862,7 +862,7 @@ dd {
 }
 
 .catalog-flat-view .result-row__actions {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .catalog-tree-view .result-row__actions {
@@ -2016,7 +2016,10 @@ dd {
     grid-template-columns: 2rem minmax(0, 1fr) 12.75rem;
   }
 
-  .catalog-flat-view > .result-row,
+  .catalog-flat-view > .result-row {
+    grid-template-columns: 2rem minmax(0, 1fr) 17rem;
+  }
+
   .tree-book-row {
     grid-template-columns: 2rem minmax(0, 1fr) 15rem;
   }
@@ -2298,6 +2301,10 @@ dd {
   .result-row__actions {
     width: 100%;
     margin-top: var(--space-1);
+  }
+
+  .catalog-flat-view .result-row__actions {
+    grid-column: 1 / -1;
   }
 
   .book-detail__header {

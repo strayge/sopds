@@ -1571,6 +1571,16 @@ def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() 
         re.S,
     )
     assert re.search(
+        r"\.catalog-flat-view > \.result-row \{[^}]*17rem;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-flat-view \.result-row__actions \{[^}]*flex-wrap: nowrap;",
+        stylesheet.text,
+        re.S,
+    )
+    assert re.search(
         r"\.catalog-tree-view \.result-row__actions \{[^}]*flex-wrap: nowrap;",
         stylesheet.text,
         re.S,
