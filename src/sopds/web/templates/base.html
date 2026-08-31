@@ -36,7 +36,6 @@
             <h1 id="page-heading" class="workspace-header__title{% block page_heading_class %}{% endblock %}">{% block page_heading %}{{ gettext("SOPDS catalog") }}{% endblock %}</h1>
             <p class="workspace-header__subtitle">{% block page_subtitle %}{{ gettext("Browse your private library.") }}{% endblock %}</p>
           </div>
-          <p id="health" class="health-status"><span class="status-ok">{{ gettext("Application is healthy") }}</span></p>
         </header>
         <main id="main-content" class="page-content" tabindex="-1" aria-labelledby="page-heading">
           {% block content %}{% endblock %}

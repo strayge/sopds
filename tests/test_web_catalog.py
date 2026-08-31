@@ -735,7 +735,7 @@ def test_full_page_catalog_error_uses_shared_shell() -> None:
     assert '<a href="/" aria-current="page">Catalog</a>' in response.text
     assert "/static/css/app.css" in response.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
-    assert "Application is healthy" in response.text
+    assert "Application is healthy" not in response.text
     assert "/health-fragment" not in response.text
     assert 'href="https://catalog.example/root/opds/"' in response.text
 

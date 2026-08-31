@@ -122,7 +122,8 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
     assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
     assert 'id="catalog-statistics"' in management.text
     assert 'id="operation-status"' in management.text
-    assert "Application is healthy" in response.text
+    assert "Application is healthy" not in response.text
+    assert "Application is healthy" not in management.text
     assert "/health-fragment" not in response.text
     assert 'hx-trigger="load, every 30s"' not in response.text
     assert "function localizeCatalogTimes(root)" not in response.text

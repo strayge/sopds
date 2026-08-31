@@ -515,10 +515,6 @@ msgstr "Язык интерфейса"
 msgid "Browse your private library."
 msgstr "Просматривайте личную библиотеку."
 
-#: src/sopds/web/templates/base.html:39
-msgid "Application is healthy"
-msgstr "Приложение работает"
-
 #: src/sopds/web/templates/book_detail.html:6
 msgid "Book details and original file"
 msgstr "Сведения о книге и исходный файл"
