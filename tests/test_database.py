@@ -24,7 +24,7 @@ from sopds.db.migrations_runner import (
     apply_migrations,
     validate_migration_state,
 )
-from tests.conftest import _isolated_test_database_url
+from tests.conftest import _isolated_test_database_url, reset_test_database
 
 MIGRATION_NAMES = tuple(
     sorted(path.stem for path in Path(migrations_package.__file__).parent.glob("[0-9]*.py"))
@@ -325,6 +325,8 @@ async def test_initialize_database_hides_cleanup_failure_and_exits_context(
         "postgresql://sopds@postgres:5432/sopds",
         "postgresql://sopds@postgres:5432/catalog",
         "postgresql://sopds@postgres:5432/contest",
+        "postgresql://sopds@postgres:5432/sopds_test?sslmode=disable",
+        "postgresql://sopds@postgres:5432/sopds_test?options=-csearch_path%3Dprivate",
         "sqlite:///sopds_test",
     ],
 )
@@ -337,6 +339,15 @@ def test_test_database_url_accepts_explicit_test_database() -> None:
     database_url = "postgresql://sopds@postgres:5432/sopds_test"
 
     assert _isolated_test_database_url(database_url) == database_url
+
+
+async def test_test_database_reset_rejects_non_public_current_schema(
+    test_database_url: str,
+) -> None:
+    database = _database_config(f"{test_database_url}?options=-csearch_path%3Dpg_catalog")
+
+    with pytest.raises(pytest.UsageError, match="public as the current schema"):
+        await reset_test_database(database)
 
 
 async def test_close_database_clears_global_fallback_on_close_failure(

@@ -26,7 +26,7 @@ from tests.test_catalog import _catalog, _seed
 async def test_exact_name_filters_and_navigation_hide_unavailable_and_staged_data(
     tmp_path: Path,
 ) -> None:
-    async with _catalog(tmp_path / "opds-catalog.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
 
         by_author = await catalog.browse(CatalogRequest(author="First Ёжов"))
@@ -51,7 +51,7 @@ async def test_exact_name_filters_and_navigation_hide_unavailable_and_staged_dat
 
 
 async def test_author_and_series_navigation_include_available_book_counts(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "opds-navigation-counts.sqlite3") as (
+    async with _catalog() as (
         catalog,
         repository,
     ):
@@ -141,7 +141,7 @@ async def test_author_and_series_navigation_include_available_book_counts(tmp_pa
 async def test_availability_revision_invalidates_browse_and_navigation_cursors(
     tmp_path: Path,
 ) -> None:
-    async with _catalog(tmp_path / "opds-availability.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         first_books = await catalog.browse(CatalogRequest())
         first_authors = await catalog.navigation(NavigationRequest("authors"))
@@ -170,7 +170,7 @@ async def test_availability_revision_invalidates_browse_and_navigation_cursors(
 
 
 async def test_navigation_uses_signed_generation_and_kind_bound_keysets(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "opds-navigation.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         connection = repository._connection
         book = await Book.filter(id=1).using_db(connection).get()
@@ -215,7 +215,7 @@ async def test_navigation_uses_signed_generation_and_kind_bound_keysets(tmp_path
 async def test_adaptive_navigation_compresses_prefixes_for_authors_series_and_titles(
     tmp_path: Path,
 ) -> None:
-    async with _catalog(tmp_path / "opds-prefixes.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         connection = repository._connection
         generation = await CatalogGeneration.create(
             using_db=connection, id=1, state=GenerationState.ACTIVE
@@ -267,16 +267,30 @@ async def test_adaptive_navigation_compresses_prefixes_for_authors_series_and_ti
                 author=author,
                 position=0,
             )
+        exact_author = await Author.create(
+            using_db=connection,
+            id=200,
+            generation=generation,
+            name="Знаток",
+            name_sort="знаток",
+        )
+        await BookAuthor.create(
+            using_db=connection,
+            id=200,
+            book_id=1,
+            author=exact_author,
+            position=1,
+        )
 
         authors = await catalog.navigation(NavigationRequest("authors"))
         series_page = await catalog.navigation(NavigationRequest("series"))
         titles = await catalog.navigation(NavigationRequest("titles"))
 
         assert authors.grouped is True
-        assert authors.prefix == "знаток "
-        assert [(item.value, item.count) for item in authors.items] == [
-            ("знаток 0", 100),
-            ("знаток 1", 1),
+        assert authors.prefix == "знаток"
+        assert [(item.value, item.count, item.exact) for item in authors.items] == [
+            ("знаток", 1, True),
+            ("знаток ", 101, False),
         ]
         assert series_page.grouped is True
         assert series_page.prefix == "знак "

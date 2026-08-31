@@ -1,11 +1,13 @@
 """Focused PostgreSQL repository and import parity coverage."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import asyncpg  # type: ignore[import-untyped]
+import pytest
 
 from sopds.catalog.contracts import CatalogRequest, SearchField
 from sopds.catalog.search import normalize_search_text, normalize_text, query_tokens
@@ -20,6 +22,8 @@ from sopds.db.models import (
     BookAuthor,
     BookGenre,
     CatalogGeneration,
+    CatalogState,
+    GenerationState,
     Genre,
     ImportRun,
     Series,
@@ -28,6 +32,7 @@ from sopds.db.repository import CatalogRepository
 from sopds.imports.coordinator import ImportCoordinator
 from sopds.imports.fingerprint import SourceFingerprint
 from sopds.imports.status import ImportOutcome, ImportState, ImportTrigger
+from tests.conftest import reset_test_database
 
 _FIELDS = (
     "AUTHOR",
@@ -75,13 +80,37 @@ def _write_inpx(path: Path, *lines: bytes) -> None:
 
 
 async def _reset_database(config: AppConfig) -> None:
-    connection = await asyncpg.connect(config.database.url.get_secret_value())
-    try:
-        await connection.execute("DROP SCHEMA public CASCADE")
-        await connection.execute("CREATE SCHEMA public")
-    finally:
-        await connection.close()
+    await reset_test_database(config.database)
     await apply_migrations(config.database)
+
+
+async def _wait_for_catalog_state_lock_waiters(
+    connection: asyncpg.Connection, expected: int
+) -> set[int]:
+    """Observe submitted transactions at the contested row lock before assertions proceed."""
+    for _ in range(500):
+        rows = await connection.fetch(
+            "SELECT DISTINCT activity.pid FROM pg_stat_activity activity "
+            "WHERE activity.datname=current_database() "
+            "AND activity.pid<>pg_backend_pid() "
+            "AND cardinality(pg_blocking_pids(activity.pid))>0 "
+            "AND EXISTS (SELECT 1 FROM pg_locks locks "
+            "JOIN pg_class relation ON relation.oid=locks.relation "
+            "JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace "
+            "WHERE locks.pid=activity.pid AND relation.relname='catalog_state' "
+            "AND namespace.nspname='public')"
+        )
+        waiters = {int(row["pid"]) for row in rows}
+        if len(waiters) == expected:
+            return waiters
+        await asyncio.sleep(0.01)
+    activity = await connection.fetch(
+        "SELECT pid, state, wait_event_type, wait_event, query FROM pg_stat_activity "
+        "WHERE datname=current_database() AND pid<>pg_backend_pid() ORDER BY pid"
+    )
+    raise AssertionError(
+        f"Expected {expected} catalog_state lock waiters, found {len(waiters)}: {activity!r}"
+    )
 
 
 @asynccontextmanager
@@ -270,6 +299,74 @@ async def test_postgresql_import_search_materialization_activation_sequences_and
             "last_analyze IS NOT NULL AS analyzed FROM pg_stat_user_tables WHERE relname='book'"
         )
         assert dict(vacuum_rows[0]) == {"vacuumed": True, "analyzed": True}
+
+
+async def test_catalog_state_lock_serializes_activation_cleanup_and_cancelled_availability(
+    app_config: AppConfig,
+) -> None:
+    async with _catalog(app_config) as (repository, _coordinator):
+        active = await CatalogGeneration.create(
+            using_db=repository._connection,
+            state=GenerationState.ACTIVE,
+        )
+        old_archive = await Archive.create(
+            using_db=repository._connection,
+            generation=active,
+            relative_path="old.zip",
+            available=False,
+        )
+        await (
+            CatalogState.filter(id=1)
+            .using_db(repository._connection)
+            .update(active_generation_id=active.id)
+        )
+        await repository.ensure_source("default", app_config.catalog.inpx_path)
+        fingerprint = SourceFingerprint(1, 1, "b" * 64)
+        run_id, generation_id = await repository.create_import(ImportTrigger.MANUAL, fingerprint)
+
+        blocker = await asyncpg.connect(app_config.database.url.get_secret_value())
+        transaction = blocker.transaction()
+        try:
+            await transaction.start()
+            await blocker.fetchrow("SELECT id FROM catalog_state WHERE id=1 FOR UPDATE")
+            activation = asyncio.create_task(
+                repository.activate(run_id, generation_id, fingerprint, (0, 0, 0, 0))
+            )
+            availability = asyncio.create_task(
+                repository.update_archive_availability({old_archive.id: True})
+            )
+            cleanup = asyncio.create_task(repository.cleanup_inactive())
+            try:
+                waiters = await _wait_for_catalog_state_lock_waiters(blocker, 3)
+                availability.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await availability
+                remaining_waiters = await _wait_for_catalog_state_lock_waiters(blocker, 2)
+                assert remaining_waiters < waiters
+
+                await transaction.commit()
+                await activation
+                await cleanup
+            finally:
+                for task in (activation, availability, cleanup):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(activation, availability, cleanup, return_exceptions=True)
+        finally:
+            if blocker.is_in_transaction():
+                await transaction.rollback()
+            await blocker.close()
+        await repository.cleanup_inactive()
+
+        snapshot = await repository.active_snapshot()
+        assert snapshot.generation_id == generation_id
+        assert (
+            not await CatalogGeneration.filter(id=active.id)
+            .using_db(repository._connection)
+            .exists()
+        )
+        run = await ImportRun.filter(id=run_id).using_db(repository._connection).get()
+        assert run.state is ImportState.SUCCEEDED
 
 
 async def test_failed_import_and_interrupted_recovery_preserve_active_generation(

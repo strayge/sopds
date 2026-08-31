@@ -5,9 +5,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from pypika_tortoise.functions import Substring as PypikaSubstring
 from tortoise.backends.base.client import BaseDBAsyncClient
-from tortoise.expressions import Function, Q, Subquery
+from tortoise.expressions import Q, Subquery
 from tortoise.functions import Count, Max, Sum
 from tortoise.query_utils import Prefetch
 from tortoise.queryset import QuerySet
@@ -71,10 +70,6 @@ _EXPLICIT_ID_TABLES = (
     "book_author",
     "book_genre",
 )
-
-
-class _Substring(Function):
-    database_func = PypikaSubstring
 
 
 @dataclass(frozen=True, slots=True)
@@ -1419,47 +1414,57 @@ class CatalogRepository:
         author: str | None = None,
     ) -> list[tuple[str, int]]:
         prefix_end = prefix + "\U0010ffff"
-        next_character = _Substring(
-            {
-                "authors": "name_sort",
-                "series": "name_sort",
-                "titles": "title_sort",
-            }[kind],
-            len(prefix) + 1,
-            1,
-        )
-        query: QuerySet[Author] | QuerySet[Series] | QuerySet[Book]
+        parameters: list[object] = [generation_id, len(prefix) + 1, prefix, prefix_end]
         if kind == "authors":
-            query = self._available_authors(generation_id)
-            if prefix:
-                query = query.filter(name_sort__gte=prefix, name_sort__lt=prefix_end)
-        elif kind == "series":
-            query = self._available_series(generation_id, author)
-            if prefix:
-                query = query.filter(name_sort__gte=prefix, name_sort__lt=prefix_end)
-        elif kind == "titles":
-            query = self._available_books(
-                generation_id,
-                language=None,
-                genre=None,
-                original_format=None,
-                author=None,
-                series=None,
+            table = "author"
+            sort_column = "name_sort"
+            availability = (
+                "EXISTS (SELECT 1 FROM book_author ba "
+                "JOIN book b ON b.id=ba.book_id "
+                "JOIN archive ar ON ar.id=b.archive_id "
+                "WHERE ba.author_id=source.id AND b.generation_id=$1 "
+                "AND ar.generation_id=$1 AND ar.available=TRUE AND b.hidden=FALSE)"
             )
-            if prefix:
-                query = query.filter(title_sort__gte=prefix, title_sort__lt=prefix_end)
+        elif kind == "series":
+            table = "series"
+            sort_column = "name_sort"
+            author_filter = ""
+            if author is not None:
+                parameters.append(author)
+                author_filter = (
+                    "AND EXISTS (SELECT 1 FROM book_author ba "
+                    "JOIN author au ON au.id=ba.author_id "
+                    "WHERE ba.book_id=b.id AND au.generation_id=$1 AND au.name=$5) "
+                )
+            availability = (
+                "EXISTS (SELECT 1 FROM book b JOIN archive ar ON ar.id=b.archive_id "  # noqa: S608
+                "WHERE b.series_id=source.id AND b.generation_id=$1 "
+                "AND ar.generation_id=$1 AND ar.available=TRUE AND b.hidden=FALSE "
+                f"{author_filter})"
+            )
+        elif kind == "titles":
+            table = "book"
+            sort_column = "title_sort"
+            availability = (
+                "EXISTS (SELECT 1 FROM archive ar WHERE ar.id=source.archive_id "
+                "AND ar.generation_id=$1 AND ar.available=TRUE) AND source.hidden=FALSE"
+            )
         else:
             raise ValueError("Invalid adaptive navigation kind")
-        rows = await (
-            query.annotate(
-                next_character=next_character,
-                item_count=Count("id", distinct=True),
-            )
-            .group_by("next_character")
-            .order_by("next_character")
-            .values_list("next_character", "item_count")
+        _, rows = await self._connection.execute_query(
+            f"SELECT substring(source.{sort_column} FROM $2 FOR 1) AS next_character, "  # noqa: S608
+            f"COUNT(DISTINCT source.id) AS item_count FROM {table} source "
+            "WHERE source.generation_id=$1 AND "
+            "($3='' OR (source."
+            f"{sort_column} >= $3 AND source.{sort_column} < $4)) AND {availability} "
+            "GROUP BY 1 ORDER BY 1",
+            parameters,
         )
-        return [(str(character), int(count)) for character, count in rows]
+        return [
+            (str(row["next_character"]), int(row["item_count"]))
+            for row in rows
+            if row["next_character"] is not None
+        ]
 
     async def navigation_prefix_items(
         self,
@@ -1644,13 +1649,15 @@ class CatalogRepository:
             self._available_genres(generation_id)
             .distinct()
             .order_by("label_sort", "code")
-            .values_list("code", "label")
+            .values_list("code", "label", "label_sort")
         )
         return CatalogFilters(
             languages=tuple(
                 FilterOption(value=str(value), label=str(value)) for value in languages
             ),
-            genres=tuple(FilterOption(value=str(code), label=str(label)) for code, label in genres),
+            genres=tuple(
+                FilterOption(value=str(code), label=str(label)) for code, label, _sort in genres
+            ),
             original_formats=tuple(
                 FilterOption(value=str(value), label=str(value)) for value in formats
             ),

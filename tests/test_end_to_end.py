@@ -139,7 +139,7 @@ def _write_selected_catalog(config: AppConfig) -> dict[str, bytes]:
 def test_real_application_acceptance_path(app_config: AppConfig) -> None:
     original = b"<FictionBook><body>acceptance original</body></FictionBook>"
     _write_catalog(app_config, original)
-    asyncio.run(apply_migrations(app_config.database.path))
+    asyncio.run(apply_migrations(app_config.database))
     public_id = derive_public_id("default", "nested/books.zip", "book.fb2")
 
     with TestClient(create_app(app_config)) as client:
@@ -225,7 +225,7 @@ def test_selected_preview_and_zip_download_use_real_catalog_stack(
     app_config: AppConfig,
 ) -> None:
     originals = _write_selected_catalog(app_config)
-    asyncio.run(apply_migrations(app_config.database.path))
+    asyncio.run(apply_migrations(app_config.database))
     public_ids = {
         member: derive_public_id("default", "nested/books.zip", member) for member in originals
     }

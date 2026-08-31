@@ -1,11 +1,11 @@
 """Smoke tests for the initial HTTP application."""
 
 import asyncio
-import sqlite3
 import time
 from unittest.mock import AsyncMock, patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import asyncpg  # type: ignore[import-untyped]
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -85,14 +85,15 @@ def test_health_is_unavailable_without_catalog_state_singleton(
     migrated_app_config: AppConfig,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with TestClient(create_app(migrated_app_config)) as client:
-        connection = sqlite3.connect(migrated_app_config.database.path)
+    async def delete_catalog_state() -> None:
+        connection = await asyncpg.connect(migrated_app_config.database.url.get_secret_value())
         try:
-            connection.execute("DELETE FROM catalog_state WHERE id = 1")
-            connection.commit()
+            await connection.execute("DELETE FROM catalog_state WHERE id = 1")
         finally:
-            connection.close()
+            await connection.close()
 
+    with TestClient(create_app(migrated_app_config)) as client:
+        asyncio.run(delete_catalog_state())
         response = client.get("/health")
 
     assert response.status_code == 503

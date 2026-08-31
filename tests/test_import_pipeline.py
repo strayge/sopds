@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import asyncpg  # type: ignore[import-untyped]
 import pytest
 from tortoise.context import TortoiseContext
 from tortoise.queryset import QuerySet
@@ -44,6 +44,7 @@ from sopds.imports.fingerprint import (
 from sopds.imports.inpx import InpxRecord
 from sopds.imports.service import CatalogImportService, derive_public_id, normalize_sort_key
 from sopds.imports.status import ImportOutcome, ImportResult, ImportState, ImportTrigger
+from tests.conftest import reset_test_database
 
 _FIELDS = (
     "AUTHOR",
@@ -94,8 +95,8 @@ def _write_inpx(path: Path, *lines: bytes, entry: str = "nested/books.inp") -> N
 async def _coordinator(
     config: AppConfig, *, batch_size: int = 2
 ) -> AsyncIterator[tuple[ImportCoordinator, TortoiseContext]]:
-    await apply_migrations(config.database.path)
-    context = await initialize_database(config.database.path)
+    await apply_migrations(config.database)
+    context = await initialize_database(config.database)
     coordinator = ImportCoordinator(
         CatalogRepository(context.db()),
         config.catalog.inpx_path,
@@ -113,12 +114,16 @@ async def _run_forced_import(coordinator: ImportCoordinator) -> ImportResult:
     return await coordinator._request(ImportTrigger.MANUAL, force=True)
 
 
-def _query(path: Path, sql: str) -> list[tuple[object, ...]]:
-    with sqlite3.connect(path) as connection:
-        return connection.execute(sql).fetchall()
+async def _query(config: AppConfig, sql: str) -> list[tuple[object, ...]]:
+    connection = await asyncpg.connect(config.database.url.get_secret_value())
+    try:
+        rows = await connection.fetch(sql)
+    finally:
+        await connection.close()
+    return [tuple(row.values()) for row in rows]
 
 
-def _catalog_snapshot(path: Path) -> dict[str, list[tuple[object, ...]]]:
+async def _catalog_snapshot(config: AppConfig) -> dict[str, list[tuple[object, ...]]]:
     """Compare persisted projections independently of generated database IDs."""
     queries = {
         "archives": "SELECT relative_path,available FROM archive ORDER BY relative_path",
@@ -144,7 +149,7 @@ def _catalog_snapshot(path: Path) -> dict[str, list[tuple[object, ...]]]:
             "JOIN book b ON b.id=f.book_id ORDER BY b.public_id"
         ),
     }
-    return {name: _query(path, sql) for name, sql in queries.items()}
+    return {name: await _query(config, sql) for name, sql in queries.items()}
 
 
 @pytest.mark.parametrize("batch_size", [0, -1])
@@ -162,8 +167,8 @@ def test_import_batch_size_must_be_positive_at_service_boundary(batch_size: int)
 async def test_named_book_row_fields_persist_through_orm_bulk_boundary(
     app_config: AppConfig,
 ) -> None:
-    await apply_migrations(app_config.database.path)
-    context = await initialize_database(app_config.database.path)
+    await apply_migrations(app_config.database)
+    context = await initialize_database(app_config.database)
     connection = context.db()
     try:
         await CatalogGeneration.create(using_db=connection, id=11, state=GenerationState.IMPORTING)
@@ -268,19 +273,13 @@ async def test_bulk_and_single_record_batches_persist_identical_catalogs(
     )
     async with _coordinator(app_config, batch_size=1) as (coordinator, _):
         assert (await _run_forced_import(coordinator)).outcome is ImportOutcome.IMPORTED
-    single_record_batches = _catalog_snapshot(app_config.database.path)
+    single_record_batches = await _catalog_snapshot(app_config)
 
-    bulk_config = app_config.model_copy(
-        update={
-            "database": app_config.database.model_copy(
-                update={"path": app_config.database.path.with_name("bulk.sqlite3")}
-            )
-        }
-    )
-    async with _coordinator(bulk_config, batch_size=2_000) as (coordinator, _):
+    await reset_test_database(app_config.database)
+    async with _coordinator(app_config, batch_size=2_000) as (coordinator, _):
         assert (await _run_forced_import(coordinator)).outcome is ImportOutcome.IMPORTED
 
-    assert _catalog_snapshot(bulk_config.database.path) == single_record_batches
+    assert await _catalog_snapshot(app_config) == single_record_batches
 
 
 async def test_import_emits_start_progress_and_completion_logs(
@@ -369,8 +368,8 @@ async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config:
         result.status.records_imported,
         result.status.records_deleted,
     ) == (2, 1, 1)
-    book = _query(
-        app_config.database.path,
+    book = await _query(
+        app_config,
         "SELECT public_id,title,title_sort,series_number,size,libid,published_date,language,"
         "original_format,rating,keywords,hidden FROM book ORDER BY id",
     )
@@ -380,30 +379,31 @@ async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config:
         "A-2",
         123,
         "lib-1",
-        "2024-02-03",
+        date(2024, 2, 3),
         "ru",
         "fb2",
         4,
         "one,two",
     )
     assert book == [
-        (derive_public_id("default", "nested/books.zip", "book.fb2"), *common, 0),
-        (derive_public_id("default", "nested/books.zip", "gone.fb2"), *common, 1),
+        (derive_public_id("default", "nested/books.zip", "book.fb2"), *common, False),
+        (derive_public_id("default", "nested/books.zip", "gone.fb2"), *common, True),
     ]
-    assert _query(
-        app_config.database.path,
+    assert await _query(
+        app_config,
         "SELECT visible_book_count,hidden_book_count FROM catalog_generation",
     ) == [(1, 1)]
-    assert _query(app_config.database.path, "SELECT visible_book_count FROM archive") == [(1,)]
-    assert _query(app_config.database.path, "SELECT language FROM archive_language") == [("ru",)]
-    assert _query(
-        app_config.database.path, "SELECT original_format FROM archive_original_format"
-    ) == [("fb2",)]
-    assert _query(
-        app_config.database.path, "SELECT genre_id FROM archive_genre ORDER BY genre_id"
-    ) == [(1,), (2,)]
-    assert _query(
-        app_config.database.path,
+    assert await _query(app_config, "SELECT visible_book_count FROM archive") == [(1,)]
+    assert await _query(app_config, "SELECT language FROM archive_language") == [("ru",)]
+    assert await _query(app_config, "SELECT original_format FROM archive_original_format") == [
+        ("fb2",)
+    ]
+    assert await _query(app_config, "SELECT genre_id FROM archive_genre ORDER BY genre_id") == [
+        (1,),
+        (2,),
+    ]
+    assert await _query(
+        app_config,
         "SELECT name,position FROM author JOIN book_author ON author.id=author_id "
         "ORDER BY book_id,position",
     ) == [
@@ -412,12 +412,12 @@ async def test_first_check_maps_full_rows_relations_fts_and_counters(app_config:
         ("Иван Ёлкин", 0),
         ("Jane Doe", 1),
     ]
-    assert _query(app_config.database.path, "SELECT code,label FROM genre ORDER BY code") == [
+    assert await _query(app_config, "SELECT code,label FROM genre ORDER BY code") == [
         ("prose", "Проза"),
         ("sf", "Научная фантастика"),
     ]
-    assert _query(
-        app_config.database.path, "SELECT title,authors,series,genres,language FROM book_fts"
+    assert await _query(
+        app_config, "SELECT title,authors,series,genres,language FROM book_fts"
     ) == [
         ("ежик", "иван елкин jane doe", "серия", "научная фантастика проза", "ru"),
         ("ежик", "иван елкин jane doe", "серия", "научная фантастика проза", "ru"),
@@ -430,7 +430,7 @@ async def test_fingerprint_fast_paths_and_forced_generation(app_config: AppConfi
     async with _coordinator(app_config) as (coordinator, _):
         first = await coordinator.check_for_changes()
         unchanged = await coordinator.check_for_changes()
-        runs_after_unchanged = _query(app_config.database.path, "SELECT count(*) FROM import_run")
+        runs_after_unchanged = await _query(app_config, "SELECT count(*) FROM import_run")
         stat = app_config.catalog.inpx_path.stat()
         os.utime(app_config.catalog.inpx_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         same_content = await coordinator.check_for_changes()
@@ -441,9 +441,9 @@ async def test_fingerprint_fast_paths_and_forced_generation(app_config: AppConfi
     assert runs_after_unchanged == [(1,)]
     assert same_content.outcome is ImportOutcome.CONTENT_UNCHANGED
     assert forced.outcome is ImportOutcome.IMPORTED
-    assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(2,)]
-    assert _query(
-        app_config.database.path, "SELECT count(*) FROM catalog_generation WHERE state='active'"
+    assert await _query(app_config, "SELECT count(*) FROM import_run") == [(2,)]
+    assert await _query(
+        app_config, "SELECT count(*) FROM catalog_generation WHERE state='active'"
     ) == [(1,)]
 
 
@@ -454,12 +454,10 @@ async def test_failed_import_preserves_active_generation_and_fingerprint(
     _write_inpx(app_config.catalog.inpx_path, _line())
     async with _coordinator(app_config) as (coordinator, _):
         assert (await coordinator.check_for_changes()).outcome is ImportOutcome.IMPORTED
-        before = _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state")[
+        before = (await _query(app_config, "SELECT active_generation_id FROM catalog_state"))[0][0]
+        fingerprint = (await _query(app_config, "SELECT fingerprint_sha256 FROM catalog_source"))[
             0
         ][0]
-        fingerprint = _query(
-            app_config.database.path, "SELECT fingerprint_sha256 FROM catalog_source"
-        )[0][0]
         if failure == "parser":
             _write_inpx(app_config.catalog.inpx_path, b"not-crlf")
         else:
@@ -476,16 +474,14 @@ async def test_failed_import_preserves_active_generation_and_fingerprint(
     assert len(terminal_messages) == 1
     assert "outcome=failed" in terminal_messages[0]
     assert "duration_ms=" in terminal_messages[0]
-    assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
-        (before,)
-    ]
-    assert _query(app_config.database.path, "SELECT fingerprint_sha256 FROM catalog_source") == [
+    assert await _query(app_config, "SELECT active_generation_id FROM catalog_state") == [(before,)]
+    assert await _query(app_config, "SELECT fingerprint_sha256 FROM catalog_source") == [
         (fingerprint,)
     ]
-    assert _query(app_config.database.path, "SELECT count(*) FROM book_fts") == [(1,)]
+    assert await _query(app_config, "SELECT count(*) FROM book_fts") == [(1,)]
     if failure == "parser":
-        assert _query(
-            app_config.database.path,
+        assert await _query(
+            app_config,
             "SELECT records_imported,records_rejected FROM import_run ORDER BY id DESC LIMIT 1",
         ) == [(0, 1)]
 
@@ -517,9 +513,7 @@ async def test_source_mutation_preserving_metadata_after_parse_prevents_activati
         result = await coordinator.check_for_changes()
 
     assert result.outcome is ImportOutcome.FAILED
-    assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
-        (None,)
-    ]
+    assert await _query(app_config, "SELECT active_generation_id FROM catalog_state") == [(None,)]
 
 
 @pytest.mark.parametrize("restore_metadata", [False, True])
@@ -550,9 +544,7 @@ async def test_source_mutation_during_count_validation_prevents_activation(
         result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
-    assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
-        (None,)
-    ]
+    assert await _query(app_config, "SELECT active_generation_id FROM catalog_state") == [(None,)]
 
 
 async def test_concurrent_request_is_not_queued(app_config: AppConfig) -> None:
@@ -576,15 +568,15 @@ async def test_concurrent_request_is_not_queued(app_config: AppConfig) -> None:
 
     assert first.outcome is ImportOutcome.IMPORTED
     assert second.outcome is ImportOutcome.ALREADY_RUNNING
-    assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(1,)]
+    assert await _query(app_config, "SELECT count(*) FROM import_run") == [(1,)]
 
 
 async def test_recovery_cleans_interrupted_generation_and_fts(
     app_config: AppConfig, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level("INFO", logger="sopds.imports.coordinator")
-    await apply_migrations(app_config.database.path)
-    context = await initialize_database(app_config.database.path)
+    await apply_migrations(app_config.database)
+    context = await initialize_database(app_config.database)
     connection = context.db()
     generation = await CatalogGeneration.create(
         using_db=connection, state=GenerationState.IMPORTING
@@ -595,15 +587,27 @@ async def test_recovery_cleans_interrupted_generation_and_fts(
         state=ImportState.RUNNING,
         staging_generation=generation,
     )
-    await Archive.create(
+    archive = await Archive.create(
         using_db=connection,
         generation=generation,
         relative_path="books.zip",
     )
-    # FTS5 has no ORM model; recovery must still clean its orphanable projection rows.
+    await Book.create(
+        using_db=connection,
+        id=1,
+        generation=generation,
+        public_id="interrupted",
+        archive=archive,
+        member_filename="interrupted.fb2",
+        title="Interrupted",
+        title_sort="interrupted",
+        size=1,
+        original_format="fb2",
+    )
+    # The search projection has no ORM model; recovery must still clean orphanable rows.
     await connection.execute_query(
         "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
-        "VALUES (1,?,'x','','','','')",
+        "VALUES (1,$1,'x','','','','')",
         [generation.id],
     )
     coordinator = ImportCoordinator(
@@ -623,18 +627,18 @@ async def test_recovery_cleans_interrupted_generation_and_fts(
     )
     assert started < completed
     assert run.id is not None
-    assert _query(app_config.database.path, "SELECT state FROM import_run ORDER BY id") == [
+    assert await _query(app_config, "SELECT state FROM import_run ORDER BY id") == [
         ("interrupted",)
     ]
-    assert _query(app_config.database.path, "SELECT count(*) FROM catalog_generation") == [(0,)]
-    assert _query(app_config.database.path, "SELECT count(*) FROM book_fts") == [(0,)]
+    assert await _query(app_config, "SELECT count(*) FROM catalog_generation") == [(0,)]
+    assert await _query(app_config, "SELECT count(*) FROM book_fts") == [(0,)]
 
 
 async def test_archive_availability_updates_in_configured_chunks(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    await apply_migrations(app_config.database.path)
-    context = await initialize_database(app_config.database.path)
+    await apply_migrations(app_config.database)
+    context = await initialize_database(app_config.database)
     connection = context.db()
     repository = CatalogRepository(connection, cleanup_batch_size=2)
     generation = await CatalogGeneration.create(using_db=connection, state=GenerationState.ACTIVE)
@@ -667,12 +671,12 @@ async def test_archive_availability_updates_in_configured_chunks(
         tuple(archive_ids[2:4]),
         tuple(archive_ids[4:5]),
     ]
-    assert _query(app_config.database.path, "SELECT available FROM archive ORDER BY id") == [
-        (1,),
-        (1,),
-        (1,),
-        (1,),
-        (1,),
+    assert await _query(app_config, "SELECT available FROM archive ORDER BY id") == [
+        (True,),
+        (True,),
+        (True,),
+        (True,),
+        (True,),
     ]
 
 
@@ -681,14 +685,14 @@ async def test_archive_availability_refreshes_without_new_run(app_config: AppCon
     archive = app_config.catalog.archive_root / "nested" / "books.zip"
     async with _coordinator(app_config) as (coordinator, _):
         await coordinator.check_for_changes()
-        assert _query(app_config.database.path, "SELECT available FROM archive") == [(0,)]
+        assert await _query(app_config, "SELECT available FROM archive") == [(False,)]
         archive.parent.mkdir(exist_ok=True)
         archive.touch()
         result = await coordinator.check_for_changes()
 
     assert result.outcome is ImportOutcome.UNCHANGED
-    assert _query(app_config.database.path, "SELECT available FROM archive") == [(1,)]
-    assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(1,)]
+    assert await _query(app_config, "SELECT available FROM archive") == [(True,)]
+    assert await _query(app_config, "SELECT count(*) FROM import_run") == [(1,)]
 
 
 async def test_manual_import_refreshes_archive_availability_without_new_run(
@@ -698,7 +702,7 @@ async def test_manual_import_refreshes_archive_availability_without_new_run(
     archive = app_config.catalog.archive_root / "nested" / "books.zip"
     async with _coordinator(app_config) as (coordinator, _):
         await coordinator.check_for_changes()
-        assert _query(app_config.database.path, "SELECT available FROM archive") == [(0,)]
+        assert await _query(app_config, "SELECT available FROM archive") == [(False,)]
         archive.parent.mkdir(exist_ok=True)
         archive.touch()
 
@@ -708,8 +712,8 @@ async def test_manual_import_refreshes_archive_availability_without_new_run(
         result = await task
 
     assert result.outcome is ImportOutcome.UNCHANGED
-    assert _query(app_config.database.path, "SELECT available FROM archive") == [(1,)]
-    assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(1,)]
+    assert await _query(app_config, "SELECT available FROM archive") == [(True,)]
+    assert await _query(app_config, "SELECT count(*) FROM import_run") == [(1,)]
 
 
 async def test_source_identity_change_clears_matching_metadata_fingerprint(
@@ -731,7 +735,7 @@ async def test_source_identity_change_clears_matching_metadata_fingerprint(
         result = await replacement_coordinator.check_for_changes()
 
     assert result.outcome is ImportOutcome.IMPORTED
-    assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(2,)]
+    assert await _query(app_config, "SELECT count(*) FROM import_run") == [(2,)]
 
 
 @pytest.mark.parametrize("stage", ["during_setup", "after_setup"])
@@ -773,8 +777,8 @@ async def test_cancellation_around_atomic_setup_cleans_known_state(
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    assert _query(app_config.database.path, "SELECT state FROM import_run") == [("interrupted",)]
-    assert _query(app_config.database.path, "SELECT state FROM catalog_generation") == [("failed",)]
+    assert await _query(app_config, "SELECT state FROM import_run") == [("interrupted",)]
+    assert await _query(app_config, "SELECT state FROM catalog_generation") == [("failed",)]
     terminal_messages = [
         record.getMessage()
         for record in caplog.records
@@ -861,14 +865,12 @@ async def test_cancellation_around_activation_never_fails_an_activated_generatio
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    state = _query(
-        app_config.database.path,
+    state = await _query(
+        app_config,
         "SELECT r.state,g.state FROM import_run r JOIN catalog_generation g "
         "ON g.id=r.staging_generation_id",
     )
-    active = _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state")[0][
-        0
-    ]
+    active = (await _query(app_config, "SELECT active_generation_id FROM catalog_state"))[0][0]
     if stage == "before":
         assert state == [("interrupted", "failed")]
         assert active is None
@@ -896,7 +898,7 @@ async def test_activation_failure_while_cancellation_is_pending_uses_failure_pat
         ) -> None:
             activation_entered.set()
             await activation_release.wait()
-            raise sqlite3.OperationalError("activation failed")
+            raise RuntimeError("activation failed")
 
         async def tracking_finish_failed(
             run_id: int,
@@ -918,11 +920,11 @@ async def test_activation_failure_while_cancellation_is_pending_uses_failure_pat
 
     assert result.outcome is ImportOutcome.FAILED
     assert finalized_states == [ImportState.FAILED]
-    assert _query(
-        app_config.database.path, "SELECT count(*) FROM import_run WHERE state='running'"
-    ) == [(0,)]
-    assert _query(
-        app_config.database.path,
+    assert await _query(app_config, "SELECT count(*) FROM import_run WHERE state='running'") == [
+        (0,)
+    ]
+    assert await _query(
+        app_config,
         "SELECT count(*) FROM catalog_generation WHERE state='importing'",
     ) == [(0,)]
 
@@ -938,7 +940,7 @@ async def test_cancellation_during_failure_finalization_waits_for_database_outco
         original_finish_failed = repository.finish_failed
 
         async def failing_validation(generation_id: int, expected: int) -> None:
-            raise sqlite3.OperationalError("validation failed")
+            raise RuntimeError("validation failed")
 
         async def blocked_finish_failed(
             run_id: int,
@@ -962,8 +964,8 @@ async def test_cancellation_during_failure_finalization_waits_for_database_outco
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    assert _query(app_config.database.path, "SELECT state FROM import_run") == [("failed",)]
-    assert _query(app_config.database.path, "SELECT state FROM catalog_generation") == [("failed",)]
+    assert await _query(app_config, "SELECT state FROM import_run") == [("failed",)]
+    assert await _query(app_config, "SELECT state FROM catalog_generation") == [("failed",)]
 
 
 async def test_status_read_failure_after_activation_does_not_fail_catalog(
@@ -973,15 +975,15 @@ async def test_status_read_failure_after_activation_does_not_fail_catalog(
     async with _coordinator(app_config) as (coordinator, _):
 
         async def broken_status() -> None:
-            raise sqlite3.OperationalError("status unavailable")
+            raise RuntimeError("status unavailable")
 
         monkeypatch.setattr(coordinator._repository, "latest_status", broken_status)
         result = await _run_forced_import(coordinator)
 
     assert result == ImportResult(ImportOutcome.IMPORTED, None)
-    assert _query(app_config.database.path, "SELECT state FROM import_run") == [("succeeded",)]
-    assert _query(
-        app_config.database.path,
+    assert await _query(app_config, "SELECT state FROM import_run") == [("succeeded",)]
+    assert await _query(
+        app_config,
         "SELECT g.state FROM catalog_generation g JOIN catalog_state s "
         "ON s.active_generation_id=g.id",
     ) == [("active",)]
@@ -1017,10 +1019,8 @@ async def test_oversize_mapped_metadata_fails_safely_without_activation(
     assert result.status.state is ImportState.FAILED
     assert result.status.error_summary is not None
     assert "private" not in result.status.error_summary
-    assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
-        (None,)
-    ]
-    assert _query(app_config.database.path, "SELECT count(*) FROM book") == [(0,)]
+    assert await _query(app_config, "SELECT active_generation_id FROM catalog_state") == [(None,)]
+    assert await _query(app_config, "SELECT count(*) FROM book") == [(0,)]
 
 
 @pytest.mark.parametrize(
@@ -1041,10 +1041,8 @@ async def test_nul_in_searchable_metadata_fails_safely_without_activation(
     assert result.status.state is ImportState.FAILED
     assert result.status.error_summary is not None
     assert "private" not in result.status.error_summary
-    assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
-        (None,)
-    ]
-    assert _query(app_config.database.path, "SELECT count(*) FROM book_fts") == [(0,)]
+    assert await _query(app_config, "SELECT active_generation_id FROM catalog_state") == [(None,)]
+    assert await _query(app_config, "SELECT count(*) FROM book_fts") == [(0,)]
 
 
 @pytest.mark.parametrize(
@@ -1065,8 +1063,8 @@ async def test_failed_batch_counters_include_only_committed_books(
         result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
-    assert _query(
-        app_config.database.path,
+    assert await _query(
+        app_config,
         "SELECT records_read,records_imported,records_deleted,records_rejected FROM import_run",
     ) == [expected]
 
@@ -1081,7 +1079,7 @@ async def test_projection_count_mismatch_prevents_activation(
 
         async def corrupt_projection(generation_id: int, expected: int) -> None:
             await repository._connection.execute_query(
-                "DELETE FROM book_fts WHERE generation_id=?", [generation_id]
+                "DELETE FROM book_fts WHERE generation_id=$1", [generation_id]
             )
             await original(generation_id, expected)
 
@@ -1089,9 +1087,7 @@ async def test_projection_count_mismatch_prevents_activation(
         result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
-    assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
-        (None,)
-    ]
+    assert await _query(app_config, "SELECT active_generation_id FROM catalog_state") == [(None,)]
 
 
 async def test_archive_symlink_escape_is_unavailable_on_import_and_refresh(
@@ -1104,19 +1100,19 @@ async def test_archive_symlink_escape_is_unavailable_on_import_and_refresh(
     (app_config.catalog.archive_root / "nested").symlink_to(outside, target_is_directory=True)
     async with _coordinator(app_config) as (coordinator, _):
         assert (await _run_forced_import(coordinator)).outcome is ImportOutcome.IMPORTED
-        imported = _query(app_config.database.path, "SELECT available FROM archive")
+        imported = await _query(app_config, "SELECT available FROM archive")
         await coordinator.refresh_archive_availability()
-        refreshed = _query(app_config.database.path, "SELECT available FROM archive")
+        refreshed = await _query(app_config, "SELECT available FROM archive")
 
-    assert imported == [(0,)]
-    assert refreshed == [(0,)]
+    assert imported == [(False,)]
+    assert refreshed == [(False,)]
 
 
 async def test_cleanup_inactive_deletes_large_generation_in_bounded_batches(
     app_config: AppConfig,
 ) -> None:
-    await apply_migrations(app_config.database.path)
-    context = await initialize_database(app_config.database.path)
+    await apply_migrations(app_config.database)
+    context = await initialize_database(app_config.database)
     connection = context.db()
     repository = CatalogRepository(connection, cleanup_batch_size=2)
     active = await CatalogGeneration.create(using_db=connection, state=GenerationState.ACTIVE)
@@ -1161,10 +1157,10 @@ async def test_cleanup_inactive_deletes_large_generation_in_bounded_batches(
         )
         await BookAuthor.create(using_db=connection, book=book, author=author, position=0)
         await BookGenre.create(using_db=connection, book=book, genre=genre)
-        # FTS5 is intentionally populated through its raw persistence boundary.
+        # The generated-vector projection is populated through its raw persistence boundary.
         await connection.execute_query(
             "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
-            "VALUES (?,?,'book','','','','')",
+            "VALUES ($1,$2,'book','','','','')",
             [book.id, stale.id],
         )
     await repository.cleanup_inactive()
@@ -1180,11 +1176,11 @@ async def test_cleanup_inactive_deletes_large_generation_in_bounded_batches(
         "genre",
         "series",
     ):
-        assert _query(
-            app_config.database.path,
+        assert await _query(
+            app_config,
             f"SELECT count(*) FROM {table}",  # noqa: S608
         ) == [(0,)]
-    assert _query(app_config.database.path, "SELECT id,state FROM catalog_generation") == [
+    assert await _query(app_config, "SELECT id,state FROM catalog_generation") == [
         (active.id, "active")
     ]
 
@@ -1213,8 +1209,8 @@ async def test_hash_rejects_metadata_instability(
 async def test_repository_state_guards_cannot_fail_an_active_generation(
     app_config: AppConfig,
 ) -> None:
-    await apply_migrations(app_config.database.path)
-    context = await initialize_database(app_config.database.path)
+    await apply_migrations(app_config.database)
+    context = await initialize_database(app_config.database)
     repository = CatalogRepository(context.db())
     await repository.ensure_source("default", app_config.catalog.inpx_path)
     fingerprint = SourceFingerprint(1, 1, "a" * 64)
@@ -1241,11 +1237,11 @@ async def test_repository_state_guards_cannot_fail_an_active_generation(
         await repository.activate(failed_run_id, failed_generation_id, fingerprint, (0, 0, 0, 0))
     await close_database(context)
 
-    assert _query(
-        app_config.database.path,
+    assert await _query(
+        app_config,
         "SELECT r.state,g.state FROM import_run r JOIN catalog_generation g "
         "ON g.id=r.staging_generation_id ORDER BY r.id",
     ) == [("succeeded", "active"), ("failed", "failed")]
-    assert _query(app_config.database.path, "SELECT active_generation_id FROM catalog_state") == [
+    assert await _query(app_config, "SELECT active_generation_id FROM catalog_state") == [
         (generation_id,)
     ]

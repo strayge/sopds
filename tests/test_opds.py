@@ -150,7 +150,7 @@ def _config() -> AppConfig:
                 "inpx_path": root / "catalog.inpx",
                 "archive_root": root,
             },
-            "database": {"path": root / "catalog.sqlite3"},
+            "database": {"url": "postgresql://sopds@postgres:5432/sopds"},
             "telegram": {},
             "conversion": {"cache_dir": root / "cache"},
         }

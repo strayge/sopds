@@ -717,7 +717,6 @@ def test_manage_page_groups_counts_localizes_times_and_preserves_action_contract
         "Check the configured INPX source",
         "process only changes detected",
         "Reprocess the source",
-        "Reclaim unused SQLite storage",
         "Current or most recently completed import activity",
     ):
         assert removed_copy not in management.text
@@ -2336,7 +2335,7 @@ def test_selected_download_status_mappings_are_bounded_and_path_free(
     [
         (ArchiveLimitError("Selected books exceed the source-size limit"), 413),
         (CatalogInputError("catalog detail that must not be reflected"), 422),
-        (RuntimeError("/private/catalog.sqlite"), 500),
+        (RuntimeError("/private/catalog-database"), 500),
     ],
 )
 def test_selected_preview_status_mappings_are_bounded_and_path_free(

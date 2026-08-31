@@ -19,7 +19,7 @@ from sopds.catalog.contracts import (
     CatalogStaleCursorError,
     SearchField,
 )
-from sopds.catalog.search import fts_match_expression, normalize_text, query_tokens
+from sopds.catalog.search import normalize_search_text, normalize_text, query_tokens
 from sopds.catalog.service import CatalogService
 from sopds.db.connection import close_database, initialize_database
 from sopds.db.migrations_runner import apply_migrations
@@ -38,12 +38,15 @@ from sopds.db.models import (
 )
 from sopds.db.repository import CatalogRepository
 from sopds.imports.status import ImportState, ImportTrigger
+from tests.conftest import isolated_database_config, reset_test_database
 
 
 @asynccontextmanager
-async def _catalog(path: Path) -> AsyncIterator[tuple[CatalogService, CatalogRepository]]:
-    await apply_migrations(path)
-    context = await initialize_database(path)
+async def _catalog() -> AsyncIterator[tuple[CatalogService, CatalogRepository]]:
+    database = isolated_database_config()
+    await reset_test_database(database)
+    await apply_migrations(database)
+    context = await initialize_database(database)
     repository = CatalogRepository(context.db())
     try:
         yield CatalogService(repository, b"test-cursor-key"), repository
@@ -131,7 +134,7 @@ async def _seed(repository: CatalogRepository) -> None:
             await BookGenre.create(using_db=connection, id=1, book=book, genre=genres[0])
         await connection.execute_query(
             "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
             [
                 book.id,
                 active.id,
@@ -204,7 +207,7 @@ async def _seed(repository: CatalogRepository) -> None:
     ):
         await connection.execute_query(
             "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
             [book.id, generation_id, normalize_text(book.title), "", "", "", book.language],
         )
     await repository.materialize_generation_summaries(active.id)
@@ -248,7 +251,7 @@ async def _seed_search_window(
     )
     await connection.execute_many(
         "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
-        "VALUES (?,?,?,?,?,?,?)",
+        "VALUES ($1,$2,$3,$4,$5,$6,$7)",
         [
             [book_id, active.id, title_sort, "", "", "", ""]
             for book_id, title_sort, _public_id in reversed(entries)
@@ -258,7 +261,7 @@ async def _seed_search_window(
 
 
 async def test_catalog_statistics_describe_active_generation_and_database(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "statistics.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         empty = await catalog.statistics()
         assert empty.total_books == 0
         assert empty.hidden_books == 0
@@ -300,7 +303,7 @@ async def test_catalog_statistics_describe_active_generation_and_database(tmp_pa
 async def test_summary_reads_follow_archive_availability_without_rematerializing(
     tmp_path: Path,
 ) -> None:
-    async with _catalog(tmp_path / "summary-availability.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         assert [option.value for option in (await catalog.filters()).languages] == ["en", "ru"]
         assert (await catalog.statistics()).missed_books == 1
@@ -318,7 +321,7 @@ async def test_summary_reads_follow_archive_availability_without_rematerializing
 
 
 async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "catalog.sqlite3") as (_catalog_service, repository):
+    async with _catalog() as (_catalog_service, repository):
         await _seed(repository)
         connection = repository._connection
         superseded = await CatalogGeneration.create(
@@ -374,7 +377,7 @@ async def test_acquisition_targets_are_bounded_and_exclude_unavailable_books(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async with _catalog(tmp_path / "bulk-targets.sqlite3") as (_catalog_service, repository):
+    async with _catalog() as (_catalog_service, repository):
         await _seed(repository)
         monkeypatch.setattr("sopds.db.repository.PUBLIC_ID_LOOKUP_BATCH_SIZE", 2)
 
@@ -392,7 +395,7 @@ async def test_bulk_summaries_include_all_current_records_in_input_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async with _catalog(tmp_path / "bulk-summaries.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         monkeypatch.setattr("sopds.db.repository.PUBLIC_ID_LOOKUP_BATCH_SIZE", 2)
 
@@ -423,7 +426,7 @@ async def test_bulk_summaries_include_all_current_records_in_input_order(
 
 
 async def test_bulk_summaries_retry_one_activation_change(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "bulk-activation.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         original_lookup = repository.summaries_by_public_ids
         generation_ids: list[int] = []
@@ -452,7 +455,7 @@ async def test_bulk_summaries_retry_one_activation_change(tmp_path: Path) -> Non
 
 
 async def test_bulk_summaries_reject_repeated_activation_changes(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "bulk-repeated-activation.sqlite3") as (
+    async with _catalog() as (
         catalog,
         repository,
     ):
@@ -488,20 +491,15 @@ async def test_bulk_summaries_reject_invalid_public_ids(
     tmp_path: Path,
     public_id: str,
 ) -> None:
-    async with _catalog(tmp_path / "bulk-invalid.sqlite3") as (catalog, _repository):
+    async with _catalog() as (catalog, _repository):
         with pytest.raises(CatalogInputError, match="Invalid public book ID"):
             await catalog.bulk_summaries([public_id])
 
 
-def test_normalization_and_safe_fts_terms() -> None:
+def test_normalization_and_safe_search_terms() -> None:
     assert normalize_text("  ЁЖИК \uff21  ") == "  ежик a  "
+    assert normalize_search_text("Café ЁЖИК") == "cafe ежик"
     assert query_tokens("Ёжик, BOOK_2!") == ("ежик", "book", "2")
-    assert fts_match_expression(("ежик", "book")) == (
-        '{title authors series} : "ежик" AND {title authors series} : "book"'
-    )
-    assert fts_match_expression(("first",), SearchField.TITLE) == 'title : "first"'
-    assert fts_match_expression(("first",), SearchField.AUTHOR) == 'authors : "first"'
-    assert fts_match_expression(("елки",), SearchField.SERIES) == 'series : "елки"'
     assert query_tokens('title:"x" OR *; --') == ("title", "x", "or")
     assert query_tokens("..._") == ()
     with pytest.raises(CatalogInputError):
@@ -511,7 +509,7 @@ def test_normalization_and_safe_fts_terms() -> None:
 
 
 async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "catalog.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
 
         first = await catalog.browse(CatalogRequest())
@@ -568,6 +566,23 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
             for book in (await catalog.browse(CatalogRequest(query="first елки"))).books
         ] == ["book-001"]
         assert not (await catalog.browse(CatalogRequest(query="first missing"))).books
+        combined_requests = (
+            CatalogRequest(query="ежик", language="ru"),
+            CatalogRequest(query="ежик", genre="sf"),
+            CatalogRequest(query="ежик", original_format="fb2"),
+            CatalogRequest(query="ежик", author="First Ёжов"),
+            CatalogRequest(query="ежик", series="Ёлки"),
+        )
+        for request in combined_requests:
+            assert [book.public_id for book in (await catalog.browse(request)).books] == [
+                "book-001"
+            ]
+        assert [
+            book.public_id
+            for book in (
+                await catalog.browse(CatalogRequest(query="book 000", without_series=True))
+            ).books
+        ] == ["book-000"]
         assert not (await catalog.browse(CatalogRequest(query="hidden"))).books
         assert not (await catalog.browse(CatalogRequest(query="deleted"))).books
         assert not (await catalog.browse(CatalogRequest(query="staged"))).books
@@ -637,16 +652,10 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
             await restarted.browse(CatalogRequest(cursor=first.next_cursor))
 
 
-async def test_search_window_deduplicates_before_cap_and_overflow(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "search-window.sqlite3") as (catalog, repository):
+async def test_search_window_caps_and_reports_keyset_overflow(tmp_path: Path) -> None:
+    async with _catalog() as (catalog, repository):
         expected, active, archive = await _seed_search_window(repository, 1_000)
         connection = repository._connection
-        first_book_id, first_title_sort, _first_public_id = expected[0]
-        await connection.execute_query(
-            "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
-            "VALUES (?,?,?,?,?,?,?)",
-            [first_book_id, active.id, first_title_sort, "", "", "", ""],
-        )
         original_summaries = repository.summaries
         hydrated_batches: list[list[int]] = []
 
@@ -687,7 +696,7 @@ async def test_search_window_deduplicates_before_cap_and_overflow(tmp_path: Path
         )
         await connection.execute_query(
             "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
             [overflow.id, active.id, overflow.title_sort, "", "", "", ""],
         )
 
@@ -695,13 +704,18 @@ async def test_search_window_deduplicates_before_cap_and_overflow(tmp_path: Path
 
         assert [book.public_id for book in truncated.books] == expected_public_ids
         assert truncated.next_cursor is not None
-        assert [len(batch) for batch in hydrated_batches] == [1_000, 1_000]
+        remainder = await catalog.browse(
+            CatalogRequest(query="matching", page_size=1_000, cursor=truncated.next_cursor)
+        )
+        assert [book.public_id for book in remainder.books] == ["window-overflow"]
+        assert remainder.next_cursor is None
+        assert [len(batch) for batch in hydrated_batches] == [1_000, 1_000, 1]
         assert all(len(set(batch)) == len(batch) for batch in hydrated_batches)
 
 
 @pytest.mark.parametrize("change", ["availability", "cleanup"])
 async def test_hydration_omits_books_that_stop_being_visible(tmp_path: Path, change: str) -> None:
-    async with _catalog(tmp_path / f"{change}.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         original_summaries = repository.summaries
         changed = False
@@ -740,7 +754,7 @@ async def test_hydration_omits_books_that_stop_being_visible(tmp_path: Path, cha
 
 
 async def test_browse_retries_activation_change_but_cursor_becomes_stale(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "activation.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         first_page = await catalog.browse(CatalogRequest())
         assert first_page.next_cursor is not None
@@ -790,7 +804,7 @@ async def test_browse_retries_activation_change_but_cursor_becomes_stale(tmp_pat
 async def test_details_retries_activation_change_during_hydration(
     tmp_path: Path, public_id: str, expected_title: str | None
 ) -> None:
-    async with _catalog(tmp_path / f"detail-{public_id}.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         original_detail = repository.detail
         generation_ids: list[int] = []
@@ -827,7 +841,7 @@ async def test_details_retries_activation_change_during_hydration(
 
 
 async def test_details_rejects_two_activation_changes(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "detail-repeated-activation.sqlite3") as (
+    async with _catalog() as (
         catalog,
         repository,
     ):
@@ -866,7 +880,7 @@ async def test_details_rejects_two_activation_changes(tmp_path: Path) -> None:
 
 
 async def test_filters_cache_avoids_repeated_repository_scan(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "filter-cache.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         original_filters = repository.catalog_filters
         calls = 0
@@ -886,7 +900,7 @@ async def test_filters_cache_avoids_repeated_repository_scan(tmp_path: Path) -> 
 
 
 async def test_concurrent_filter_cache_misses_are_single_flight(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "filter-single-flight.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         original_filters = repository.catalog_filters
         started = asyncio.Event()
@@ -915,7 +929,7 @@ async def test_concurrent_filter_cache_misses_are_single_flight(tmp_path: Path) 
 
 
 async def test_filters_retry_when_generation_changes_during_scan(tmp_path: Path) -> None:
-    async with _catalog(tmp_path / "filter-activation.sqlite3") as (catalog, repository):
+    async with _catalog() as (catalog, repository):
         await _seed(repository)
         original_filters = repository.catalog_filters
         generation_ids: list[int] = []
