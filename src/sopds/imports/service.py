@@ -196,6 +196,7 @@ class CatalogImportService:
             f"Catalog import started run_id={run_id} generation_id={generation_id} "
             f"trigger={trigger.value}"
         )
+        staging_started = perf_counter()
         worker: _ParserWorker | None = None
         activation_committed = False
         terminal_outcome: ImportOutcome | None = None
@@ -237,11 +238,56 @@ class CatalogImportService:
                     ) * _PROGRESS_RECORD_INTERVAL
             if counters[0] != counters[1] + counters[2] or counters[3] != 0:
                 raise CatalogDataError("Import counters failed structural validation")
+            staging_duration_ms = int((perf_counter() - staging_started) * 1000)
+            _LOGGER.info(
+                f"Catalog import staging completed phase=staging run_id={run_id} "
+                f"generation_id={generation_id} duration_ms={staging_duration_ms} "
+                f"read={counters[0]} imported={counters[1]} deleted={counters[2]}"
+            )
+
+            materialization_started = perf_counter()
+            _LOGGER.info(
+                f"Catalog import materialization started phase=materialization run_id={run_id} "
+                f"generation_id={generation_id} records={counters[0]}"
+            )
             await self._repository.materialize_generation_summaries(generation_id)
+            materialization_duration_ms = int((perf_counter() - materialization_started) * 1000)
+            _LOGGER.info(
+                f"Catalog import materialization completed phase=materialization run_id={run_id} "
+                f"generation_id={generation_id} duration_ms={materialization_duration_ms}"
+            )
+
+            validation_started = perf_counter()
+            _LOGGER.info(
+                f"Catalog import validation started phase=validation run_id={run_id} "
+                f"generation_id={generation_id} records={counters[0]}"
+            )
             await self._repository.validate_generation_counts(generation_id, counters[0])
+            validation_duration_ms = int((perf_counter() - validation_started) * 1000)
+            _LOGGER.info(
+                f"Catalog import validation completed phase=validation run_id={run_id} "
+                f"generation_id={generation_id} duration_ms={validation_duration_ms}"
+            )
+
+            verification_started = perf_counter()
+            _LOGGER.info(
+                f"Catalog source verification started phase=source_verification run_id={run_id} "
+                f"generation_id={generation_id}"
+            )
             final_fingerprint = await hash_source(self._source_path, fingerprint)
             if final_fingerprint.sha256 != fingerprint.sha256:
                 raise SourceChangedError("INPX source content changed while it was being imported")
+            verification_duration_ms = int((perf_counter() - verification_started) * 1000)
+            _LOGGER.info(
+                f"Catalog source verification completed phase=source_verification run_id={run_id} "
+                f"generation_id={generation_id} duration_ms={verification_duration_ms}"
+            )
+
+            activation_started = perf_counter()
+            _LOGGER.info(
+                f"Catalog activation started phase=activation run_id={run_id} "
+                f"generation_id={generation_id}"
+            )
             activation_task = asyncio.create_task(
                 self._repository.activate(
                     run_id, generation_id, final_fingerprint, _counter_tuple(counters)
@@ -258,8 +304,10 @@ class CatalogImportService:
                     activation_committed = True
                 raise
             activation_committed = True
+            activation_duration_ms = int((perf_counter() - activation_started) * 1000)
             _LOGGER.info(
-                f"Catalog import activated run_id={run_id} generation_id={generation_id} "
+                f"Catalog import activated phase=activation run_id={run_id} "
+                f"generation_id={generation_id} duration_ms={activation_duration_ms} "
                 f"read={counters[0]} imported={counters[1]} deleted={counters[2]} "
                 f"rejected={counters[3]}"
             )

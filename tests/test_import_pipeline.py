@@ -320,7 +320,30 @@ async def test_import_emits_start_progress_and_completion_logs(
         and "deleted=1" in message
         for message in messages
     )
-    assert any("Catalog import activated" in message for message in messages)
+    phase_messages = (
+        "Catalog import staging completed phase=staging",
+        "Catalog import materialization started phase=materialization",
+        "Catalog import materialization completed phase=materialization",
+        "Catalog import validation started phase=validation",
+        "Catalog import validation completed phase=validation",
+        "Catalog source verification started phase=source_verification",
+        "Catalog source verification completed phase=source_verification",
+        "Catalog activation started phase=activation",
+        "Catalog import activated phase=activation",
+    )
+    phase_positions = [
+        next(index for index, message in enumerate(messages) if expected in message)
+        for expected in phase_messages
+    ]
+    assert phase_positions == sorted(phase_positions)
+    for position in (
+        phase_positions[0],
+        phase_positions[2],
+        phase_positions[4],
+        phase_positions[6],
+        phase_positions[8],
+    ):
+        assert "duration_ms=" in messages[position]
     terminal_messages = [message for message in messages if "Catalog import finished" in message]
     assert len(terminal_messages) == 1
     assert "outcome=imported" in terminal_messages[0]
