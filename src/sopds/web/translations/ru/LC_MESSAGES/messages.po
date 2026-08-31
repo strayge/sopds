@@ -490,8 +490,8 @@ msgid "SOPDS catalog home"
 msgstr "Главная каталога SOPDS"
 
 #: src/sopds/web/templates/base.html:23
-msgid "INPX-backed catalog"
-msgstr "Каталог на основе INPX"
+msgid "Large libraries, simple discovery"
+msgstr "Большие библиотеки — простой поиск книг"
 
 #: src/sopds/web/templates/base.html:25
 msgid "Primary navigation"
