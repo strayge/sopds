@@ -291,6 +291,7 @@ dl {
 
 .workspace-header__heading {
   display: flex;
+  width: 100%;
   min-width: 0;
   align-items: baseline;
   flex-wrap: wrap;
@@ -310,10 +311,12 @@ dl {
 
 .workspace-header__subtitle {
   max-width: 86ch;
-  margin: 0;
+  flex: 0 0 auto;
+  margin: 0 0 0 auto;
   color: var(--color-text-muted);
   font-size: 0.82rem;
   overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .status-ok,
