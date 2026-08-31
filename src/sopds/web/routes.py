@@ -205,6 +205,7 @@ def _localized_template_response(
         status_code=status_code,
         headers=headers,
     )
+    response.headers["Content-Language"] = translations.locale
     _merge_vary(response, "Cookie", "Accept-Language")
     return response
 

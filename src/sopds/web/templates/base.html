@@ -16,7 +16,7 @@
   </head>
   <body data-ui-locale="{{ locale }}" data-selection-messages="{{ selection_messages|tojson|forceescape }}">
     <a class="skip-link" href="#main-content">{{ gettext("Skip to main content") }}</a>
-    <div class="app-shell">
+    <div class="app-shell" data-history-locale="{{ locale }}">
       <aside class="app-sidebar">
         <a class="site-brand" href="/" aria-label="{{ gettext('SOPDS catalog home') }}">
           <span class="site-brand__name">SOPDS</span>

@@ -619,6 +619,7 @@ def test_browser_message_payloads_are_compact_localized_and_attribute_escaped() 
 
     assert response.status_code == 200
     assert 'data-ui-locale="ru"' in response.text
+    assert response.text.count('data-history-locale="ru"') == 1
     catalog_match = re.search(r'data-catalog-messages="([^"]*)"', response.text)
     selection_match = re.search(r'data-selection-messages="([^"]*)"', response.text)
     assert catalog_match is not None
@@ -1123,6 +1124,7 @@ def test_reader_route_rejects_ineligible_books_and_honors_availability_scopes() 
         assert "book_reader.html" not in response.text
     assert russian_missing.json() == {"detail": "Book not found"}
     assert "vary" not in russian_missing.headers
+    assert "content-language" not in russian_missing.headers
     assert epub.status_code == 200
     assert 'data-source-format="epub"' in epub.text
     assert hidden.status_code == 200
@@ -3337,7 +3339,7 @@ def test_russian_selected_preview_uses_server_plural_forms(count: int, wording: 
     assert "EPUB" in response.text
 
 
-def test_localized_html_varies_without_setting_a_locale_cookie() -> None:
+def test_localized_html_advertises_locale_and_varies_without_setting_a_cookie() -> None:
     app, _, _ = _app()
     with TestClient(app) as client:
         responses = (
@@ -3352,6 +3354,7 @@ def test_localized_html_varies_without_setting_a_locale_cookie() -> None:
         )
 
     for response in responses:
+        assert response.headers["content-language"] == "ru"
         assert response.headers["vary"] == "Cookie, Accept-Language"
         assert "set-cookie" not in response.headers
     assert responses[4].headers["cache-control"] == "no-store"
@@ -3374,6 +3377,8 @@ def test_cookie_locale_precedes_header_across_full_pages_and_fragments() -> None
     assert "Поиск по каталогу" in russian.text
     assert "No books found" in english.text
     assert "Книги не найдены" not in english.text
+    assert russian.headers["content-language"] == "ru"
+    assert english.headers["content-language"] == "en"
 
 
 def test_russian_catalog_errors_are_allowlisted_and_unknown_details_are_hidden() -> None:
