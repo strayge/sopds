@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 from contextlib import suppress
@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+import asyncpg  # type: ignore[import-untyped]
+
+_DATABASE_URL_ENV = "SOPDS_DATABASE_URL"
 _RESULT = re.compile(r"^### Result\s*\n(.*?)\n### Ran", re.MULTILINE | re.DOTALL)
 
 
@@ -43,15 +46,13 @@ def parse_args() -> argparse.Namespace:
             "Randomly sample visible FB2/EPUB catalog entries and open each one "
             "through the browser reader."
         ),
+        epilog=(
+            f"Set {_DATABASE_URL_ENV} in the environment for database access; do not "
+            "put database credentials in command-line arguments."
+        ),
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--count", type=int, default=1000)
-    parser.add_argument(
-        "--database",
-        type=Path,
-        default=Path("data/sopds.sqlite3"),
-        help="SOPDS SQLite database (default: data/sopds.sqlite3)",
-    )
     parser.add_argument("--browser", choices=("chromium", "firefox"), default="chromium")
     parser.add_argument("--timeout", type=float, default=30.0, help="Seconds allowed per book")
     parser.add_argument(
@@ -79,56 +80,102 @@ def validate_args(args: argparse.Namespace) -> str:
         raise ValueError("--base-url must not contain credentials")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         raise ValueError("--base-url must identify the server root without a query or fragment")
-    return args.base_url.rstrip("/")
+    return str(args.base_url).rstrip("/")
 
 
-def database_uri(database: Path) -> str:
-    if not database.is_file():
-        raise RuntimeError(f"Database does not exist: {database}")
-    return f"{database.resolve().as_uri()}?mode=ro"
+def validate_database_url(database_url: str) -> str:
+    try:
+        parsed = urlsplit(database_url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise ValueError(f"{_DATABASE_URL_ENV} must be a valid PostgreSQL URL") from None
+    if parsed.scheme not in {"postgres", "postgresql"} or not hostname or port == 0:
+        raise ValueError(f"{_DATABASE_URL_ENV} must be a PostgreSQL URL with a host")
+    return database_url
 
 
-def active_generation(database: Path) -> int | None:
-    with sqlite3.connect(database_uri(database), uri=True) as connection:
-        row = connection.execute(
+def database_url_from_environment() -> str:
+    database_url = os.environ.get(_DATABASE_URL_ENV)
+    if not database_url:
+        raise ValueError(f"{_DATABASE_URL_ENV} is required; set it to a PostgreSQL URL")
+    return validate_database_url(database_url)
+
+
+def database_label(database_url: str) -> str:
+    parsed = urlsplit(database_url)
+    host = parsed.hostname or "unknown-host"
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    database = parsed.path.removeprefix("/") or "default"
+    return f"PostgreSQL at {host}{port}/{database}"
+
+
+def safe_database_error(error: Exception) -> str:
+    message = str(error).strip() or "unknown database error"
+    message = re.sub(
+        r"(?i)postgres(?:ql)?://[^\s<>'\"]+",
+        "PostgreSQL URL [credentials omitted]",
+        message,
+    )
+    message = re.sub(
+        r"(?i)\b(?:password|passfile|sslpassword)=([^\s,;]+)",
+        r"password=[credentials omitted]",
+        message,
+    )
+    return message[-1000:]
+
+
+async def active_generation(database_url: str) -> int | None:
+    connection = await asyncpg.connect(database_url)
+    try:
+        generation = await connection.fetchval(
             "SELECT active_generation_id FROM catalog_state WHERE id = 1"
-        ).fetchone()
-    return int(row[0]) if row and row[0] is not None else None
+        )
+    finally:
+        await connection.close()
+    return int(generation) if generation is not None else None
 
 
-def collect_sample(database: Path, count: int) -> tuple[list[Candidate], int, int]:
+async def collect_sample(database_url: str, count: int) -> tuple[list[Candidate], int, int]:
     query = """
         FROM book AS b
         JOIN archive AS a ON a.id = b.archive_id
-        WHERE b.generation_id = ?
+        WHERE b.generation_id = $1
           AND a.generation_id = b.generation_id
-          AND b.hidden = 0
-          AND a.available = 1
+          AND b.hidden = FALSE
+          AND a.available = TRUE
           AND lower(b.original_format) IN ('fb2', 'epub')
           AND (b.series_id IS NULL OR EXISTS (
               SELECT 1 FROM series AS s
               WHERE s.id = b.series_id AND s.generation_id = b.generation_id
           ))
     """
-    with sqlite3.connect(database_uri(database), uri=True) as connection:
-        connection.execute("BEGIN")
-        generation = connection.execute(
-            "SELECT active_generation_id FROM catalog_state WHERE id = 1"
-        ).fetchone()
-        if not generation or generation[0] is None:
-            raise RuntimeError("Catalog has no active generation")
-        generation_id = int(generation[0])
-        observed_count = int(
-            connection.execute(
-                f"SELECT count(*) {query}",
-                (generation_id,),
-            ).fetchone()[0]
-        )
-        rows = connection.execute(
-            f"SELECT b.public_id, lower(b.original_format) {query} ORDER BY random() LIMIT ?",
-            (generation_id, count),
-        ).fetchall()
-    sample = [Candidate(public_id=str(row[0]), source_format=str(row[1])) for row in rows]
+    connection = await asyncpg.connect(database_url)
+    try:
+        async with connection.transaction(isolation="repeatable_read", readonly=True):
+            generation = await connection.fetchval(
+                "SELECT active_generation_id FROM catalog_state WHERE id = 1"
+            )
+            if generation is None:
+                raise RuntimeError("Catalog has no active generation")
+            generation_id = int(generation)
+            observed_count = int(
+                await connection.fetchval(f"SELECT count(*) {query}", generation_id)
+            )
+            rows = await connection.fetch(
+                f"SELECT b.public_id, lower(b.original_format) AS source_format {query} "
+                "ORDER BY random() LIMIT $2",
+                generation_id,
+                count,
+            )
+    finally:
+        await connection.close()
+    sample = [
+        Candidate(public_id=str(row["public_id"]), source_format=str(row["source_format"]))
+        for row in rows
+    ]
     return sample, observed_count, generation_id
 
 
@@ -201,7 +248,8 @@ def playwright_code(
 
 
 def run_cli(command: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
-    environment = {**os.environ, "NO_COLOR": "1"}
+    environment = {key: value for key, value in os.environ.items() if key != _DATABASE_URL_ENV}
+    environment["NO_COLOR"] = "1"
     return subprocess.run(  # noqa: S603 - executable is explicitly selected by the operator.
         command,
         check=False,
@@ -294,7 +342,7 @@ def write_report(
     *,
     base_url: str,
     browser: str,
-    database: Path,
+    database: str,
     generation_id: int,
     requested_count: int,
     observed_count: int,
@@ -333,10 +381,12 @@ def main() -> int:
     args = parse_args()
     try:
         base_url = validate_args(args)
+        database_url = database_url_from_environment()
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
+    database = database_label(database_url)
     executable = shutil.which(args.playwright_cli)
     if not executable:
         print(f"error: executable not found: {args.playwright_cli}", file=sys.stderr)
@@ -345,11 +395,13 @@ def main() -> int:
     started_at = datetime.now(UTC).isoformat()
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = args.output or Path(f"reader-sample-{timestamp}-{args.browser}.json")
-    print(f"Selecting up to {args.count} books from {args.database}", flush=True)
+    print(f"Selecting up to {args.count} books from {database}", flush=True)
     try:
-        sample, observed_count, generation_id = collect_sample(args.database, args.count)
+        sample, observed_count, generation_id = asyncio.run(
+            collect_sample(database_url, args.count)
+        )
     except Exception as error:
-        print(f"error: database sample failed: {error}", file=sys.stderr)
+        print(f"error: database sample failed: {safe_database_error(error)}", file=sys.stderr)
         return 2
     if not sample:
         print("error: catalog contains no visible FB2/EPUB books", file=sys.stderr)
@@ -383,10 +435,13 @@ def main() -> int:
     try:
         for offset in range(0, len(sample), args.batch_size):
             try:
-                catalog_changed = active_generation(args.database) != generation_id
+                catalog_changed = asyncio.run(active_generation(database_url)) != generation_id
             except Exception as error:
                 catalog_changed = True
-                print(f"error: could not verify active catalog: {error}", file=sys.stderr)
+                print(
+                    f"error: could not verify active catalog: {safe_database_error(error)}",
+                    file=sys.stderr,
+                )
             if catalog_changed:
                 print("error: active catalog changed during the check", file=sys.stderr)
                 break
@@ -405,6 +460,7 @@ def main() -> int:
                     )
                 else:
                     batch_results = []
+                    restart_failure: str | None = None
                     for index, candidate in enumerate(batch):
                         candidate_result: CheckResult | None = None
                         candidate_error = "reader check failed"
@@ -422,12 +478,13 @@ def main() -> int:
                                 restart_error = restart_browser()
                                 if restart_error:
                                     candidate_error = f"browser restart failed: {restart_error}"
+                                    restart_failure = restart_error
                                     break
                         if candidate_result:
                             batch_results.append(candidate_result)
                         else:
                             batch_results.extend(failed_results([candidate], candidate_error))
-                        if restart_error:
+                        if restart_failure:
                             batch_results.extend(
                                 failed_results(batch[index + 1 :], candidate_error)
                             )
@@ -440,17 +497,20 @@ def main() -> int:
                     message += f" — {result.error}"
                 print(message, flush=True)
             try:
-                catalog_changed = active_generation(args.database) != generation_id
+                catalog_changed = asyncio.run(active_generation(database_url)) != generation_id
             except Exception as error:
                 catalog_changed = True
-                print(f"error: could not verify active catalog: {error}", file=sys.stderr)
+                print(
+                    f"error: could not verify active catalog: {safe_database_error(error)}",
+                    file=sys.stderr,
+                )
             if catalog_changed:
                 print("error: active catalog changed during the check", file=sys.stderr)
             write_report(
                 output,
                 base_url=base_url,
                 browser=args.browser,
-                database=args.database,
+                database=database,
                 generation_id=generation_id,
                 requested_count=args.count,
                 observed_count=observed_count,
@@ -471,7 +531,7 @@ def main() -> int:
             output,
             base_url=base_url,
             browser=args.browser,
-            database=args.database,
+            database=database,
             generation_id=generation_id,
             requested_count=args.count,
             observed_count=observed_count,

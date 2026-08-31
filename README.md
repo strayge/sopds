@@ -90,7 +90,9 @@ can keep using the previous catalog while an import runs or after it fails. If
 no import has ever succeeded, the catalog is empty.
 
 The management page provides **Import changes**, **Force import**, and **Vacuum
-database**. Reload and retry if the page reports that it has expired.
+database**. **Vacuum database** performs safe PostgreSQL `VACUUM (ANALYZE)`
+maintenance without changing catalog contents or overlapping an import. Reload and
+retry if the page reports that it has expired.
 
 ## Docker Compose
 
@@ -115,6 +117,18 @@ docker compose up --build -d
 Open <http://localhost:8000/>. Replace `localhost` with the server hostname or
 IP address for other devices. The OPDS address is the same URL with `/opds/`.
 
+Compose starts PostgreSQL as the `postgres` service and waits for it to become
+healthy before starting SOPDS. PostgreSQL has no published host port and is
+reachable by SOPDS as `postgres` only on the internal `database` network. The
+Compose database uses passwordless trust on that private network; do not publish
+its port or attach unrelated services to that network.
+
+The first PostgreSQL deployment starts with an empty catalog. After you place
+the INPX source and archives in `library/`, SOPDS automatically checks and
+imports them at startup; the existing SQLite catalog is not migrated. Use
+**Import changes** to retry a failed startup check or apply changes before the
+next scheduled check, and **Force import** to re-import an unchanged source.
+
 Compose exposes port 8000 on all interfaces. Restrict it when needed. Run one
 container only; multi-worker and scaled deployments are unsupported. The image
 supports `linux/amd64` because converters are architecture-specific.
@@ -123,18 +137,26 @@ Default mounts:
 
 - `config.toml` → `/config/config.toml` (read-only);
 - `library/` → `/library` (read-only);
-- `data/` → `/data` (writable).
+- `data/` → `/data` (writable; conversion cache and temporary application data
+  only).
 
-UID 1000 needs the corresponding access. Allow space in `data/` for catalog
-updates and cached conversions. Multi-book ZIPs use temporary container storage;
-a maximum-size ZIP needs slightly more than 10 GB.
+The PostgreSQL data lives in Compose's `postgres-data` volume, not in `/data`.
+UID 1000 needs the corresponding access. Allow space in `data/` for cached
+conversions. Provision `postgres-data` for the PostgreSQL catalog and its
+indexes. Multi-book ZIPs use temporary container storage; a maximum-size ZIP
+needs slightly more than 10 GB.
 
 ## Configuration
 
 SOPDS reads `config.toml`, rejects unknown settings, and has no environment
 variable overrides. Settings cover the server URL, INPX source, archives,
-import interval, SQLite database, conversion-cache location and lifetime, and
-optional Telegram access.
+import interval, PostgreSQL database URL, conversion-cache location and
+lifetime, and optional Telegram access.
+
+`database.url` must point to a PostgreSQL server reachable by the SOPDS process.
+The example URL uses the Compose service name `postgres` and is intended for
+container deployment; a process running directly on the host needs its own
+reachable PostgreSQL URL.
 
 The example uses Docker paths. Publish SOPDS at the hostname root; web path
 prefixes are unsupported. Set `server.base_url` to the reachable catalog URL.
@@ -151,18 +173,107 @@ python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.freeze.txt
 cp config.example.toml config.toml
-# Change container paths in config.toml to local paths.
+# Change container paths and database.url to values reachable from this process.
 PYTHONPATH=src python -m sopds --config config.toml
 ```
+
+The Compose hostname `postgres` is available only inside Compose's internal
+network. A host-run process must use a separately reachable PostgreSQL server.
 
 Open <http://localhost:8000/>. Conversions require `fb2cng` 1.6.1 (`fbc`) and
 Kindling 0.38.0 (`kindling-cli`) in `/usr/local/bin/`; Docker includes both.
 
 ## Backup and restore
 
-Stop SOPDS and copy `config.toml`, the database configured by `database.path`,
-the INPX source, and all referenced ZIP archives. Restore the source library and
-database together.
+Keep these items together in each backup set:
+
+- a custom-format PostgreSQL dump;
+- `config.toml`;
+- the INPX source;
+- all referenced ZIP archives.
+
+Create the backup through the Compose `postgres` service. The command stops
+SOPDS while collecting the database, configuration, and library, then restarts
+it. Do not change `config.toml` or `library/` until the command finishes. Do not
+copy the named-volume files as a live database backup.
+
+```shell
+set -eu
+umask 077
+backup_root=backups
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+backup_path="$backup_root/sopds-$timestamp"
+backup_tmp="$backup_root/.sopds-$timestamp.tmp.$$"
+
+mkdir -p "$backup_root"
+test ! -e "$backup_path"
+mkdir "$backup_tmp"
+restart_sopds=false
+cleanup() {
+  status=$?
+  trap - 0
+  rm -rf "$backup_tmp"
+  if [ "$restart_sopds" = true ]; then
+    docker compose up -d sopds || true
+  fi
+  exit "$status"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+restart_sopds=true
+docker compose stop sopds
+docker compose exec -T postgres \
+  pg_dump --format=custom --username=sopds --dbname=sopds \
+  > "$backup_tmp/catalog.dump"
+cp config.toml "$backup_tmp/config.toml"
+tar -czf "$backup_tmp/library.tar.gz" -C library .
+mv "$backup_tmp" "$backup_path"
+docker compose up -d sopds
+restart_sopds=false
+```
+
+The timestamped directory appears only after all three items succeed. Temporary
+files are removed and SOPDS is restarted if backup fails.
+
+To restore, select one complete timestamped directory. Keep PostgreSQL running
+while SOPDS is stopped, restore the saved configuration and library, and then
+restore the matching dump:
+
+```shell
+set -eu
+backup_path=backups/sopds-YYYYMMDDTHHMMSSZ
+restore_tmp="library.restore.$$"
+previous_library="library.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+
+mkdir "$restore_tmp"
+cleanup() { rm -rf "$restore_tmp" config.toml.restore; }
+trap 'cleanup; exit 1' HUP INT TERM
+trap cleanup 0
+
+tar -xzf "$backup_path/library.tar.gz" -C "$restore_tmp"
+cp "$backup_path/config.toml" config.toml.restore
+docker compose stop sopds
+mv library "$previous_library"
+mv "$restore_tmp" library
+mv config.toml.restore config.toml
+
+if docker compose exec -T postgres \
+  pg_restore --clean --if-exists --no-owner --exit-on-error --single-transaction \
+  --username=sopds --dbname=sopds < "$backup_path/catalog.dump"
+then
+  docker compose up -d sopds
+else
+  status=$?
+  printf '%s\n' 'Restore failed; SOPDS remains stopped.' >&2
+  exit "$status"
+fi
+```
+
+After verifying the restored catalog, remove the `library.before-restore-*`
+directory. If the Compose project is down, start the database first with
+`docker compose up -d postgres`. Leave SOPDS stopped if restore reports an error
+and resolve it before restarting the service.
 
 ## Acknowledgments
 
