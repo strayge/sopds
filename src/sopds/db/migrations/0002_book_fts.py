@@ -22,7 +22,7 @@ class Migration(migrations.Migration):
                 all_vector TSVECTOR GENERATED ALWAYS AS (
                     to_tsvector(
                         'simple'::regconfig,
-                        title || ' ' || authors || ' ' || series || ' ' || genres || ' ' || language
+                        title || ' ' || authors || ' ' || series
                     )
                 ) STORED,
                 title_vector TSVECTOR GENERATED ALWAYS AS (

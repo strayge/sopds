@@ -84,7 +84,7 @@ class BookSearchRow:
     language: str
 
     def fts_parameters(self) -> list[int | str]:
-        """Convert typed values only where they cross the model-free FTS adapter."""
+        """Convert typed values only at the model-free search projection boundary."""
         return [
             self.book_id,
             self.generation_id,

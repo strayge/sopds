@@ -4,17 +4,17 @@ import asyncio
 import base64
 import hashlib
 import logging
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from time import perf_counter
 
+from asyncpg import PostgresError  # type: ignore[import-untyped]
 from tortoise.exceptions import BaseORMException
 
 from sopds.catalog.genre_names import genre_label
-from sopds.catalog.search import normalize_text
+from sopds.catalog.search import normalize_search_text, normalize_text
 from sopds.db.repository import DEFAULT_BATCH_SIZE, CatalogRepository, IdCounters
 from sopds.db.rows import (
     ArchiveRow,
@@ -222,7 +222,7 @@ class CatalogImportService:
                         genres,
                         series_entries,
                     )
-                except CatalogDataError, sqlite3.Error, BaseORMException:
+                except CatalogDataError, PostgresError, BaseORMException:
                     counters[3] += 1
                     raise
                 counters[1] += imported
@@ -238,6 +238,7 @@ class CatalogImportService:
                     ) * _PROGRESS_RECORD_INTERVAL
             if counters[0] != counters[1] + counters[2] or counters[3] != 0:
                 raise CatalogDataError("Import counters failed structural validation")
+            await self._repository.synchronize_explicit_id_sequences()
             staging_duration_ms = int((perf_counter() - staging_started) * 1000)
             _LOGGER.info(
                 f"Catalog import staging completed phase=staging run_id={run_id} "
@@ -573,11 +574,11 @@ class CatalogImportService:
                 BookSearchRow(
                     book_id=book_id,
                     generation_id=generation_id,
-                    title=normalize_text(record.title),
-                    authors=normalize_text(" ".join(record.authors)),
-                    series=normalize_text(record.series or ""),
-                    genres=normalize_text(" ".join(genre_labels)),
-                    language=normalize_text(record.language or ""),
+                    title=normalize_search_text(record.title),
+                    authors=normalize_search_text(" ".join(record.authors)),
+                    series=normalize_search_text(record.series or ""),
+                    genres=normalize_search_text(" ".join(genre_labels)),
+                    language=normalize_search_text(record.language or ""),
                 )
             )
         await self._repository.write_batch(
@@ -673,7 +674,7 @@ def _safe_summary(error: Exception) -> str:
         return str(error)[:500]
     if isinstance(error, SourceChangedError | CatalogDataError):
         return str(error)[:500]
-    if isinstance(error, sqlite3.Error | BaseORMException):
+    if isinstance(error, PostgresError | BaseORMException):
         return "Catalog database rejected imported data"
     if isinstance(error, OSError):
         return "Could not read the configured catalog source"

@@ -26,7 +26,7 @@ from sopds.catalog.contracts import (
     NavigationRequest,
     SearchField,
 )
-from sopds.catalog.search import fts_match_expression, normalize_text, query_tokens
+from sopds.catalog.search import normalize_text, query_tokens
 from sopds.db.repository import CatalogRepository
 
 PAGE_SIZE = 50
@@ -65,7 +65,6 @@ class CatalogService:
         tokens = query_tokens(request.query)
         normalized = " ".join(tokens)
         fingerprint = _request_fingerprint(request, normalized)
-        match = fts_match_expression(tokens, request.search_field)
 
         for attempt in range(2):
             snapshot = await self._repository.active_snapshot()
@@ -76,7 +75,7 @@ class CatalogService:
                 return CatalogPage(books=(), next_cursor=None, updated_at=snapshot.updated_at)
             cursor = _decode_cursor(request.cursor, snapshot, fingerprint, self._cursor_key)
             after = None if cursor is None else (cursor.title_sort, cursor.public_id)
-            if match is None:
+            if not tokens:
                 rows = await self._repository.browse_book_ids(
                     generation_id,
                     language=request.language,
@@ -93,7 +92,8 @@ class CatalogService:
             else:
                 rows = await self._repository.search_book_ids(
                     generation_id,
-                    match,
+                    tokens,
+                    search_field=request.search_field,
                     language=request.language,
                     genre=request.genre,
                     original_format=request.original_format,

@@ -1,1 +1,1 @@
-"""Tortoise persistence and raw SQLite adapters."""
+"""Tortoise persistence and PostgreSQL-specific query boundaries."""

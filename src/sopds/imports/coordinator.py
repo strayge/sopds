@@ -106,7 +106,7 @@ class ImportCoordinator:
         return True
 
     async def vacuum_database(self) -> bool:
-        """Run exclusive SQLite maintenance without overlapping catalog replacement."""
+        """Run exclusive PostgreSQL maintenance without overlapping catalog replacement."""
         if self._manual_reserved or self._import_lock.locked():
             _LOGGER.info("Database vacuum rejected because catalog work is running")
             return False

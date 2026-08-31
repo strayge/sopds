@@ -23,6 +23,7 @@ from sopds.catalog.contracts import (
     CatalogSnapshot,
     CatalogStatistics,
     FilterOption,
+    SearchField,
 )
 from sopds.db.configuration import CONNECTION_NAME
 from sopds.db.models import (
@@ -55,6 +56,21 @@ from sopds.imports.status import (
 
 DEFAULT_BATCH_SIZE = 2_000
 PUBLIC_ID_LOOKUP_BATCH_SIZE = 500
+_SEARCH_VECTORS = {
+    SearchField.ALL: "all_vector",
+    SearchField.TITLE: "title_vector",
+    SearchField.AUTHOR: "authors_vector",
+    SearchField.SERIES: "series_vector",
+}
+_EXPLICIT_ID_TABLES = (
+    "archive",
+    "author",
+    "genre",
+    "series",
+    "book",
+    "book_author",
+    "book_genre",
+)
 
 
 class _Substring(Function):
@@ -185,7 +201,7 @@ class CatalogRepository:
         )
 
     async def write_batch(self, batch: CatalogWriteBatch) -> None:
-        """Persist relational rows through bounded ORM batches and FTS through SQLite."""
+        """Persist one bounded relational and search-projection batch atomically."""
         async with in_transaction(CONNECTION_NAME) as transaction:
             for offset in range(0, len(batch.archives), DEFAULT_BATCH_SIZE):
                 archives = [
@@ -286,8 +302,18 @@ class CatalogRepository:
             if batch.search_rows:
                 await transaction.execute_many(
                     "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
-                    "VALUES (?,?,?,?,?,?,?)",
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7)",
                     [row.fts_parameters() for row in batch.search_rows],
+                )
+
+    async def synchronize_explicit_id_sequences(self) -> None:
+        """Prevent later generated IDs colliding without updating a sequence per imported row."""
+        async with in_transaction(CONNECTION_NAME) as transaction:
+            for table in _EXPLICIT_ID_TABLES:
+                await transaction.execute_query(
+                    f"SELECT setval("  # noqa: S608
+                    f"pg_get_serial_sequence('{table}', 'id')::regclass, "
+                    f"COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM {table}"
                 )
 
     async def update_run_counters(self, run_id: int, counters: tuple[int, int, int, int]) -> None:
@@ -352,6 +378,21 @@ class CatalogRepository:
         read, imported, deleted, rejected = counters
         now = datetime.now(UTC)
         async with in_transaction(CONNECTION_NAME) as transaction:
+            _, state_rows = await transaction.execute_query(
+                "SELECT active_generation_id, updated_at FROM catalog_state WHERE id=$1 FOR UPDATE",
+                [1],
+            )
+            if len(state_rows) != 1:
+                raise RuntimeError("Catalog state singleton is missing")
+            previous_value = state_rows[0]["active_generation_id"]
+            previous = int(previous_value) if previous_value is not None else None
+            previous_revision = state_rows[0]["updated_at"]
+            if not isinstance(previous_revision, datetime):
+                raise RuntimeError("Catalog state revision is invalid")
+            if previous_revision.tzinfo is None:
+                previous_revision = previous_revision.replace(tzinfo=UTC)
+            revision = max(now, previous_revision.astimezone(UTC) + timedelta(microseconds=1))
+
             changed = (
                 await CatalogGeneration.filter(id=generation_id, state=GenerationState.IMPORTING)
                 .using_db(transaction)
@@ -382,13 +423,6 @@ class CatalogRepository:
             )
             if changed != 1:
                 raise RuntimeError("Import run is not running for this generation")
-            state_values = (
-                await CatalogState.filter(id=1).using_db(transaction).values("active_generation_id")
-            )
-            if len(state_values) != 1:
-                raise RuntimeError("Catalog state singleton is missing")
-            previous_value = state_values[0]["active_generation_id"]
-            previous = int(previous_value) if previous_value is not None else None
             if previous is not None:
                 if previous == generation_id:
                     raise RuntimeError("Importing generation is already catalog-visible")
@@ -402,7 +436,7 @@ class CatalogRepository:
             changed = (
                 await CatalogState.filter(id=1)
                 .using_db(transaction)
-                .update(active_generation_id=generation_id, updated_at=now)
+                .update(active_generation_id=generation_id, updated_at=revision)
             )
             if changed != 1:
                 raise RuntimeError("Catalog state singleton could not be updated")
@@ -427,13 +461,13 @@ class CatalogRepository:
                 UPDATE catalog_generation
                 SET visible_book_count = (
                         SELECT COUNT(*) FROM book
-                        WHERE book.generation_id = catalog_generation.id AND book.hidden = 0
+                        WHERE book.generation_id = catalog_generation.id AND NOT book.hidden
                     ),
                     hidden_book_count = (
                         SELECT COUNT(*) FROM book
-                        WHERE book.generation_id = catalog_generation.id AND book.hidden = 1
+                        WHERE book.generation_id = catalog_generation.id AND book.hidden
                     )
-                WHERE id=?
+                WHERE id=$1
                 """,
                 [generation_id],
             )
@@ -442,25 +476,25 @@ class CatalogRepository:
                 UPDATE archive
                 SET visible_book_count = (
                     SELECT COUNT(*) FROM book
-                    WHERE book.archive_id = archive.id AND book.hidden = 0
+                    WHERE book.archive_id = archive.id AND NOT book.hidden
                 )
-                WHERE generation_id=?
+                WHERE generation_id=$1
                 """,
                 [generation_id],
             )
             await transaction.execute_query(
                 "DELETE FROM archive_language WHERE archive_id IN "
-                "(SELECT id FROM archive WHERE generation_id=?)",
+                "(SELECT id FROM archive WHERE generation_id=$1)",
                 [generation_id],
             )
             await transaction.execute_query(
                 "DELETE FROM archive_original_format WHERE archive_id IN "
-                "(SELECT id FROM archive WHERE generation_id=?)",
+                "(SELECT id FROM archive WHERE generation_id=$1)",
                 [generation_id],
             )
             await transaction.execute_query(
                 "DELETE FROM archive_genre WHERE archive_id IN "
-                "(SELECT id FROM archive WHERE generation_id=?)",
+                "(SELECT id FROM archive WHERE generation_id=$1)",
                 [generation_id],
             )
             await transaction.execute_query(
@@ -468,7 +502,7 @@ class CatalogRepository:
                 INSERT INTO archive_language(archive_id, language)
                 SELECT DISTINCT b.archive_id, b.language
                 FROM book b JOIN archive a ON a.id=b.archive_id
-                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                WHERE b.generation_id=$1 AND a.generation_id=$2 AND NOT b.hidden
                   AND b.language IS NOT NULL
                   AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
                       WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
@@ -480,7 +514,7 @@ class CatalogRepository:
                 INSERT INTO archive_original_format(archive_id, original_format)
                 SELECT DISTINCT b.archive_id, b.original_format
                 FROM book b JOIN archive a ON a.id=b.archive_id
-                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                WHERE b.generation_id=$1 AND a.generation_id=$2 AND NOT b.hidden
                   AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
                       WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
                 """,
@@ -494,7 +528,7 @@ class CatalogRepository:
                 JOIN archive a ON a.id=b.archive_id
                 JOIN book_genre bg ON bg.book_id=b.id
                 JOIN genre g ON g.id=bg.genre_id
-                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                WHERE b.generation_id=$1 AND a.generation_id=$2 AND NOT b.hidden
                   AND g.generation_id=b.generation_id
                   AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
                       WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
@@ -504,13 +538,12 @@ class CatalogRepository:
 
     async def validate_generation_counts(self, generation_id: int, expected: int) -> None:
         books = await Book.filter(generation_id=generation_id).using_db(self._connection).count()
-        # FTS5 is intentionally not represented as an ORM model, so its count remains raw.
         _, rows = await self._connection.execute_query(
-            "SELECT COUNT(*) AS count FROM book_fts WHERE generation_id=?", [generation_id]
+            "SELECT COUNT(*) AS count FROM book_fts WHERE generation_id=$1", [generation_id]
         )
         fts = int(rows[0]["count"]) if len(rows) == 1 else -1
         generation_rows = await self._connection.execute_query(
-            "SELECT visible_book_count, hidden_book_count FROM catalog_generation WHERE id=?",
+            "SELECT visible_book_count, hidden_book_count FROM catalog_generation WHERE id=$1",
             [generation_id],
         )
         summary_complete = len(generation_rows[1]) == 1
@@ -519,11 +552,11 @@ class CatalogRepository:
             visible = int(summary["visible_book_count"])
             hidden = int(summary["hidden_book_count"])
             _, visible_rows = await self._connection.execute_query(
-                "SELECT COUNT(*) AS count FROM book WHERE generation_id=? AND hidden=0",
+                "SELECT COUNT(*) AS count FROM book WHERE generation_id=$1 AND NOT hidden",
                 [generation_id],
             )
             _, archive_count_rows = await self._connection.execute_query(
-                "SELECT SUM(visible_book_count) AS count FROM archive WHERE generation_id=?",
+                "SELECT SUM(visible_book_count) AS count FROM archive WHERE generation_id=$1",
                 [generation_id],
             )
             summary_complete = (
@@ -536,9 +569,9 @@ class CatalogRepository:
                 """
                 SELECT COUNT(*) AS count
                 FROM archive a
-                WHERE a.generation_id=? AND a.visible_book_count != (
+                WHERE a.generation_id=$1 AND a.visible_book_count != (
                     SELECT COUNT(*) FROM book b
-                    WHERE b.archive_id=a.id AND b.hidden=0
+                    WHERE b.archive_id=a.id AND NOT b.hidden
                 )
                 """,
                 [generation_id],
@@ -549,13 +582,13 @@ class CatalogRepository:
             WITH expected(archive_id, value) AS (
                 SELECT DISTINCT b.archive_id, b.language FROM book b
                 JOIN archive a ON a.id=b.archive_id
-                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                WHERE b.generation_id=$1 AND a.generation_id=$2 AND NOT b.hidden
                   AND b.language IS NOT NULL
                   AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
                       WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
             ), actual(archive_id, value) AS (
                 SELECT archive_id, language FROM archive_language al
-                JOIN archive a ON a.id=al.archive_id WHERE a.generation_id=?
+                JOIN archive a ON a.id=al.archive_id WHERE a.generation_id=$3
             ), missing AS (
                 SELECT archive_id, value FROM expected EXCEPT SELECT archive_id, value FROM actual
             ), extra AS (
@@ -568,12 +601,12 @@ class CatalogRepository:
             WITH expected(archive_id, value) AS (
                 SELECT DISTINCT b.archive_id, b.original_format FROM book b
                 JOIN archive a ON a.id=b.archive_id
-                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                WHERE b.generation_id=$1 AND a.generation_id=$2 AND NOT b.hidden
                   AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
                       WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
             ), actual(archive_id, value) AS (
                 SELECT archive_id, original_format FROM archive_original_format af
-                JOIN archive a ON a.id=af.archive_id WHERE a.generation_id=?
+                JOIN archive a ON a.id=af.archive_id WHERE a.generation_id=$3
             ), missing AS (
                 SELECT archive_id, value FROM expected EXCEPT SELECT archive_id, value FROM actual
             ), extra AS (
@@ -588,13 +621,13 @@ class CatalogRepository:
                 JOIN archive a ON a.id=b.archive_id
                 JOIN book_genre bg ON bg.book_id=b.id
                 JOIN genre g ON g.id=bg.genre_id
-                WHERE b.generation_id=? AND a.generation_id=? AND b.hidden=0
+                WHERE b.generation_id=$1 AND a.generation_id=$2 AND NOT b.hidden
                   AND g.generation_id=b.generation_id
                   AND (b.series_id IS NULL OR EXISTS (SELECT 1 FROM series s
                       WHERE s.id=b.series_id AND s.generation_id=b.generation_id))
             ), actual(archive_id, value) AS (
                 SELECT archive_id, genre_id FROM archive_genre ag
-                JOIN archive a ON a.id=ag.archive_id WHERE a.generation_id=?
+                JOIN archive a ON a.id=ag.archive_id WHERE a.generation_id=$3
             ), missing AS (
                 SELECT archive_id, value FROM expected EXCEPT SELECT archive_id, value FROM actual
             ), extra AS (
@@ -674,56 +707,68 @@ class CatalogRepository:
         )
 
     async def cleanup_inactive(self) -> GenerationCleanupSummary:
-        state_values = (
-            await CatalogState.filter(id=1)
-            .using_db(self._connection)
-            .values("active_generation_id")
-        )
-        active_value = state_values[0]["active_generation_id"] if state_values else None
-        active_id = int(active_value) if active_value is not None else None
         removed_generations = 0
         while True:
-            stale_query = CatalogGeneration.filter(
-                state__in=(GenerationState.SUPERSEDED, GenerationState.FAILED)
-            ).using_db(self._connection)
-            if active_id is not None:
-                stale_query = stale_query.exclude(id=active_id)
-            stale = await stale_query.order_by("id").first()
-            if stale is None:
-                return GenerationCleanupSummary(removed_generations=removed_generations)
-            await self._delete_fts_rows(stale.id)
-            await self._delete_generation_rows(Book, stale.id)
-            for model in (Archive, Author, Genre, Series):
-                await self._delete_generation_rows(model, stale.id)
-            await CatalogGeneration.filter(id=stale.id).using_db(self._connection).delete()
+            async with in_transaction(CONNECTION_NAME) as transaction:
+                _, state_rows = await transaction.execute_query(
+                    "SELECT active_generation_id FROM catalog_state WHERE id=$1 FOR UPDATE",
+                    [1],
+                )
+                if len(state_rows) != 1:
+                    raise RuntimeError("Catalog state singleton is missing")
+                active_value = state_rows[0]["active_generation_id"]
+                active_id = int(active_value) if active_value is not None else None
+                stale_query = CatalogGeneration.filter(
+                    state__in=(GenerationState.SUPERSEDED, GenerationState.FAILED)
+                ).using_db(transaction)
+                if active_id is not None:
+                    stale_query = stale_query.exclude(id=active_id)
+                stale = await stale_query.order_by("id").first()
+                if stale is None:
+                    return GenerationCleanupSummary(removed_generations=removed_generations)
+                await self._delete_fts_rows(transaction, stale.id)
+                await self._delete_generation_rows(transaction, Book, stale.id)
+                for model in (Archive, Author, Genre, Series):
+                    await self._delete_generation_rows(transaction, model, stale.id)
+                deleted = await CatalogGeneration.filter(id=stale.id).using_db(transaction).delete()
+                if deleted != 1:
+                    raise RuntimeError("Inactive catalog generation could not be removed")
             removed_generations += 1
 
-    async def _delete_fts_rows(self, generation_id: int) -> None:
-        """Bound FTS deletion because SQLite FTS5 is outside Tortoise's model system."""
+    async def _delete_fts_rows(self, connection: BaseDBAsyncClient, generation_id: int) -> None:
+        """Keep stale projection cleanup bounded without relying on backend row locators."""
         while True:
-            deleted, _ = await self._connection.execute_query(
-                "DELETE FROM book_fts WHERE rowid IN "
-                "(SELECT rowid FROM book_fts WHERE generation_id=? LIMIT ?)",
+            _, rows = await connection.execute_query(
+                "WITH doomed AS ("
+                "SELECT book_id FROM book_fts WHERE generation_id=$1 "
+                "ORDER BY book_id LIMIT $2"
+                "), deleted AS ("
+                "DELETE FROM book_fts AS f USING doomed "
+                "WHERE f.book_id=doomed.book_id AND f.generation_id=$1 "
+                "RETURNING f.book_id"
+                ") SELECT COUNT(*) AS count FROM deleted",
                 [generation_id, self._cleanup_batch_size],
             )
-            if deleted == 0:
+            if len(rows) != 1 or int(rows[0]["count"]) == 0:
                 return
 
     async def _delete_generation_rows(
         self,
+        connection: BaseDBAsyncClient,
         model: type[Archive] | type[Author] | type[Genre] | type[Series] | type[Book],
         generation_id: int,
     ) -> None:
         while True:
             ids = (
                 await model.filter(generation_id=generation_id)
-                .using_db(self._connection)
+                .using_db(connection)
+                .order_by("id")
                 .limit(self._cleanup_batch_size)
                 .values_list("id", flat=True)
             )
             if not ids:
                 return
-            await model.filter(id__in=ids).using_db(self._connection).delete()
+            await model.filter(id__in=ids).using_db(connection).delete()
 
     async def active_archives(self) -> list[tuple[int, str]]:
         state_values = (
@@ -747,16 +792,16 @@ class CatalogRepository:
         if not values:
             return ArchiveAvailabilitySummary(0, 0, 0, 0, 0)
         async with in_transaction(CONNECTION_NAME) as transaction:
-            state = (
-                await CatalogState.filter(id=1)
-                .using_db(transaction)
-                .select_for_update()
-                .select_related("active_generation")
-                .first()
+            _, state_rows = await transaction.execute_query(
+                "SELECT active_generation_id, updated_at FROM catalog_state WHERE id=$1 FOR UPDATE",
+                [1],
             )
-            if state is None or state.active_generation is None:
+            if len(state_rows) != 1:
+                raise RuntimeError("Catalog state singleton is missing")
+            active_value = state_rows[0]["active_generation_id"]
+            if active_value is None:
                 return ArchiveAvailabilitySummary(0, 0, 0, 0, 0)
-            active_generation_id = int(state.active_generation.id)
+            active_generation_id = int(active_value)
             changed_archives: list[Archive] = []
             checked = available_count = unavailable_count = 0
             changed_to_available = changed_to_unavailable = 0
@@ -796,7 +841,9 @@ class CatalogRepository:
                 batch_size=self._cleanup_batch_size,
                 using_db=transaction,
             )
-            previous = state.updated_at
+            previous = state_rows[0]["updated_at"]
+            if not isinstance(previous, datetime):
+                raise RuntimeError("Catalog state revision is invalid")
             if previous.tzinfo is None:
                 previous = previous.replace(tzinfo=UTC)
             now = datetime.now(UTC)
@@ -820,9 +867,7 @@ class CatalogRepository:
 
     async def catalog_statistics(self, generation_id: int | None) -> CatalogStatistics:
         _, size_rows = await self._connection.execute_query(
-            "SELECT "
-            "(SELECT page_count FROM pragma_page_count) * "
-            "(SELECT page_size FROM pragma_page_size) AS database_size_bytes"
+            "SELECT pg_database_size(current_database()) AS database_size_bytes"
         )
         database_size_bytes = int(size_rows[0]["database_size_bytes"])
         if generation_id is None:
@@ -883,7 +928,8 @@ class CatalogRepository:
         )
 
     async def vacuum(self) -> None:
-        await self._connection.execute_script("VACUUM")
+        """Use top-level execution because PostgreSQL rejects VACUUM inside transactions."""
+        await self._connection.execute_query("VACUUM (ANALYZE)")
 
     @staticmethod
     def _acquisition_target(
@@ -1071,8 +1117,9 @@ class CatalogRepository:
     async def search_book_ids(
         self,
         generation_id: int,
-        match: str,
+        tokens: tuple[str, ...],
         *,
+        search_field: SearchField,
         language: str | None,
         genre: str | None,
         original_format: str | None,
@@ -1084,57 +1131,49 @@ class CatalogRepository:
         after: tuple[str, str] | None,
         limit: int,
     ) -> list[tuple[int, str, str]]:
+        vector = _SEARCH_VECTORS[search_field]
         sql = (
-            "SELECT DISTINCT b.id,b.title_sort,b.public_id FROM book_fts "
-            "JOIN book b ON b.id=book_fts.book_id "
+            "SELECT DISTINCT b.id,b.title_sort,b.public_id FROM book_fts bf "  # noqa: S608
+            "JOIN book b ON b.id=bf.book_id "
             "JOIN archive a ON a.id=b.archive_id "
-            "WHERE book_fts MATCH ? AND b.generation_id=? "
-            "AND book_fts.generation_id=? AND a.generation_id=? "
-            "AND ((b.hidden=0 AND a.available=1) "
-            "OR (?=1 AND b.hidden=0 AND a.available=0) OR (?=1 AND b.hidden=1)) "
+            f"WHERE bf.{vector} @@ plainto_tsquery('simple'::regconfig, $1) "
+            "AND b.generation_id=$2 AND bf.generation_id=$2 AND a.generation_id=$2 "
+            "AND ((NOT b.hidden AND a.available) "
+            "OR ($3 AND NOT b.hidden AND NOT a.available) OR ($4 AND b.hidden)) "
             "AND (b.series_id IS NULL OR EXISTS "
-            "(SELECT 1 FROM series bs WHERE bs.id=b.series_id AND bs.generation_id=?))"
+            "(SELECT 1 FROM series bs WHERE bs.id=b.series_id AND bs.generation_id=$2)) "
+            "AND ($5::text IS NULL OR b.language=$5) "
+            "AND ($6::text IS NULL OR b.original_format=$6) "
+            "AND ($7::text IS NULL OR EXISTS ("
+            "SELECT 1 FROM book_genre bg JOIN genre g ON g.id=bg.genre_id "
+            "WHERE bg.book_id=b.id AND g.generation_id=$2 AND g.code=$7)) "
+            "AND ($8::text IS NULL OR EXISTS ("
+            "SELECT 1 FROM book_author ba JOIN author au ON au.id=ba.author_id "
+            "WHERE ba.book_id=b.id AND au.generation_id=$2 AND au.name=$8)) "
+            "AND ($9::text IS NULL OR EXISTS ("
+            "SELECT 1 FROM series s WHERE s.id=b.series_id "
+            "AND s.generation_id=$2 AND s.name=$9)) "
+            "AND (NOT $10::boolean OR b.series_id IS NULL) "
+            "AND ($11::text IS NULL OR b.title_sort>$11 "
+            "OR (b.title_sort=$12 AND b.public_id>$13)) "
+            "ORDER BY b.title_sort,b.public_id LIMIT $14"
         )
-        parameters: list[int | str] = [
-            match,
+        parameters: list[object] = [
+            " ".join(tokens),
             generation_id,
-            generation_id,
-            generation_id,
-            int(include_missed),
-            int(include_hidden),
-            generation_id,
+            include_missed,
+            include_hidden,
+            language,
+            original_format,
+            genre,
+            author,
+            series,
+            without_series,
+            after[0] if after is not None else None,
+            after[0] if after is not None else None,
+            after[1] if after is not None else None,
+            limit,
         ]
-        if language is not None:
-            sql += " AND b.language=?"
-            parameters.append(language)
-        if original_format is not None:
-            sql += " AND b.original_format=?"
-            parameters.append(original_format)
-        if genre is not None:
-            sql += (
-                " AND EXISTS (SELECT 1 FROM book_genre bg JOIN genre g ON g.id=bg.genre_id "
-                "WHERE bg.book_id=b.id AND g.generation_id=? AND g.code=?)"
-            )
-            parameters.extend((generation_id, genre))
-        if author is not None:
-            sql += (
-                " AND EXISTS (SELECT 1 FROM book_author ba JOIN author au ON au.id=ba.author_id "
-                "WHERE ba.book_id=b.id AND au.generation_id=? AND au.name=?)"
-            )
-            parameters.extend((generation_id, author))
-        if series is not None:
-            sql += (
-                " AND EXISTS (SELECT 1 FROM series s WHERE s.id=b.series_id "
-                "AND s.generation_id=? AND s.name=?)"
-            )
-            parameters.extend((generation_id, series))
-        if without_series:
-            sql += " AND b.series_id IS NULL"
-        if after is not None:
-            sql += " AND (b.title_sort>? OR (b.title_sort=? AND b.public_id>?))"
-            parameters.extend((after[0], after[0], after[1]))
-        sql += " ORDER BY b.title_sort,b.public_id LIMIT ?"
-        parameters.append(limit)
         _, rows = await self._connection.execute_query(sql, parameters)
         return [(int(row["id"]), str(row["title_sort"]), str(row["public_id"])) for row in rows]
 
