@@ -67,10 +67,12 @@ async def test_manual_reservation_cannot_be_overtaken_by_scheduled_check(
     service_mock = MagicMock()
     service_mock.import_source = AsyncMock(side_effect=import_source)
     coordinator._service = cast(CatalogImportService, service_mock)
+    refresh_availability = AsyncMock()
+    coordinator.refresh_archive_availability = refresh_availability  # type: ignore[method-assign]
 
     assert coordinator.start_manual_import()
     scheduled = await coordinator.check_for_changes()
-    await manual_ran.wait()
+    await asyncio.wait_for(manual_ran.wait(), timeout=1)
     task = coordinator._manual_task
     assert task is not None
     manual_result = await task
@@ -78,6 +80,7 @@ async def test_manual_reservation_cannot_be_overtaken_by_scheduled_check(
 
     assert scheduled.outcome is ImportOutcome.ALREADY_RUNNING
     assert manual_result.outcome is ImportOutcome.IMPORTED
+    refresh_availability.assert_awaited_once()
     repository_mock.ensure_source.assert_awaited_once()
     service_mock.import_source.assert_awaited_once()
     assert not coordinator._manual_reserved

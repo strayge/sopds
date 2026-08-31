@@ -2056,7 +2056,7 @@ def test_selection_static_asset_has_browser_local_and_normal_form_contracts() ->
         "previewGeneration",
         "requestGeneration !== previewGeneration",
         "pendingPreviewFocus",
-        "saveSelection([], true, true)",
+        "mutateSelection(() => [], true, true)",
         "resetPreviewState(page)",
         "restorePreviewFocus(target, requestIds)",
         'target.querySelector("[data-selected-preview-error]")',
