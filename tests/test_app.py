@@ -112,6 +112,7 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
         management = client.get("/manage")
 
     assert response.status_code == 200
+    assert "<title>Catalog · SOPDS</title>" in response.text
     assert "INPX-backed catalog" in response.text
     assert 'href="#main-content">Skip to main content</a>' in response.text
     assert '<a href="/" aria-current="page">Catalog</a>' in response.text
@@ -119,6 +120,7 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
     assert 'id="catalog-statistics"' not in response.text
     assert 'id="operation-status"' not in response.text
     assert management.status_code == 200
+    assert "<title>Manage catalog · SOPDS</title>" in management.text
     assert '<a href="/manage" aria-current="page">Manage</a>' in management.text
     assert 'id="catalog-statistics"' in management.text
     assert 'id="operation-status"' in management.text

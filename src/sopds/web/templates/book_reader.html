@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="{{ gettext('Read %(title)s in SOPDS.') % {'title': book.title} }}">
-    <title>{{ gettext('%(title)s · SOPDS reader') % {'title': book.title} }}</title>
+    <title>{{ book.title }} · SOPDS</title>
     <link rel="stylesheet" href="/static/css/reader.css">
     <script defer src="/static/locale.js"></script>
     {% if not reader_error %}<script type="module" src="/static/reader/app.js"></script>{% endif %}

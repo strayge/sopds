@@ -473,8 +473,11 @@ msgstr "Загружено {count} книги из {total}."
 msgid "Browse and manage the SOPDS private library catalog."
 msgstr "Просмотр и управление личным каталогом SOPDS."
 
-#: src/sopds/web/templates/base.html:7 src/sopds/web/templates/base.html:36
-#: src/sopds/web/templates/index.html:3
+#: src/sopds/web/templates/base.html:7 src/sopds/web/templates/index.html:3
+msgid "Catalog · SOPDS"
+msgstr "Каталог · SOPDS"
+
+#: src/sopds/web/templates/base.html:36
 msgid "SOPDS catalog"
 msgstr "Каталог SOPDS"
 
@@ -613,11 +616,6 @@ msgstr "Читать"
 #, python-format
 msgid "Read %(title)s in SOPDS."
 msgstr "Читать %(title)s в SOPDS."
-
-#: src/sopds/web/templates/book_reader.html:7
-#, python-format
-msgid "%(title)s · SOPDS reader"
-msgstr "%(title)s · читалка SOPDS"
 
 #: src/sopds/web/templates/book_reader.html:21
 msgid "Skip to reader"

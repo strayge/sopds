@@ -1385,6 +1385,8 @@ def test_russian_reader_localizes_shell_switcher_payload_and_known_error() -> No
     assert 'aria-label="Язык интерфейса"' in reader.text
     assert 'data-locale-choice="ru" aria-pressed="true"' in reader.text
     assert "Подготовка книги к чтению…" in reader.text
+    assert "<title>Книга &lt;unsafe&gt; &amp; &#34;raw title&#34; · SOPDS</title>" in reader.text
+    assert "читалка SOPDS</title>" not in reader.text
     assert 'aria-label="Элементы управления чтением"' in reader.text
     assert 'data-reader-mode-toggle data-reader-mode="scroll"' in reader.text
     assert ">Страницы</button>" in reader.text
@@ -1715,6 +1717,7 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
         )
 
     assert page.status_code == 200
+    assert "<title>Selected books · SOPDS</title>" in page.text
     assert '<a href="/selected" aria-current="page">Selected <span' in page.text
     assert "data-selection-count hidden>0</span>" in page.text
     assert "/static/selection.js" in page.text
@@ -3291,6 +3294,10 @@ def test_russian_server_rendered_surfaces_preserve_catalog_data() -> None:
         management = client.get("/manage", headers=headers)
 
     assert '<html lang="ru">' in shell.text
+    assert "<title>Каталог · SOPDS</title>" in shell.text
+    assert "<title>A Book · SOPDS</title>" in detail.text
+    assert "<title>Выбранные книги · SOPDS</title>" in selected_page.text
+    assert "<title>Управление каталогом · SOPDS</title>" in management.text
     assert ">Поиск по каталогу</h1>" in shell.text
     assert 'aria-label="Язык интерфейса"' in shell.text
     assert 'data-locale-choice="ru" aria-pressed="true"' in shell.text
