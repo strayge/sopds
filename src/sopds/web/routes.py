@@ -139,7 +139,8 @@ _INTERNAL_ERRORS = (
 
 
 class HealthResponse(BaseModel):
-    status: Literal["ok", "unavailable"]
+    status: Literal["ok", "degraded", "unavailable"]
+    telegram: Literal["ok", "unavailable"] | None = None
 
 
 def _format_author_name(value: str) -> str:
@@ -1777,6 +1778,23 @@ async def _database_ready(request: Request, endpoint: str) -> bool:
 
 @router.get("/health", response_model=HealthResponse)
 async def health(request: Request) -> Response:
-    if await _database_ready(request, "/health"):
-        return JSONResponse(HealthResponse(status="ok").model_dump(), status_code=200)
-    return JSONResponse(HealthResponse(status="unavailable").model_dump(), status_code=503)
+    if not await _database_ready(request, "/health"):
+        return JSONResponse(
+            HealthResponse(status="unavailable").model_dump(exclude_none=True),
+            status_code=503,
+        )
+
+    telegram = request.app.state.telegram
+    polling_running = None if telegram is None else telegram.polling_task_running()
+    if polling_running is False:
+        return JSONResponse(
+            HealthResponse(status="degraded", telegram="unavailable").model_dump(),
+            status_code=200,
+        )
+    return JSONResponse(
+        HealthResponse(
+            status="ok",
+            telegram="ok" if polling_running else None,
+        ).model_dump(exclude_none=True),
+        status_code=200,
+    )

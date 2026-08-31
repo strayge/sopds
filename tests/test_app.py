@@ -33,6 +33,32 @@ def test_health_endpoint(migrated_app_config: AppConfig) -> None:
     assert response.json() == {"status": "ok"}
 
 
+@pytest.mark.parametrize(
+    ("polling_running", "expected"),
+    [
+        (True, {"status": "ok", "telegram": "ok"}),
+        (False, {"status": "degraded", "telegram": "unavailable"}),
+    ],
+)
+def test_health_reports_started_telegram_task_state(
+    migrated_app_config: AppConfig,
+    *,
+    polling_running: bool,
+    expected: dict[str, str],
+) -> None:
+    class TelegramHealth:
+        def polling_task_running(self) -> bool:
+            return polling_running
+
+    app = create_app(migrated_app_config)
+    with TestClient(app) as client:
+        app.state.telegram = TelegramHealth()
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
 def test_health_endpoint_reports_database_failure_without_logging_details(
     migrated_app_config: AppConfig,
     caplog: pytest.LogCaptureFixture,

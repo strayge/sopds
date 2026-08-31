@@ -82,6 +82,10 @@ class TelegramRunner:
         if self._task is None:
             self._task = asyncio.create_task(self._run(), name="telegram-polling")
 
+    def polling_task_running(self) -> bool | None:
+        """Distinguish a runner that was never started from one that stopped."""
+        return None if self._task is None else not self._task.done()
+
     async def _run(self) -> None:
         delay = 1.0
         webhook_failures = 0
