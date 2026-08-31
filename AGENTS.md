@@ -21,6 +21,6 @@
 
 ## Browser state and privacy
 
-- Do not introduce cookies, sessions, or server-persisted reader state without explicit approval.
+- The explicit interface-language choice may use the `sopds_ui_language` cookie. Do not add other cookies, sessions, or server-persisted reader state without explicit approval.
 - Keep book selection local to the browser and preserve the backend's stateless selection model.
-- Before adding browser state for security or UX, explain the threat model and persistence trade-offs.
+- Before adding other browser state for security or UX, explain the threat model and persistence trade-offs.
