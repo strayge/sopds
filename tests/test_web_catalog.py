@@ -1728,7 +1728,7 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert 'data-selected-view="flat"' in page.text
     assert 'data-selected-view="tree"' in page.text
     assert 'data-selected-view="table"' in page.text
-    assert "Uncheck books to exclude them from the ZIP." in page.text
+    assert "Uncheck books to exclude them from the archive." in page.text
     assert "Unchecked rows disappear" not in page.text
     assert '<option value="nested" selected>Author + series folders</option>' in page.text
     assert "Nested folders" not in page.text
