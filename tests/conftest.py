@@ -1,7 +1,10 @@
 """Shared test configuration."""
 
 import asyncio
+import os
+import re
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import pytest
 
@@ -9,8 +12,44 @@ from sopds.config import AppConfig
 from sopds.db.migrations_runner import apply_migrations
 
 
+def _isolated_test_database_url(database_url: str) -> str:
+    """Reject URLs whose database name does not clearly identify disposable test data."""
+    try:
+        parsed = urlsplit(database_url)
+        database_name = unquote(parsed.path.removeprefix("/"))
+        valid_port = parsed.port is None or parsed.port > 0
+    except TypeError, ValueError:
+        raise ValueError("invalid PostgreSQL test database URL") from None
+
+    has_test_marker = re.search(r"(?:^|[_-])test(?:$|[_-])", database_name, flags=re.IGNORECASE)
+    if (
+        parsed.scheme not in {"postgres", "postgresql"}
+        or not parsed.hostname
+        or not valid_port
+        or not database_name
+        or "/" in database_name
+        or has_test_marker is None
+    ):
+        raise ValueError("URL must name a dedicated test database")
+    return database_url
+
+
 @pytest.fixture
-def app_config(tmp_path: Path) -> AppConfig:
+def test_database_url() -> str:
+    """Require an explicit, unmistakably isolated PostgreSQL test database."""
+    database_url = os.environ.get("SOPDS_TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("SOPDS_TEST_DATABASE_URL is required for persistence tests")
+    try:
+        return _isolated_test_database_url(database_url)
+    except ValueError:
+        raise pytest.UsageError(
+            "SOPDS_TEST_DATABASE_URL must name a dedicated test database (for example, sopds_test)"
+        ) from None
+
+
+@pytest.fixture
+def app_config(tmp_path: Path, test_database_url: str) -> AppConfig:
     return AppConfig.model_validate(
         {
             "server": {
@@ -23,7 +62,7 @@ def app_config(tmp_path: Path) -> AppConfig:
                 "archive_root": tmp_path,
                 "check_interval_hours": 12,
             },
-            "database": {"path": tmp_path / "sopds.sqlite3"},
+            "database": {"url": test_database_url},
             "telegram": {
                 "enabled": False,
                 "token": "",
@@ -41,5 +80,5 @@ def app_config(tmp_path: Path) -> AppConfig:
 @pytest.fixture
 def migrated_app_config(app_config: AppConfig) -> AppConfig:
     """Mirror production by applying migrations before application lifespan."""
-    asyncio.run(apply_migrations(app_config.database.path))
+    asyncio.run(apply_migrations(app_config.database))
     return app_config

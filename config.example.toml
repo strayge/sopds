@@ -9,7 +9,7 @@ archive_root = "/library"
 check_interval_hours = 12
 
 [database]
-path = "/data/sopds.sqlite3"
+url = "postgresql://sopds@postgres:5432/sopds"
 
 [telegram]
 enabled = false

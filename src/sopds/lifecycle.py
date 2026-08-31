@@ -42,9 +42,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     startup_ready = False
     _LOGGER.info("Application startup started phase=startup")
     try:
-        await validate_migration_state(config.database.path)
+        await validate_migration_state(config.database)
         async with AsyncExitStack() as resources:
-            database_context = await initialize_database(config.database.path)
+            database_context = await initialize_database(config.database)
             resources.push_async_callback(
                 _observed_cleanup, "database", close_database, database_context
             )

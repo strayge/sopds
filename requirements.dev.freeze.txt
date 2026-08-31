@@ -23,6 +23,8 @@ anyio==4.14.2
     #   tortoise-orm
 ast-serialize==0.8.0
     # via mypy
+asyncpg==0.31.0
+    # via (pyproject.toml:dev)
 attrs==26.1.0
     # via aiohttp
 babel==2.18.0

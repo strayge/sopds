@@ -1,11 +1,17 @@
-"""Runtime database connection lifecycle and SQLite invariant checks."""
+"""Runtime PostgreSQL connection lifecycle and live connection validation."""
 
 import logging
-from pathlib import Path
 
-from tortoise.context import TortoiseContext
+import tortoise.context as tortoise_context
+from tortoise.context import TortoiseContext, set_global_context
 
-from sopds.db.configuration import CONNECTION_NAME, SQLITE_BUSY_TIMEOUT_MS, build_tortoise_config
+from sopds.config import DatabaseConfig
+from sopds.db.configuration import (
+    CONNECTION_NAME,
+    POOL_MAX_SIZE,
+    POOL_MIN_SIZE,
+    build_tortoise_config,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -14,35 +20,40 @@ class DatabaseError(RuntimeError):
     """Reports database startup failures without including configured contents."""
 
 
-def ensure_database_parent(database_path: Path) -> None:
-    """Create only the configured database parent and preserve actionable OS errors."""
+async def initialize_database(database: DatabaseConfig) -> TortoiseContext:
+    """Open the shared pool and prove that PostgreSQL accepts application queries."""
     try:
-        database_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise DatabaseError(f"Could not create database directory: {error}") from error
+        config = build_tortoise_config(database)
+    except Exception:
+        raise DatabaseError("Could not initialize PostgreSQL database") from None
 
-
-async def initialize_database(database_path: Path) -> TortoiseContext:
-    """Open a migrated database and verify connection-local SQLite safeguards."""
-    ensure_database_parent(database_path)
     context = TortoiseContext()
     context.__enter__()
     try:
-        await context.init(
-            config=build_tortoise_config(database_path),
-            _enable_global_fallback=True,
-        )
-        await _validate_sqlite_pragmas(context)
+        await context.init(config=config)
+        await _validate_postgresql_connection(context)
         _LOGGER.info(
-            f"Database connection ready component=database backend=sqlite "
-            f"journal_mode=wal foreign_keys=True busy_timeout_ms={SQLITE_BUSY_TIMEOUT_MS}"
+            f"Database connection ready component=database backend=postgresql "
+            f"pool_min_size={POOL_MIN_SIZE} pool_max_size={POOL_MAX_SIZE}"
         )
-    except BaseException:
+        set_global_context(context)
+    except BaseException as error:
+        cleanup_error: BaseException | None = None
         try:
             await context.close_connections()
-        finally:
+        except BaseException as caught_cleanup_error:
+            cleanup_error = caught_cleanup_error
+        try:
             context.__exit__(None, None, None)
-        raise
+        except BaseException as caught_exit_error:
+            if cleanup_error is None or isinstance(cleanup_error, Exception):
+                cleanup_error = caught_exit_error
+
+        if not isinstance(error, Exception):
+            raise
+        if cleanup_error is not None and not isinstance(cleanup_error, Exception):
+            raise cleanup_error from error
+        raise DatabaseError("Could not initialize PostgreSQL database") from error
     return context
 
 
@@ -51,28 +62,16 @@ async def close_database(context: TortoiseContext) -> None:
     try:
         await context.close_connections()
     finally:
-        context.__exit__(None, None, None)
+        try:
+            context.__exit__(None, None, None)
+        finally:
+            # Tortoise 1.1.8 clears this fallback only after closing the pool succeeds.
+            if tortoise_context._global_context is context:
+                tortoise_context._global_context = None
 
 
-async def _validate_sqlite_pragmas(context: TortoiseContext) -> None:
-    """Validate WAL, foreign keys, and busy timeout where they take effect.
-
-    These connection-local settings must be checked on the actual Tortoise connection, not
-    inferred from another connection or the database file.
-    """
-    connection = context.db(CONNECTION_NAME)
-    _, rows = await connection.execute_query(
-        "SELECT "
-        "(SELECT journal_mode FROM pragma_journal_mode) AS journal_mode, "
-        "(SELECT foreign_keys FROM pragma_foreign_keys) AS foreign_keys, "
-        "(SELECT timeout FROM pragma_busy_timeout) AS busy_timeout"
-    )
-    if not rows:
-        raise DatabaseError("Could not validate SQLite connection settings")
-    row = rows[0]
-    if (
-        str(row["journal_mode"]).lower() != "wal"
-        or int(row["foreign_keys"]) != 1
-        or int(row["busy_timeout"]) != SQLITE_BUSY_TIMEOUT_MS
-    ):
-        raise DatabaseError("SQLite connection settings are not safely configured")
+async def _validate_postgresql_connection(context: TortoiseContext) -> None:
+    """Fail startup unless a query succeeds through the runtime pool."""
+    _, rows = await context.db(CONNECTION_NAME).execute_query("SELECT 1 AS connection_ok")
+    if not rows or int(rows[0]["connection_ok"]) != 1:
+        raise DatabaseError("Could not validate PostgreSQL connection")

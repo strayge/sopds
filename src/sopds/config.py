@@ -3,6 +3,7 @@
 import tomllib
 from pathlib import Path
 from typing import Self
+from urllib.parse import urlsplit
 
 from pydantic import (
     AnyHttpUrl,
@@ -22,7 +23,7 @@ class ConfigurationError(ValueError):
 class ConfigModel(BaseModel):
     """Rejects unknown settings so configuration mistakes fail at startup."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
 
 class ServerConfig(ConfigModel):
@@ -50,7 +51,24 @@ class CatalogConfig(ConfigModel):
 
 
 class DatabaseConfig(ConfigModel):
-    path: Path
+    url: SecretStr
+
+    @model_validator(mode="after")
+    def validate_postgresql_url(self) -> Self:
+        """Keep the runtime on PostgreSQL without exposing connection details in errors."""
+        try:
+            parsed = urlsplit(self.url.get_secret_value())
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("database.url must be a valid PostgreSQL URL") from error
+        if (
+            parsed.scheme not in {"postgres", "postgresql"}
+            or not hostname
+            or (port is not None and port < 1)
+        ):
+            raise ValueError("database.url must use a PostgreSQL URL with a host")
+        return self
 
 
 class TelegramConfig(ConfigModel):

@@ -69,7 +69,7 @@ def main() -> None:
     migration_started = perf_counter()
     _LOGGER.info("Database migration check started phase=migration")
     try:
-        asyncio.run(apply_migrations(config.database.path))
+        asyncio.run(apply_migrations(config.database))
     except DatabaseError, MigrationError:
         duration_ms = int((perf_counter() - migration_started) * 1000)
         _LOGGER.error(

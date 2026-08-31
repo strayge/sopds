@@ -1,365 +1,258 @@
-"""Native migration and SQLite runtime integration tests."""
+"""PostgreSQL configuration, migration, and runtime connection tests."""
 
-import sqlite3
+import asyncio
 from pathlib import Path
 from typing import cast
 
+import asyncpg  # type: ignore[import-untyped]
 import pytest
-from tortoise.context import TortoiseContext
-from tortoise.exceptions import IntegrityError
-from tortoise.migrations.api import migrate
+import tortoise.context as tortoise_context
+from pydantic import SecretStr
+from tortoise.config import ConnectionConfig
+from tortoise.context import TortoiseContext, get_current_context
 
 import sopds.db.connection as database_connection
 import sopds.db.migrations as migrations_package
-from sopds.db.configuration import SQLITE_BUSY_TIMEOUT_MS, build_tortoise_config
-from sopds.db.connection import close_database, initialize_database
+from sopds.config import DatabaseConfig
+from sopds.db.configuration import POOL_MAX_SIZE, POOL_MIN_SIZE, build_tortoise_config
+from sopds.db.connection import DatabaseError, close_database, initialize_database
 from sopds.db.migrations_runner import (
+    REQUIRED_FTS_INDEXES,
+    REQUIRED_FTS_VECTORS,
+    REQUIRED_SCHEMA_OBJECTS,
     MigrationError,
-    PendingMigrationsError,
     apply_migrations,
     validate_migration_state,
 )
-from sopds.db.models import (
-    Archive,
-    ArchiveGenre,
-    ArchiveLanguage,
-    ArchiveOriginalFormat,
-    Author,
-    Book,
-    BookAuthor,
-    BookGenre,
-    CatalogGeneration,
-    GenerationState,
-    Genre,
-)
-
-RELATION_INDEXES = {
-    ("archive", ("generation_id", "available")),
-    ("archive_genre", ("genre_id",)),
-    ("author", ("generation_id", "name_sort", "id")),
-    ("book", ("series_id",)),
-    ("book", ("generation_id", "title_sort", "public_id")),
-    ("book", ("generation_id", "series_id", "series_number", "public_id")),
-    ("book", ("generation_id", "language", "title_sort", "public_id")),
-    ("book", ("generation_id", "libid")),
-    ("book", ("generation_id", "hidden", "title_sort", "public_id")),
-    ("book_author", ("author_id", "book_id")),
-    ("book_genre", ("genre_id", "book_id")),
-    ("genre", ("generation_id", "label_sort", "id")),
-    ("series", ("generation_id", "name_sort", "id")),
-}
+from tests.conftest import _isolated_test_database_url
 
 MIGRATION_NAMES = tuple(
     sorted(path.stem for path in Path(migrations_package.__file__).parent.glob("[0-9]*.py"))
 )
 
-RELATIONAL_TABLES = {
-    "archive",
-    "archive_genre",
-    "archive_language",
-    "archive_original_format",
-    "author",
-    "book",
-    "book_author",
-    "book_genre",
-    "catalog_generation",
-    "catalog_source",
-    "catalog_state",
-    "genre",
-    "import_run",
-    "series",
-    "tortoise_migrations",
-}
+
+def _database_config(url: str = "postgresql://sopds@postgres:5432/sopds_test") -> DatabaseConfig:
+    return DatabaseConfig(url=SecretStr(url))
 
 
-async def test_fresh_migration_is_idempotent(tmp_path: Path) -> None:
-    database_path = tmp_path / "nested" / "catalog.sqlite3"
+def test_tortoise_config_uses_asyncpg_with_a_fixed_bounded_pool() -> None:
+    config = build_tortoise_config(
+        _database_config("postgresql://sopds@postgres:5432/sopds?min_size=9&max_size=20")
+    )
+    connection = cast(ConnectionConfig, config.connections["default"])
 
-    await apply_migrations(database_path)
-    await apply_migrations(database_path)
-
-    with sqlite3.connect(database_path) as connection:
-        history = connection.execute(
-            "SELECT app, name FROM tortoise_migrations ORDER BY name"
-        ).fetchall()
-    assert history == [("catalog", name) for name in MIGRATION_NAMES]
-
-
-async def test_hidden_field_migration_upgrades_a_populated_database(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    config = build_tortoise_config(database_path)
-    async with TortoiseContext():
-        await migrate(
-            config=config,
-            app_labels=["catalog"],
-            target="catalog.0003_book_series_index",
-        )
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "INSERT INTO catalog_generation(id,state,created_at) "
-            "VALUES(1,'active',CURRENT_TIMESTAMP)"
-        )
-        connection.execute(
-            "INSERT INTO archive(id,generation_id,relative_path,available) "
-            "VALUES(1,1,'books.zip',1)"
-        )
-        connection.execute(
-            "INSERT INTO book(id,public_id,member_filename,title,title_sort,size,"
-            "original_format,archive_id,generation_id) "
-            "VALUES(1,'book','book.fb2','Book','book',1,'fb2',1,1)"
-        )
-
-    await apply_migrations(database_path)
-
-    with sqlite3.connect(database_path) as connection:
-        assert connection.execute("SELECT hidden FROM book").fetchall() == [(0,)]
+    assert connection.engine == "tortoise.backends.asyncpg"
+    assert connection.db_url is None
+    assert connection.credentials["minsize"] == POOL_MIN_SIZE == 1
+    assert connection.credentials["maxsize"] == POOL_MAX_SIZE == 5
+    assert "min_size" not in connection.credentials
+    assert "max_size" not in connection.credentials
 
 
-async def test_materialized_summary_migration_backfills_existing_rows(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    config = build_tortoise_config(database_path)
-    async with TortoiseContext():
-        await migrate(
-            config=config,
-            app_labels=["catalog"],
-            target="catalog.0004_book_hidden",
-        )
-    with sqlite3.connect(database_path) as connection:
-        connection.executescript(
-            """
-            INSERT INTO catalog_generation(id,state,created_at)
-            VALUES(1,'active',CURRENT_TIMESTAMP);
-            INSERT INTO archive(id,generation_id,relative_path,available)
-            VALUES(1,1,'books.zip',0);
-            INSERT INTO genre(id,generation_id,code,label,label_sort)
-            VALUES(1,1,'sf','Science fiction','science fiction');
-            INSERT INTO book(
-                id,public_id,member_filename,title,title_sort,size,original_format,
-                archive_id,generation_id,language,hidden
-            ) VALUES
-                (1,'visible','visible.fb2','Visible','visible',1,'fb2',1,1,'ru',0),
-                (2,'hidden','hidden.mobi','Hidden','hidden',1,'mobi',1,1,'zz',1);
-            INSERT INTO book_genre(id,book_id,genre_id) VALUES(1,1,1);
-            """
-        )
+async def test_apply_migrations_hides_invalid_url_query_values() -> None:
+    config = _database_config(
+        "postgresql://sopds:database-secret@postgres:5432/sopds?min_size=query-secret"
+    )
 
-    await apply_migrations(database_path)
+    with pytest.raises(MigrationError, match=r"^Could not apply database migrations$") as error:
+        await apply_migrations(config)
 
-    with sqlite3.connect(database_path) as connection:
-        assert connection.execute(
-            "SELECT visible_book_count,hidden_book_count FROM catalog_generation"
-        ).fetchall() == [(1, 1)]
-        assert connection.execute("SELECT visible_book_count FROM archive").fetchall() == [(1,)]
-        assert connection.execute("SELECT language FROM archive_language").fetchall() == [("ru",)]
-        assert connection.execute(
-            "SELECT original_format FROM archive_original_format"
-        ).fetchall() == [("fb2",)]
-        assert connection.execute("SELECT archive_id,genre_id FROM archive_genre").fetchall() == [
-            (1, 1)
-        ]
+    assert error.value.__cause__ is None
 
 
-async def test_migrations_create_relational_and_fts_schema(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
+async def test_validate_migration_state_hides_invalid_url_query_values() -> None:
+    config = _database_config(
+        "postgresql://sopds:database-secret@postgres:5432/sopds?min_size=query-secret"
+    )
 
-    with sqlite3.connect(database_path) as connection:
+    with pytest.raises(MigrationError, match=r"^Could not validate database migrations$") as error:
+        await validate_migration_state(config)
+
+    assert error.value.__cause__ is None
+
+
+async def test_initialize_database_hides_invalid_url_query_values() -> None:
+    config = _database_config(
+        "postgresql://sopds:database-secret@postgres:5432/sopds?min_size=query-secret"
+    )
+
+    with pytest.raises(DatabaseError, match=r"^Could not initialize PostgreSQL database$") as error:
+        await initialize_database(config)
+
+    assert error.value.__cause__ is None
+
+
+async def test_native_migrations_create_and_validate_postgresql_schema(
+    test_database_url: str,
+) -> None:
+    config = _database_config(test_database_url)
+
+    await apply_migrations(config)
+    await apply_migrations(config)
+    await validate_migration_state(config)
+
+    connection = await asyncpg.connect(test_database_url)
+    try:
+        history = await connection.fetch("SELECT app, name FROM tortoise_migrations ORDER BY name")
         tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
-
-    assert tables >= RELATIONAL_TABLES
-    assert "book_fts" in tables
-    assert {"book_fts_data", "book_fts_idx", "book_fts_content", "book_fts_docsize"} <= tables
-
-
-async def test_migration_indexes_reference_real_table_columns(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-
-    found_relation_indexes: set[tuple[str, tuple[str, ...]]] = set()
-    with sqlite3.connect(database_path) as connection:
-        indexes = connection.execute(
-            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index'"
-        ).fetchall()
-        for index_name, table_name in indexes:
-            table_columns = {
-                row[1]
-                for row in connection.execute(f'PRAGMA table_info("{table_name}")').fetchall()
-            }
-            indexed_columns = tuple(
-                row[2]
-                for row in connection.execute(f'PRAGMA index_info("{index_name}")').fetchall()
-            )
-            assert indexed_columns
-            assert all(column is not None for column in indexed_columns)
-            assert set(indexed_columns) <= table_columns
-            candidate = (table_name, indexed_columns)
-            if candidate in RELATION_INDEXES:
-                found_relation_indexes.add(candidate)
-
-    assert found_relation_indexes == RELATION_INDEXES
-
-
-async def test_singleton_tables_reject_noncanonical_rows(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-
-    with sqlite3.connect(database_path) as connection:
-        assert connection.execute(
-            "SELECT id, active_generation_id FROM catalog_state"
-        ).fetchall() == [(1, None)]
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                "INSERT INTO catalog_source(id, namespace, path, updated_at) "
-                "VALUES (2, 'other', '/other.inpx', CURRENT_TIMESTAMP)"
-            )
-
-
-async def test_fts_projection_supports_match_queries(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO book_fts(
-                book_id, generation_id, title, authors, series, genres, language
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (7, 3, "Тестовая книга", "Иван Автор", "Цикл", "Фантастика", "ru"),
-        )
-        result = connection.execute(
-            "SELECT book_id, generation_id FROM book_fts WHERE book_fts MATCH ?",
-            ("тестовая",),
-        ).fetchall()
-
-    assert result == [(7, 3)]
-
-
-async def test_runtime_connection_has_required_sqlite_pragmas(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-    context = await initialize_database(database_path)
-    try:
-        connection = context.db()
-        _, journal_mode = await connection.execute_query("PRAGMA journal_mode")
-        _, foreign_keys = await connection.execute_query("PRAGMA foreign_keys")
-        _, busy_timeout = await connection.execute_query("PRAGMA busy_timeout")
-    finally:
-        await close_database(context)
-
-    assert str(journal_mode[0]["journal_mode"]).lower() == "wal"
-    assert foreign_keys[0]["foreign_keys"] == 1
-    assert busy_timeout[0]["timeout"] == SQLITE_BUSY_TIMEOUT_MS
-
-
-async def test_runtime_connection_enforces_foreign_keys(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-    context = await initialize_database(database_path)
-    try:
-        with pytest.raises(IntegrityError):
-            await context.db().execute_query(
-                "UPDATE catalog_state SET active_generation_id = 999, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = 1"
-            )
-    finally:
-        await close_database(context)
-
-
-async def test_book_round_trips_parser_compatible_optional_values(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-    context = await initialize_database(database_path)
-    try:
-        generation = await CatalogGeneration.create(state=GenerationState.IMPORTING)
-        archive = await Archive.create(
-            generation=generation,
-            relative_path="books.zip",
-        )
-        book = await Book.create(
-            generation=generation,
-            public_id="parser-id",
-            archive=archive,
-            member_filename="book.fb2",
-            title="Book",
-            title_sort="book",
-            series_number="том 2-A",
-            size=123,
-            libid=None,
-            language=None,
-            original_format="fb2",
-            rating=5,
-        )
-
-        loaded = await Book.get(id=book.id)
-    finally:
-        await close_database(context)
-
-    assert loaded.series_number == "том 2-A"
-    assert loaded.libid is None
-    assert loaded.language is None
-    assert loaded.rating == 5
-
-
-async def test_deleting_generation_cascades_all_relational_rows(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-    context = await initialize_database(database_path)
-    try:
-        generation = await CatalogGeneration.create(state=GenerationState.IMPORTING)
-        archive = await Archive.create(generation=generation, relative_path="books.zip")
-        author = await Author.create(generation=generation, name="Author", name_sort="author")
-        genre = await Genre.create(
-            generation=generation,
-            code="fiction",
-            label="Fiction",
-            label_sort="fiction",
-        )
-        book = await Book.create(
-            generation=generation,
-            public_id="book-id",
-            archive=archive,
-            member_filename="book.fb2",
-            title="Book",
-            title_sort="book",
-            size=123,
-            original_format="fb2",
-        )
-        await BookAuthor.create(book=book, author=author, position=0)
-        await BookGenre.create(book=book, genre=genre)
-        await ArchiveLanguage.create(archive=archive, language="en")
-        await ArchiveOriginalFormat.create(archive=archive, original_format="fb2")
-        await ArchiveGenre.create(archive=archive, genre=genre)
-
-        await generation.delete()
-
-        remaining = {
-            model.Meta.table: await model.all().count()
-            for model in (
-                Archive,
-                ArchiveLanguage,
-                ArchiveOriginalFormat,
-                ArchiveGenre,
-                Author,
-                Book,
-                BookAuthor,
-                BookGenre,
-                Genre,
+            str(row["tablename"])
+            for row in await connection.fetch(
+                "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = current_schema()"
             )
         }
+        vectors = {
+            str(row["attname"])
+            for row in await connection.fetch(
+                "SELECT a.attname FROM pg_catalog.pg_attribute a "
+                "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
+                "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+                "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "
+                "WHERE n.nspname = current_schema() AND c.relname = 'book_fts' "
+                "AND a.attgenerated = 's' AND t.typname = 'tsvector'"
+            )
+        }
+        indexes = {
+            str(row["indexname"])
+            for row in await connection.fetch(
+                "SELECT indexname FROM pg_catalog.pg_indexes "
+                "WHERE schemaname = current_schema() AND tablename = 'book_fts'"
+            )
+        }
+        state = await connection.fetchrow(
+            "SELECT id, active_generation_id FROM catalog_state WHERE id = 1"
+        )
+        transaction = connection.transaction()
+        await transaction.start()
+        try:
+            await connection.execute(
+                "INSERT INTO catalog_generation(id, state, created_at) "
+                "VALUES (100, 'importing', CURRENT_TIMESTAMP)"
+            )
+            await connection.execute(
+                "INSERT INTO archive(id, generation_id, relative_path, available) "
+                "VALUES (100, 100, 'test.zip', TRUE)"
+            )
+            await connection.execute(
+                "INSERT INTO book(id, generation_id, public_id, archive_id, member_filename, "
+                "title, title_sort, size, original_format) "
+                "VALUES (100, 100, 'test', 100, 'test.fb2', 'Test book', 'test book', 1, 'fb2')"
+            )
+            await connection.execute(
+                "INSERT INTO book_fts(book_id, generation_id, title, authors, series, genres, language) "
+                "VALUES (100, 100, 'test book', 'test author', '', 'fiction', 'en')"
+            )
+            generated_vector_matches = await connection.fetchval(
+                "SELECT all_vector @@ plainto_tsquery('simple', 'author') "
+                "FROM book_fts WHERE book_id = 100"
+            )
+        finally:
+            await transaction.rollback()
+    finally:
+        await connection.close()
+
+    assert [(row["app"], row["name"]) for row in history] == [
+        ("catalog", name) for name in MIGRATION_NAMES
+    ]
+    assert tables >= REQUIRED_SCHEMA_OBJECTS | {"tortoise_migrations"}
+    assert vectors == REQUIRED_FTS_VECTORS
+    assert indexes >= REQUIRED_FTS_INDEXES
+    assert generated_vector_matches is True
+    assert state is not None
+    assert (state["id"], state["active_generation_id"]) == (1, None)
+
+
+async def test_runtime_connection_validates_postgresql(test_database_url: str) -> None:
+    config = _database_config(test_database_url)
+    await apply_migrations(config)
+
+    context = await initialize_database(config)
+    try:
+        _, rows = await context.db().execute_query("SELECT current_database() AS name")
     finally:
         await close_database(context)
 
-    assert remaining == {table: 0 for table in remaining}
+    assert len(rows) == 1
+    assert rows[0]["name"]
 
 
-async def test_initialize_database_exits_context_when_cleanup_fails(
-    tmp_path: Path,
+async def test_initialize_database_does_not_install_failed_context_globally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_contexts: list[object] = []
+
+    class FailingContext:
+        exited = False
+
+        def __enter__(self) -> FailingContext:
+            return self
+
+        async def init(self, **options: object) -> None:
+            if options.get("_enable_global_fallback"):
+                global_contexts.append(self)
+
+        async def close_connections(self) -> None:
+            raise RuntimeError("cleanup failed")
+
+        def __exit__(
+            self,
+            exception_type: object,
+            exception: object,
+            traceback: object,
+        ) -> None:
+            self.exited = True
+
+    async def fail_validation(_context: object) -> None:
+        raise ValueError("validation failed")
+
+    failing_context = FailingContext()
+    monkeypatch.setattr(database_connection, "TortoiseContext", lambda: failing_context)
+    monkeypatch.setattr(database_connection, "set_global_context", global_contexts.append)
+    monkeypatch.setattr(database_connection, "_validate_postgresql_connection", fail_validation)
+
+    with pytest.raises(DatabaseError):
+        await initialize_database(_database_config())
+
+    assert global_contexts == []
+    assert failing_context.exited
+
+
+async def test_initialize_database_installs_global_fallback_after_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class SuccessfulContext:
+        def __enter__(self) -> SuccessfulContext:
+            return self
+
+        async def init(self, **_: object) -> None:
+            events.append("init")
+
+        def __exit__(
+            self,
+            exception_type: object,
+            exception: object,
+            traceback: object,
+        ) -> None:
+            return None
+
+    async def validate(_context: object) -> None:
+        events.append("validate")
+
+    context = SuccessfulContext()
+    monkeypatch.setattr(database_connection, "TortoiseContext", lambda: context)
+    monkeypatch.setattr(
+        database_connection, "set_global_context", lambda _context: events.append("global")
+    )
+    monkeypatch.setattr(database_connection, "_validate_postgresql_connection", validate)
+
+    initialized = await initialize_database(_database_config())
+
+    assert id(initialized) == id(context)
+    assert events == ["init", "validate", "global"]
+
+
+async def test_initialize_database_exits_context_and_hides_connection_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FailingContext:
@@ -369,10 +262,10 @@ async def test_initialize_database_exits_context_when_cleanup_fails(
             return self
 
         async def init(self, **_: object) -> None:
-            raise ValueError("init failed")
+            raise ValueError("postgresql://sopds:database-secret@postgres/sopds")
 
         async def close_connections(self) -> None:
-            raise RuntimeError("close failed")
+            return None
 
         def __exit__(
             self,
@@ -385,18 +278,27 @@ async def test_initialize_database_exits_context_when_cleanup_fails(
     failing_context = FailingContext()
     monkeypatch.setattr(database_connection, "TortoiseContext", lambda: failing_context)
 
-    with pytest.raises(RuntimeError, match="close failed"):
-        await initialize_database(tmp_path / "catalog.sqlite3")
+    with pytest.raises(DatabaseError) as error:
+        await initialize_database(_database_config())
 
+    assert "database-secret" not in str(error.value)
     assert failing_context.exited
 
 
-async def test_close_database_exits_context_when_connection_close_fails() -> None:
+async def test_initialize_database_hides_cleanup_failure_and_exits_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FailingContext:
         exited = False
 
+        def __enter__(self) -> FailingContext:
+            return self
+
+        async def init(self, **_: object) -> None:
+            raise ValueError("initialization failed")
+
         async def close_connections(self) -> None:
-            raise RuntimeError("close failed")
+            raise RuntimeError("cleanup-secret")
 
         def __exit__(
             self,
@@ -407,55 +309,83 @@ async def test_close_database_exits_context_when_connection_close_fails() -> Non
             self.exited = True
 
     failing_context = FailingContext()
-    with pytest.raises(RuntimeError, match="close failed"):
-        await close_database(cast(TortoiseContext, failing_context))
+    monkeypatch.setattr(database_connection, "TortoiseContext", lambda: failing_context)
 
+    with pytest.raises(DatabaseError) as error:
+        await initialize_database(_database_config())
+
+    assert "cleanup-secret" not in str(error.value)
+    assert isinstance(error.value.__cause__, ValueError)
     assert failing_context.exited
 
 
-async def test_runtime_validation_rejects_pending_migrations(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-    latest_migration = MIGRATION_NAMES[-1]
-    with sqlite3.connect(database_path) as connection:
-        connection.execute("DELETE FROM tortoise_migrations WHERE name = ?", (latest_migration,))
-
-    with pytest.raises(PendingMigrationsError, match=latest_migration):
-        await validate_migration_state(database_path)
-
-
-async def test_runtime_validation_rejects_missing_dependency_row(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-    with sqlite3.connect(database_path) as connection:
-        connection.execute("DELETE FROM tortoise_migrations WHERE name = '0001_initial'")
-
-    with pytest.raises(MigrationError, match="missing dependencies: 0001_initial"):
-        await validate_migration_state(database_path)
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgresql://sopds@postgres:5432/sopds",
+        "postgresql://sopds@postgres:5432/catalog",
+        "postgresql://sopds@postgres:5432/contest",
+        "sqlite:///sopds_test",
+    ],
+)
+def test_test_database_url_rejects_non_test_databases(database_url: str) -> None:
+    with pytest.raises(ValueError):
+        _isolated_test_database_url(database_url)
 
 
-async def test_runtime_validation_rejects_unknown_migration_record(tmp_path: Path) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "INSERT INTO tortoise_migrations(app, name, applied_at) "
-            "VALUES ('catalog', '9999_future', CURRENT_TIMESTAMP)"
-        )
+def test_test_database_url_accepts_explicit_test_database() -> None:
+    database_url = "postgresql://sopds@postgres:5432/sopds_test"
 
-    with pytest.raises(MigrationError, match="unknown or newer migrations: 9999_future"):
-        await validate_migration_state(database_path)
+    assert _isolated_test_database_url(database_url) == database_url
 
 
-@pytest.mark.parametrize("object_name", ["book", "book_fts"])
-async def test_runtime_validation_rejects_dropped_required_schema_object(
-    tmp_path: Path,
-    object_name: str,
+async def test_close_database_clears_global_fallback_on_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    database_path = tmp_path / "catalog.sqlite3"
-    await apply_migrations(database_path)
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(f'DROP TABLE "{object_name}"')
+    cleanup_error = RuntimeError("cleanup failed")
 
-    with pytest.raises(MigrationError, match=object_name):
-        await validate_migration_state(database_path)
+    class FailingContext:
+        exited = False
+
+        async def close_connections(self) -> None:
+            raise cleanup_error
+
+        def __exit__(self, *_: object) -> None:
+            self.exited = True
+
+    failing_context = FailingContext()
+    context = cast(TortoiseContext, failing_context)
+    monkeypatch.setattr(tortoise_context, "_global_context", context)
+
+    with pytest.raises(RuntimeError) as error:
+        await close_database(context)
+
+    assert error.value is cleanup_error
+    assert failing_context.exited
+    assert get_current_context() is None
+
+
+async def test_close_database_clears_global_fallback_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation = asyncio.CancelledError()
+
+    class CancelledContext:
+        exited = False
+
+        async def close_connections(self) -> None:
+            raise cancellation
+
+        def __exit__(self, *_: object) -> None:
+            self.exited = True
+
+    cancelled_context = CancelledContext()
+    context = cast(TortoiseContext, cancelled_context)
+    monkeypatch.setattr(tortoise_context, "_global_context", context)
+
+    with pytest.raises(asyncio.CancelledError) as error:
+        await close_database(context)
+
+    assert error.value is cancellation
+    assert cancelled_context.exited
+    assert get_current_context() is None

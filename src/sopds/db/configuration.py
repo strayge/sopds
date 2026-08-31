@@ -1,27 +1,32 @@
-"""Pure construction of the shared Tortoise configuration."""
+"""Pure construction of the shared PostgreSQL Tortoise configuration."""
 
-from pathlib import Path
+from typing import Any, cast
 
+from tortoise.backends.base.config_generator import expand_db_url
 from tortoise.config import AppConfig as TortoiseAppConfig
 from tortoise.config import ConnectionConfig, TortoiseConfig
 
-SQLITE_BUSY_TIMEOUT_MS = 5_000
+from sopds.config import DatabaseConfig
+
 APP_LABEL = "catalog"
 CONNECTION_NAME = "default"
+POOL_MIN_SIZE = 1
+POOL_MAX_SIZE = 5
 
 
-def build_tortoise_config(database_path: Path) -> TortoiseConfig:
-    """Keep every database phase on identical SQLite connection settings."""
+def build_tortoise_config(database: DatabaseConfig) -> TortoiseConfig:
+    """Pin the shared asyncpg pool below PostgreSQL's deployment connection limit."""
+    expanded: dict[str, Any] = expand_db_url(database.url.get_secret_value())
+    credentials = dict(cast(dict[str, Any], expanded["credentials"]))
+    credentials.pop("min_size", None)
+    credentials.pop("max_size", None)
+    credentials["minsize"] = POOL_MIN_SIZE
+    credentials["maxsize"] = POOL_MAX_SIZE
     return TortoiseConfig(
         connections={
             CONNECTION_NAME: ConnectionConfig(
-                engine="tortoise.backends.sqlite",
-                credentials={
-                    "file_path": str(database_path),
-                    "journal_mode": "WAL",
-                    "foreign_keys": "ON",
-                    "busy_timeout": SQLITE_BUSY_TIMEOUT_MS,
-                },
+                engine="tortoise.backends.asyncpg",
+                credentials=credentials,
             )
         },
         apps={

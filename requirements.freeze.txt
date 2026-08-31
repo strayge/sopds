@@ -20,6 +20,8 @@ anyio==4.14.2
     # via
     #   starlette
     #   tortoise-orm
+asyncpg==0.31.0
+    # via (pyproject.toml:runtime)
 attrs==26.1.0
     # via aiohttp
 babel==2.18.0

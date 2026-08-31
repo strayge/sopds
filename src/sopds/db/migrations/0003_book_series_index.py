@@ -4,7 +4,7 @@ from tortoise.migrations import operations as ops
 
 
 class Migration(migrations.Migration):
-    dependencies = [("catalog", "0002_fts5")]
+    dependencies = [("catalog", "0002_book_fts")]
 
     initial = False
 

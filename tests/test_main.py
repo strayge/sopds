@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from sopds import __main__
-from sopds.config import AppConfig
+from sopds.config import AppConfig, DatabaseConfig
 
 
 def test_cli_reload_uses_supervisor_without_starting_app(
@@ -39,8 +39,8 @@ def test_cli_applies_migrations_before_uvicorn(
     events: list[str] = []
     uvicorn_arguments: dict[str, object] = {}
 
-    async def fake_apply_migrations(database_path: Path) -> None:
-        assert database_path == app_config.database.path
+    async def fake_apply_migrations(database: DatabaseConfig) -> None:
+        assert database is app_config.database
         events.append("migrate")
 
     def fake_uvicorn_run(*args: object, **kwargs: object) -> None:
