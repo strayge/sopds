@@ -14,7 +14,11 @@ from asyncpg import PostgresError  # type: ignore[import-untyped]
 from tortoise.exceptions import BaseORMException
 
 from sopds.catalog.genre_names import genre_label
-from sopds.catalog.search import normalize_search_text, normalize_text
+from sopds.catalog.search import (
+    bound_search_projection,
+    normalize_search_projection,
+    normalize_text,
+)
 from sopds.db.repository import DEFAULT_BATCH_SIZE, CatalogRepository, IdCounters
 from sopds.db.rows import (
     ArchiveRow,
@@ -574,11 +578,11 @@ class CatalogImportService:
                 BookSearchRow(
                     book_id=book_id,
                     generation_id=generation_id,
-                    title=normalize_search_text(record.title),
-                    authors=normalize_search_text(" ".join(record.authors)),
-                    series=normalize_search_text(record.series or ""),
-                    genres=normalize_search_text(" ".join(genre_labels)),
-                    language=normalize_search_text(record.language or ""),
+                    title=_search_projection(record.title),
+                    authors=_search_projection(" ".join(record.authors)),
+                    series=_search_projection(record.series or ""),
+                    genres=_search_projection(" ".join(genre_labels)),
+                    language=_search_projection(record.language or ""),
                 )
             )
         await self._repository.write_batch(
@@ -598,6 +602,10 @@ class CatalogImportService:
 
 def normalize_sort_key(value: str) -> str:
     return normalize_text(value)
+
+
+def _search_projection(value: str) -> str:
+    return bound_search_projection(normalize_search_projection(value))
 
 
 def _validate_mapped_metadata(record: InpxRecord) -> None:

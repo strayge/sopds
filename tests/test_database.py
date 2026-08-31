@@ -21,6 +21,7 @@ from sopds.db.migrations_runner import (
     REQUIRED_FTS_VECTORS,
     REQUIRED_SCHEMA_OBJECTS,
     MigrationError,
+    PendingMigrationsError,
     apply_migrations,
     validate_migration_state,
 )
@@ -159,6 +160,115 @@ async def test_native_migrations_create_and_validate_postgresql_schema(
     assert generated_vector_matches is True
     assert state is not None
     assert (state["id"], state["active_generation_id"]) == (1, None)
+
+
+async def test_validation_reports_pending_migration_from_postgresql_ledger(
+    test_database_url: str,
+) -> None:
+    config = _database_config(test_database_url)
+    await apply_migrations(config)
+    pending_name = MIGRATION_NAMES[-1]
+    connection = await asyncpg.connect(test_database_url)
+    try:
+        await connection.execute(
+            "DELETE FROM tortoise_migrations WHERE app=$1 AND name=$2",
+            "catalog",
+            pending_name,
+        )
+    finally:
+        await connection.close()
+
+    with pytest.raises(PendingMigrationsError) as error:
+        await validate_migration_state(config)
+
+    assert str(error.value) == f"Database has unapplied migrations: {pending_name}"
+    assert "postgresql://" not in str(error.value)
+
+
+async def test_validation_reports_missing_migration_dependency(
+    test_database_url: str,
+) -> None:
+    config = _database_config(test_database_url)
+    await apply_migrations(config)
+    missing_name = MIGRATION_NAMES[0]
+    connection = await asyncpg.connect(test_database_url)
+    try:
+        await connection.execute(
+            "DELETE FROM tortoise_migrations WHERE app=$1 AND name=$2",
+            "catalog",
+            missing_name,
+        )
+    finally:
+        await connection.close()
+
+    with pytest.raises(MigrationError) as error:
+        await validate_migration_state(config)
+
+    assert str(error.value) == (
+        f"Database migration ledger has missing dependencies: {missing_name}"
+    )
+    assert "postgresql://" not in str(error.value)
+
+
+async def test_validation_reports_unknown_applied_migration(
+    test_database_url: str,
+) -> None:
+    config = _database_config(test_database_url)
+    await apply_migrations(config)
+    unknown_name = "9999_unknown"
+    connection = await asyncpg.connect(test_database_url)
+    try:
+        await connection.execute(
+            "INSERT INTO tortoise_migrations(app,name,applied_at) "
+            "SELECT app,$1,applied_at FROM tortoise_migrations WHERE app=$2 LIMIT 1",
+            unknown_name,
+            "catalog",
+        )
+    finally:
+        await connection.close()
+
+    with pytest.raises(MigrationError) as error:
+        await validate_migration_state(config)
+
+    assert str(error.value) == f"Database records unknown or newer migrations: {unknown_name}"
+    assert "postgresql://" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        (
+            "DROP TABLE archive_language",
+            "Database is missing required schema objects: archive_language",
+        ),
+        (
+            "DROP INDEX book_fts_series_vector_idx",
+            "Database is missing required search indexes: book_fts_series_vector_idx",
+        ),
+        (
+            "ALTER TABLE book_fts DROP COLUMN title_vector CASCADE",
+            "Database is missing required generated search vectors: title_vector",
+        ),
+    ],
+)
+async def test_validation_reports_missing_required_schema_parts(
+    test_database_url: str,
+    mutation: str,
+    expected: str,
+) -> None:
+    config = _database_config(test_database_url)
+    await apply_migrations(config)
+    connection = await asyncpg.connect(test_database_url)
+    try:
+        await connection.execute(mutation)
+    finally:
+        await connection.close()
+
+    with pytest.raises(MigrationError) as error:
+        await validate_migration_state(config)
+
+    assert str(error.value) == expected
+    assert "postgresql://" not in str(error.value)
 
 
 async def test_runtime_connection_validates_postgresql(test_database_url: str) -> None:

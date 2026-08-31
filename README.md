@@ -243,9 +243,17 @@ restore the matching dump:
 ```shell
 set -eu
 backup_path=backups/sopds-YYYYMMDDTHHMMSSZ
+restore_stamp=$(date -u +%Y%m%dT%H%M%SZ)
 restore_tmp="library.restore.$$"
-previous_library="library.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+previous_config="config.toml.before-restore-$restore_stamp"
+previous_library="library.before-restore-$restore_stamp"
+failed_config="config.toml.failed-restore-$restore_stamp"
+failed_library="library.failed-restore-$restore_stamp"
 
+test ! -e "$previous_config"
+test ! -e "$previous_library"
+test ! -e "$failed_config"
+test ! -e "$failed_library"
 mkdir "$restore_tmp"
 cleanup() { rm -rf "$restore_tmp" config.toml.restore; }
 trap 'cleanup; exit 1' HUP INT TERM
@@ -254,9 +262,10 @@ trap cleanup 0
 tar -xzf "$backup_path/library.tar.gz" -C "$restore_tmp"
 cp "$backup_path/config.toml" config.toml.restore
 docker compose stop sopds
+mv config.toml "$previous_config"
 mv library "$previous_library"
-mv "$restore_tmp" library
 mv config.toml.restore config.toml
+mv "$restore_tmp" library
 
 if docker compose exec -T postgres \
   pg_restore --clean --if-exists --no-owner --exit-on-error --single-transaction \
@@ -265,15 +274,23 @@ then
   docker compose up -d sopds
 else
   status=$?
-  printf '%s\n' 'Restore failed; SOPDS remains stopped.' >&2
+  mv config.toml "$failed_config"
+  mv library "$failed_library"
+  mv "$previous_config" config.toml
+  mv "$previous_library" library
+  printf '%s\n' \
+    "Restore failed; previous config.toml and library restored; SOPDS remains stopped." >&2
   exit "$status"
 fi
 ```
 
-After verifying the restored catalog, remove the `library.before-restore-*`
-directory. If the Compose project is down, start the database first with
-`docker compose up -d postgres`. Leave SOPDS stopped if restore reports an error
-and resolve it before restarting the service.
+After verifying a successful restore, remove the matching
+`config.toml.before-restore-*` file and `library.before-restore-*` directory. If
+`pg_restore` fails, its attempted pair is retained as
+`config.toml.failed-restore-*` and `library.failed-restore-*`, while the previous
+configuration and library are put back automatically and SOPDS remains stopped.
+If the Compose project is down, start the database first with
+`docker compose up -d postgres`.
 
 ## Acknowledgments
 

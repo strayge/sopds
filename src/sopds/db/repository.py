@@ -703,37 +703,65 @@ class CatalogRepository:
 
     async def cleanup_inactive(self) -> GenerationCleanupSummary:
         removed_generations = 0
-        while True:
-            async with in_transaction(CONNECTION_NAME) as transaction:
-                _, state_rows = await transaction.execute_query(
-                    "SELECT active_generation_id FROM catalog_state WHERE id=$1 FOR UPDATE",
-                    [1],
-                )
-                if len(state_rows) != 1:
-                    raise RuntimeError("Catalog state singleton is missing")
-                active_value = state_rows[0]["active_generation_id"]
-                active_id = int(active_value) if active_value is not None else None
-                stale_query = CatalogGeneration.filter(
-                    state__in=(GenerationState.SUPERSEDED, GenerationState.FAILED)
-                ).using_db(transaction)
-                if active_id is not None:
-                    stale_query = stale_query.exclude(id=active_id)
-                stale = await stale_query.order_by("id").first()
-                if stale is None:
-                    return GenerationCleanupSummary(removed_generations=removed_generations)
-                await self._delete_fts_rows(transaction, stale.id)
-                await self._delete_generation_rows(transaction, Book, stale.id)
-                for model in (Archive, Author, Genre, Series):
-                    await self._delete_generation_rows(transaction, model, stale.id)
-                deleted = await CatalogGeneration.filter(id=stale.id).using_db(transaction).delete()
-                if deleted != 1:
-                    raise RuntimeError("Inactive catalog generation could not be removed")
-            removed_generations += 1
+        while generation_id := await self._next_inactive_generation():
+            eligible = True
+            for model in (None, Book, Archive, Author, Genre, Series):
+                while True:
+                    if model is None:
+                        deleted = await self._delete_fts_batch(generation_id)
+                    else:
+                        deleted = await self._delete_generation_batch(model, generation_id)
+                    if deleted is None:
+                        eligible = False
+                        break
+                    if deleted == 0:
+                        break
+                if not eligible:
+                    break
+            if eligible and await self._delete_inactive_generation(generation_id):
+                removed_generations += 1
+        return GenerationCleanupSummary(removed_generations=removed_generations)
 
-    async def _delete_fts_rows(self, connection: BaseDBAsyncClient, generation_id: int) -> None:
-        """Keep stale projection cleanup bounded without relying on backend row locators."""
-        while True:
-            _, rows = await connection.execute_query(
+    async def _next_inactive_generation(self) -> int | None:
+        async with in_transaction(CONNECTION_NAME) as transaction:
+            active_id = await self._locked_active_generation_id(transaction)
+            stale_query = CatalogGeneration.filter(
+                state__in=(GenerationState.SUPERSEDED, GenerationState.FAILED)
+            ).using_db(transaction)
+            if active_id is not None:
+                stale_query = stale_query.exclude(id=active_id)
+            stale = await stale_query.order_by("id").first()
+            return stale.id if stale is not None else None
+
+    async def _locked_active_generation_id(self, transaction: BaseDBAsyncClient) -> int | None:
+        _, state_rows = await transaction.execute_query(
+            "SELECT active_generation_id FROM catalog_state WHERE id=$1 FOR UPDATE",
+            [1],
+        )
+        if len(state_rows) != 1:
+            raise RuntimeError("Catalog state singleton is missing")
+        active_value = state_rows[0]["active_generation_id"]
+        return int(active_value) if active_value is not None else None
+
+    async def _is_inactive_cleanup_target(
+        self, transaction: BaseDBAsyncClient, generation_id: int
+    ) -> bool:
+        active_id = await self._locked_active_generation_id(transaction)
+        if active_id == generation_id:
+            return False
+        values = (
+            await CatalogGeneration.filter(id=generation_id).using_db(transaction).values("state")
+        )
+        return bool(
+            values and values[0]["state"] in (GenerationState.SUPERSEDED, GenerationState.FAILED)
+        )
+
+    async def _delete_fts_batch(self, generation_id: int) -> int | None:
+        """Commit one guarded projection batch so cancellation preserves bounded progress."""
+        async with in_transaction(CONNECTION_NAME) as transaction:
+            if not await self._is_inactive_cleanup_target(transaction, generation_id):
+                return None
+            _, rows = await transaction.execute_query(
                 "WITH doomed AS ("
                 "SELECT book_id FROM book_fts WHERE generation_id=$1 "
                 "ORDER BY book_id LIMIT $2"
@@ -744,26 +772,40 @@ class CatalogRepository:
                 ") SELECT COUNT(*) AS count FROM deleted",
                 [generation_id, self._cleanup_batch_size],
             )
-            if len(rows) != 1 or int(rows[0]["count"]) == 0:
-                return
+            if len(rows) != 1:
+                raise RuntimeError("Inactive search projection cleanup did not return a count")
+            return int(rows[0]["count"])
 
-    async def _delete_generation_rows(
+    async def _delete_generation_batch(
         self,
-        connection: BaseDBAsyncClient,
         model: type[Archive] | type[Author] | type[Genre] | type[Series] | type[Book],
         generation_id: int,
-    ) -> None:
-        while True:
+    ) -> int | None:
+        async with in_transaction(CONNECTION_NAME) as transaction:
+            if not await self._is_inactive_cleanup_target(transaction, generation_id):
+                return None
             ids = (
                 await model.filter(generation_id=generation_id)
-                .using_db(connection)
+                .using_db(transaction)
                 .order_by("id")
                 .limit(self._cleanup_batch_size)
                 .values_list("id", flat=True)
             )
             if not ids:
-                return
-            await model.filter(id__in=ids).using_db(connection).delete()
+                return 0
+            await model.filter(id__in=ids).using_db(transaction).delete()
+            return len(ids)
+
+    async def _delete_inactive_generation(self, generation_id: int) -> bool:
+        async with in_transaction(CONNECTION_NAME) as transaction:
+            if not await self._is_inactive_cleanup_target(transaction, generation_id):
+                return False
+            deleted = (
+                await CatalogGeneration.filter(id=generation_id).using_db(transaction).delete()
+            )
+            if deleted != 1:
+                raise RuntimeError("Inactive catalog generation could not be removed")
+            return True
 
     async def active_archives(self) -> list[tuple[int, str]]:
         state_values = (

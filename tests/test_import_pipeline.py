@@ -14,6 +14,11 @@ import pytest
 from tortoise.context import TortoiseContext
 from tortoise.queryset import QuerySet
 
+from sopds.catalog.search import (
+    SEARCH_PROJECTION_MAX_BYTES,
+    bound_search_projection,
+    normalize_search_projection,
+)
 from sopds.config import AppConfig
 from sopds.db.connection import close_database, initialize_database
 from sopds.db.migrations_runner import apply_migrations
@@ -1069,6 +1074,43 @@ async def test_failed_batch_counters_include_only_committed_books(
     ) == [expected]
 
 
+async def test_extreme_valid_metadata_has_a_bounded_search_projection(
+    app_config: AppConfig,
+) -> None:
+    author_names = tuple(
+        f"{'earlymarker ' if index == 0 else ''}author{index} " + "слово " * 70
+        for index in range(80)
+    )
+    authors = ":".join(author_names) + ":"
+    _write_inpx(app_config.catalog.inpx_path, _line(AUTHOR=authors))
+
+    async with _coordinator(app_config) as (coordinator, context):
+        result = await _run_forced_import(coordinator)
+        assert result.outcome is ImportOutcome.IMPORTED
+        _, rows = await context.db().execute_query(
+            "SELECT title,authors,series,genres,language,octet_length(authors) AS author_bytes "
+            "FROM book_fts"
+        )
+        projection = dict(rows[0])
+        expected_authors = bound_search_projection(
+            normalize_search_projection(" ".join(author_names))
+        )
+        assert projection["authors"] == expected_authors
+        assert projection["author_bytes"] == len(expected_authors.encode("utf-8"))
+        assert 0 < int(projection["author_bytes"]) <= SEARCH_PROJECTION_MAX_BYTES
+        assert len(normalize_search_projection(" ".join(author_names)).encode("utf-8")) > (
+            SEARCH_PROJECTION_MAX_BYTES
+        )
+        for field in ("title", "authors", "series", "genres", "language"):
+            value = str(projection[field])
+            assert len(value.encode("utf-8")) <= SEARCH_PROJECTION_MAX_BYTES
+            assert value == " ".join(value.split())
+        assert await _query(
+            app_config,
+            "SELECT all_vector @@ plainto_tsquery('simple', 'earlymarker') FROM book_fts",
+        ) == [(True,)]
+
+
 async def test_projection_count_mismatch_prevents_activation(
     app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1183,6 +1225,125 @@ async def test_cleanup_inactive_deletes_large_generation_in_bounded_batches(
     assert await _query(app_config, "SELECT id,state FROM catalog_generation") == [
         (active.id, "active")
     ]
+
+
+async def test_cleanup_commits_only_one_bounded_batch_before_cancellation(
+    app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await apply_migrations(app_config.database)
+    context = await initialize_database(app_config.database)
+    connection = context.db()
+    repository = CatalogRepository(connection, cleanup_batch_size=2)
+    stale = await CatalogGeneration.create(using_db=connection, state=GenerationState.FAILED)
+    archive = await Archive.create(
+        using_db=connection, generation=stale, relative_path="cancelled-cleanup.zip"
+    )
+    for index in range(5):
+        book = await Book.create(
+            using_db=connection,
+            generation=stale,
+            public_id=f"cancelled-cleanup-{index}",
+            archive=archive,
+            member_filename=f"cancelled-cleanup-{index}.fb2",
+            title="book",
+            title_sort="book",
+            size=1,
+            original_format="fb2",
+        )
+        await connection.execute_query(
+            "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
+            "VALUES ($1,$2,'book','','','','')",
+            [book.id, stale.id],
+        )
+
+    original_delete = repository._delete_fts_batch
+    batch_committed = asyncio.Event()
+    hold_after_commit = asyncio.Event()
+
+    async def pause_after_first_batch(generation_id: int) -> int | None:
+        deleted = await original_delete(generation_id)
+        if deleted:
+            batch_committed.set()
+            await hold_after_commit.wait()
+        return deleted
+
+    monkeypatch.setattr(repository, "_delete_fts_batch", pause_after_first_batch)
+    cleanup = asyncio.create_task(repository.cleanup_inactive())
+    try:
+        await asyncio.wait_for(batch_committed.wait(), timeout=2)
+        assert await _query(app_config, "SELECT count(*) FROM book_fts") == [(3,)]
+        assert await _query(app_config, "SELECT count(*) FROM book") == [(5,)]
+        cleanup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cleanup
+    finally:
+        if not cleanup.done():
+            cleanup.cancel()
+            await asyncio.gather(cleanup, return_exceptions=True)
+        await close_database(context)
+
+
+async def test_cleanup_revalidates_active_generation_before_each_batch(
+    app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await apply_migrations(app_config.database)
+    context = await initialize_database(app_config.database)
+    connection = context.db()
+    repository = CatalogRepository(connection, cleanup_batch_size=2)
+    active = await CatalogGeneration.create(using_db=connection, state=GenerationState.ACTIVE)
+    stale = await CatalogGeneration.create(using_db=connection, state=GenerationState.FAILED)
+    await CatalogState.filter(id=1).using_db(connection).update(active_generation_id=active.id)
+    archive = await Archive.create(
+        using_db=connection, generation=stale, relative_path="revalidated-cleanup.zip"
+    )
+    for index in range(3):
+        book = await Book.create(
+            using_db=connection,
+            generation=stale,
+            public_id=f"revalidated-cleanup-{index}",
+            archive=archive,
+            member_filename=f"revalidated-cleanup-{index}.fb2",
+            title="book",
+            title_sort="book",
+            size=1,
+            original_format="fb2",
+        )
+        await connection.execute_query(
+            "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
+            "VALUES ($1,$2,'book','','','','')",
+            [book.id, stale.id],
+        )
+
+    original_delete = repository._delete_fts_batch
+    activated = False
+
+    async def activate_after_first_batch(generation_id: int) -> int | None:
+        nonlocal activated
+        deleted = await original_delete(generation_id)
+        if deleted and not activated:
+            activated = True
+            await (
+                CatalogState.filter(id=1).using_db(connection).update(active_generation_id=stale.id)
+            )
+        return deleted
+
+    monkeypatch.setattr(repository, "_delete_fts_batch", activate_after_first_batch)
+    try:
+        summary = await repository.cleanup_inactive()
+        assert summary.removed_generations == 0
+        assert await CatalogGeneration.filter(id=stale.id).using_db(connection).exists()
+        assert (
+            await CatalogState.filter(id=1, active_generation_id=stale.id)
+            .using_db(connection)
+            .exists()
+        )
+        _, rows = await connection.execute_query(
+            "SELECT count(*) AS count FROM book_fts WHERE generation_id=$1", [stale.id]
+        )
+        assert int(rows[0]["count"]) == 1
+        assert await Book.filter(generation_id=stale.id).using_db(connection).count() == 3
+    finally:
+        await close_database(context)
 
 
 async def test_hash_rejects_metadata_instability(

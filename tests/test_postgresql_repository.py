@@ -10,7 +10,12 @@ import asyncpg  # type: ignore[import-untyped]
 import pytest
 
 from sopds.catalog.contracts import CatalogRequest, SearchField
-from sopds.catalog.search import normalize_search_text, normalize_text, query_tokens
+from sopds.catalog.search import (
+    normalize_search_projection,
+    normalize_search_text,
+    normalize_text,
+    query_tokens,
+)
 from sopds.catalog.service import CatalogService
 from sopds.config import AppConfig
 from sopds.db.connection import close_database, initialize_database
@@ -137,6 +142,49 @@ def test_search_normalization_folds_only_latin_diacritics() -> None:
     assert normalize_text("Café résumé naïve Ёлка Й") == "café résumé naïve елка й"
     assert normalize_search_text("Café résumé naïve Ёлка Й") == "cafe resume naive елка й"
     assert query_tokens("CAFÉ, résumé naïve Ёлка") == ("cafe", "resume", "naive", "елка")
+    punctuated = "v1.2.3 J.R.R. reader@example.org books.example.org"
+    assert normalize_search_projection(punctuated) == (
+        "v1 2 3 j r r reader example org books example org"
+    )
+    assert query_tokens("J.R.R. v1.2.3") == ("j", "r", "r", "v1", "2", "3")
+
+
+async def test_punctuation_projection_matches_title_author_and_series_queries(
+    app_config: AppConfig,
+) -> None:
+    archive_path = app_config.catalog.archive_root / "nested" / "books.zip"
+    archive_path.parent.mkdir()
+    archive_path.touch()
+    _write_inpx(
+        app_config.catalog.inpx_path,
+        _line(
+            TITLE="Release v1.2.3",
+            AUTHOR="J.R.R. Tolkien:reader@example.org:",
+            SERIES="books.example.org",
+        ),
+    )
+
+    async with _catalog(app_config) as (repository, coordinator):
+        result = await coordinator._request(ImportTrigger.MANUAL, force=True)
+        assert result.outcome is ImportOutcome.IMPORTED
+        _, rows = await repository._connection.execute_query(
+            "SELECT title,authors,series FROM book_fts"
+        )
+        assert dict(rows[0]) == {
+            "title": "release v1 2 3",
+            "authors": "j r r tolkien reader example org",
+            "series": "books example org",
+        }
+
+        catalog = CatalogService(repository, b"postgresql-test-cursor-key")
+        for query, field in (
+            ("v1.2.3", SearchField.TITLE),
+            ("J.R.R.", SearchField.AUTHOR),
+            ("reader@example.org", SearchField.AUTHOR),
+            ("books.example.org", SearchField.SERIES),
+        ):
+            page = await catalog.browse(CatalogRequest(query=query, search_field=field))
+            assert [book.title for book in page.books] == ["Release v1.2.3"]
 
 
 async def test_postgresql_import_search_materialization_activation_sequences_and_vacuum(
