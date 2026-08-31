@@ -347,17 +347,34 @@
     return true;
   }
 
+  function mutateSelection(mutation, restoreFocus = false, preserveEntries = false) {
+    const currentIds = readSelection();
+    selectedIds = currentIds;
+    if (!storageReady) {
+      syncInterface();
+      return false;
+    }
+    const nextIds = mutation(currentIds);
+    if (nextIds === null) {
+      syncInterface();
+      return false;
+    }
+    return saveSelection(nextIds, restoreFocus, preserveEntries);
+  }
+
   function appendId(publicId, preserveEntries = false) {
-    if (!isValidId(publicId) || selectedIds.includes(publicId)) {
+    if (!isValidId(publicId)) {
       syncInterface();
       return;
     }
-    if (selectedIds.length >= MAX_SELECTED) {
-      showSelectionStatus(selectionMessage("selectionLimit"), true);
-      syncInterface();
-      return;
-    }
-    saveSelection([...selectedIds, publicId], null, preserveEntries);
+    mutateSelection((currentIds) => {
+      if (currentIds.includes(publicId)) return null;
+      if (currentIds.length >= MAX_SELECTED) {
+        showSelectionStatus(selectionMessage("selectionLimit"), true);
+        return null;
+      }
+      return [...currentIds, publicId];
+    }, null, preserveEntries);
   }
 
   function removeId(publicId, preserveEntries = false) {
@@ -365,15 +382,15 @@
       syncInterface();
       return;
     }
-    saveSelection(
-      selectedIds.filter((selectedId) => selectedId !== publicId),
+    mutateSelection(
+      (currentIds) => currentIds.filter((selectedId) => selectedId !== publicId),
       null,
       preserveEntries,
     );
   }
 
   function clearSelection() {
-    saveSelection([], true, true);
+    mutateSelection(() => [], true, true);
   }
 
   function formatSize(size) {
@@ -1105,25 +1122,21 @@
     if (group) {
       event.stopPropagation();
       const publicIds = selectionGroupIds(group);
-      const selected = new Set(selectedIds);
-      const include = publicIds.some((publicId) => !selected.has(publicId));
       const preserveEntries = Boolean(group.closest(".selected-tree-view"));
-      if (include) {
-        const nextIds = [...new Set([...selectedIds, ...publicIds])];
-        if (nextIds.length > MAX_SELECTED) {
-          showSelectionStatus(selectionMessage("selectionLimit"), true);
-          syncInterface();
-          return;
+      mutateSelection((currentIds) => {
+        const selected = new Set(currentIds);
+        const include = publicIds.some((publicId) => !selected.has(publicId));
+        if (include) {
+          const nextIds = [...new Set([...currentIds, ...publicIds])];
+          if (nextIds.length > MAX_SELECTED) {
+            showSelectionStatus(selectionMessage("selectionLimit"), true);
+            return null;
+          }
+          return nextIds;
         }
-        saveSelection(nextIds, null, preserveEntries);
-      } else {
         const removed = new Set(publicIds);
-        saveSelection(
-          selectedIds.filter((publicId) => !removed.has(publicId)),
-          null,
-          preserveEntries,
-        );
-      }
+        return currentIds.filter((publicId) => !removed.has(publicId));
+      }, null, preserveEntries);
       return;
     }
     if (event.target.closest("[data-selection-clear]")) {

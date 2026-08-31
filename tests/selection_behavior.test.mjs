@@ -26,6 +26,8 @@ const exportHook = `
     mergeSelectedSearchUrls,
     selectionGroupIds,
     syncGroupCheckboxes,
+    appendId,
+    removeId,
     initialize,
     setState(ids, previewIds) {
       selectedIds = ids;
@@ -641,6 +643,22 @@ test("Tree group selection uses the native checked and indeterminate states", ()
   assert.equal(group.indeterminate, false);
   documentGroups = [];
 });
+
+test("checkbox mutations merge the latest stored selection before writing", () => {
+  documentCheckboxes = [];
+  documentGroups = [];
+  storedSelection = '["remote"]';
+  behavior.setState(["stale"], null);
+
+  behavior.appendId("local");
+  assert.equal(storedSelection, '["remote","local"]');
+
+  storedSelection = '["remote","local","remove"]';
+  behavior.setState(["stale","remove"], null);
+  behavior.removeId("remove");
+  assert.equal(storedSelection, '["remote","local"]');
+});
+
 
 test("dynamic catalog renders stay root-scoped while duplicate and cross-tab selection stays authoritative", () => {
   storedSelection = "[]";
