@@ -320,7 +320,19 @@ The INPX file and ZIP archives remain the source library, while the database
 contains the catalog built from that source. Restore both when moving the
 service to another host.
 
-## Converter software
+## Acknowledgments
 
-- [fb2cng](https://github.com/rupor-github/fb2cng) — GPL-3.0
-- [Kindling](https://github.com/ciscoriordan/kindling) — MIT
+- [fb2cng](https://github.com/rupor-github/fb2cng) (GPL-3.0) — converts
+  FB2 books to EPUB.
+- [Kindling](https://github.com/ciscoriordan/kindling) (MIT) — converts EPUB
+  books to AZW3.
+- [Foliate-js](https://github.com/johnfactotum/foliate-js) (MIT) — renders FB2
+  and EPUB books in the web reader.
+- [zip.js](https://github.com/gildas-lormeau/zip.js) (BSD-3-Clause) — reads EPUB
+  archives in the web reader.
+- [htmx](https://htmx.org/) (0BSD) — updates catalog and management pages
+  without full-page reloads.
+- [IBM Plex Sans](https://github.com/IBM/plex),
+  [Literata](https://github.com/googlefonts/literata), and
+  [Noto Serif](https://github.com/notofonts/latin-greek-cyrillic) (OFL-1.1) —
+  provide the web interface typography.
