@@ -114,7 +114,7 @@ msgstr "Запускается проверка импорта"
 
 #: src/sopds/web/i18n.py:69
 msgid "Force import is starting"
-msgstr "Запускается полный импорт"
+msgstr "Запускается принудительный импорт"
 
 #: src/sopds/web/i18n.py:70
 msgid "An import or database maintenance operation is already running"
@@ -122,11 +122,11 @@ msgstr "Уже выполняется импорт или обслуживани
 
 #: src/sopds/web/i18n.py:71
 msgid "Database VACUUM completed"
-msgstr "Очистка базы данных завершена"
+msgstr "VACUUM базы данных завершен"
 
 #: src/sopds/web/i18n.py:72
 msgid "VACUUM skipped because catalog work is running"
-msgstr "Очистка пропущена: выполняется операция с каталогом"
+msgstr "VACUUM пропущен: выполняется операция с каталогом"
 
 #: src/sopds/web/i18n.py:74
 msgid ""
@@ -783,19 +783,19 @@ msgstr "Импортировать изменения"
 
 #: src/sopds/web/templates/manage.html:31
 msgid "Force a full catalog import?"
-msgstr "Выполнить полный импорт каталога?"
+msgstr "Выполнить принудительный импорт каталога?"
 
 #: src/sopds/web/templates/manage.html:31
 msgid "Force import"
-msgstr "Полный импорт"
+msgstr "Принудительный импорт"
 
 #: src/sopds/web/templates/manage.html:32
 msgid "VACUUM the catalog database now?"
-msgstr "Очистить базу данных каталога сейчас?"
+msgstr "Запустить VACUUM базы данных сейчас?"
 
 #: src/sopds/web/templates/manage.html:32
 msgid "Vacuum database"
-msgstr "Очистить базу данных"
+msgstr "Выполнить VACUUM базы данных"
 
 #: src/sopds/web/templates/manage.html:38
 msgid "Import status"
