@@ -11,7 +11,7 @@
   const SELECTED_VIEWS = new Set(["flat", "tree", "table"]);
   const SELECTED_TABLE_SORTS = new Set(["author", "title", "series"]);
   const SORT_DIRECTIONS = new Set(["asc", "desc"]);
-  const NATURAL_CHUNKS = /[0-9]+|[^0-9]+/g;
+  const BOOK_SORTING = globalThis.SOPDSBookSorting;
   const SELECTION_MESSAGE_FALLBACKS = Object.freeze({
     savedSelectionRepaired: "Saved selection was repaired.",
     selectionUnavailable: "Book selection is unavailable in this browser.",
@@ -481,124 +481,21 @@
     return node;
   }
 
-  function selectedTextCompare(left, right) {
-    const normalizedLeft = String(left).normalize("NFKC").toLowerCase();
-    const normalizedRight = String(right).normalize("NFKC").toLowerCase();
-    if (normalizedLeft === normalizedRight) return left < right ? -1 : left > right ? 1 : 0;
-    return normalizedLeft < normalizedRight ? -1 : 1;
-  }
-
-  function selectedUnicodeScalarCompare(left, right) {
-    const leftPoints = Array.from(String(left), (value) => value.codePointAt(0));
-    const rightPoints = Array.from(String(right), (value) => value.codePointAt(0));
-    const length = Math.min(leftPoints.length, rightPoints.length);
-    for (let index = 0; index < length; index += 1) {
-      if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] < rightPoints[index] ? -1 : 1;
-    }
-    return Math.sign(leftPoints.length - rightPoints.length);
-  }
-
-  function selectedIntegerCompare(left, right) {
-    const normalizedLeft = left.replace(/^0+/, "") || "0";
-    const normalizedRight = right.replace(/^0+/, "") || "0";
-    if (normalizedLeft.length !== normalizedRight.length) {
-      return normalizedLeft.length < normalizedRight.length ? -1 : 1;
-    }
-    return selectedUnicodeScalarCompare(normalizedLeft, normalizedRight);
-  }
-
-  function selectedNaturalTextCompare(left, right) {
-    const normalizedLeft = String(left ?? "").normalize("NFKC").toLowerCase().replaceAll("ё", "е");
-    const normalizedRight = String(right ?? "").normalize("NFKC").toLowerCase().replaceAll("ё", "е");
-    const leftChunks = normalizedLeft.match(NATURAL_CHUNKS) || [];
-    const rightChunks = normalizedRight.match(NATURAL_CHUNKS) || [];
-    const length = Math.min(leftChunks.length, rightChunks.length);
-    for (let index = 0; index < length; index += 1) {
-      const leftChunk = leftChunks[index];
-      const rightChunk = rightChunks[index];
-      const leftDigits = /^[0-9]+$/.test(leftChunk);
-      const rightDigits = /^[0-9]+$/.test(rightChunk);
-      let compared;
-      if (leftDigits && rightDigits) {
-        compared = selectedIntegerCompare(leftChunk, rightChunk)
-          || selectedUnicodeScalarCompare(leftChunk, rightChunk);
-      } else if (leftDigits !== rightDigits) compared = leftDigits ? -1 : 1;
-      else compared = selectedUnicodeScalarCompare(leftChunk, rightChunk);
-      if (compared) return compared;
-    }
-    return Math.sign(leftChunks.length - rightChunks.length);
-  }
-
-  function selectedSeriesNumber(value) {
-    if (value === null || value === undefined || String(value).trim() === "") {
-      return {bucket: "missing", raw: "", digits: "", suffix: ""};
-    }
-    const raw = String(value).trim();
-    const match = raw.match(/^([0-9]+)(.*)$/s);
-    if (!match) return {bucket: "text", raw, digits: "", suffix: raw};
-    const digits = match[1];
-    return {bucket: /[1-9]/.test(digits) ? "positive" : "zero", raw, digits, suffix: match[2]};
-  }
-
-  function compareSelectedSeriesNumbers(left, right) {
-    const leftNumber = selectedSeriesNumber(left);
-    const rightNumber = selectedSeriesNumber(right);
-    const ranks = {positive: 0, text: 1, zero: 2, missing: 3};
-    if (ranks[leftNumber.bucket] !== ranks[rightNumber.bucket]) {
-      return ranks[leftNumber.bucket] - ranks[rightNumber.bucket];
-    }
-    if (leftNumber.bucket === "missing") return 0;
-    let compared = 0;
-    if (leftNumber.bucket === "positive") {
-      compared = selectedIntegerCompare(leftNumber.digits, rightNumber.digits);
-      if (!compared) compared = selectedNaturalTextCompare(leftNumber.suffix, rightNumber.suffix);
-    } else compared = selectedNaturalTextCompare(leftNumber.raw, rightNumber.raw);
-    return compared || selectedUnicodeScalarCompare(leftNumber.raw, rightNumber.raw);
-  }
-
-  function selectedOptionalTextCompare(left, right) {
-    if (!left || !right) {
-      if (!left && !right) return 0;
-      return left ? -1 : 1;
-    }
-    return selectedTextCompare(left, right);
+  function compareSelectedSeriesNumbers(left, right, direction = "asc") {
+    return BOOK_SORTING.compareSeriesNumberValues(left, right, direction);
   }
 
   function compareSelectedMetadata(left, right, sort, direction = "asc") {
-    const leftAuthor = left.authors[0]?.sortLabel || left.authors[0]?.label || null;
-    const rightAuthor = right.authors[0]?.sortLabel || right.authors[0]?.label || null;
-    const leftSeries = left.series?.sortLabel || left.series?.label || null;
-    const rightSeries = right.series?.sortLabel || right.series?.label || null;
-    const leftTitle = left.titleSort || left.title;
-    const rightTitle = right.titleSort || right.title;
-    let compared;
-    if (sort === "title") {
-      compared = selectedTextCompare(leftTitle, rightTitle);
-    } else if (sort === "series") {
-      compared = selectedOptionalTextCompare(leftSeries, rightSeries)
-        || compareSelectedSeriesNumbers(left.series?.number, right.series?.number)
-        || selectedOptionalTextCompare(leftAuthor, rightAuthor)
-        || selectedTextCompare(leftTitle, rightTitle);
-    } else {
-      compared = selectedOptionalTextCompare(leftAuthor, rightAuthor)
-        || selectedOptionalTextCompare(leftSeries, rightSeries)
-        || selectedTextCompare(leftTitle, rightTitle);
-    }
-    if (!compared) compared = selectedTextCompare(left.publicId, right.publicId);
-    return direction === "desc" ? -compared : compared;
+    return BOOK_SORTING.tableComparator(sort, direction)(left, right);
   }
 
   function selectedEntryComparator(sort, direction) {
-    return (left, right) => compareSelectedMetadata(
-      selectedEntryMetadata(left),
-      selectedEntryMetadata(right),
-      sort,
-      direction,
-    );
+    const comparator = BOOK_SORTING.tableComparator(sort, direction);
+    return (left, right) => comparator(selectedEntryMetadata(left), selectedEntryMetadata(right));
   }
 
   function selectedGroupKey(type, label) {
-    return `${type}:${String(label).normalize("NFKC").toLowerCase()}`;
+    return BOOK_SORTING.groupKey(type, label);
   }
 
   function mergeSelectedSearchUrls(urls) {
@@ -622,11 +519,22 @@
   }
 
   function selectedEntryAuthors(entry) {
-    return [...entry.querySelectorAll(".result-row__authors a")].map((link) => ({
-      key: selectedGroupKey("author", link.textContent),
-      label: link.textContent,
-      searchUrl: link.getAttribute("href"),
-    }));
+    return [...entry.querySelectorAll(".result-row__authors a")].map((link) => {
+      const label = link.textContent;
+      const sortKey = link.dataset?.sortKey
+        || link.getAttribute("data-sort-key")
+        || BOOK_SORTING.normalizeSortKey(label);
+      const identityValue = link.dataset?.identityKey
+        || link.getAttribute("data-identity-key")
+        || label;
+      return {
+        key: selectedGroupKey("author", identityValue),
+        label,
+        sortKey,
+        identityValue,
+        searchUrl: link.getAttribute("href"),
+      };
+    });
   }
 
   function selectedTableAuthorModel(entry, limit = 2) {
@@ -677,25 +585,37 @@
   }
 
   function selectedEntryMetadata(entry) {
-    let authors = selectedEntryAuthors(entry);
-    if (authors.length === 0) {
-      authors = [{key: "synthetic-author:unknown", label: selectionMessage("unknownAuthor"), sortLabel: "Unknown author", searchUrl: null}];
-    } else if (authors.length >= 6) {
-      authors = [{key: "synthetic-author:many", label: selectionMessage("manyAuthors"), sortLabel: "Many authors (6+)", searchUrl: null}];
-    }
+    const authors = selectedEntryAuthors(entry);
+    const groupAuthors = authors.length === 0
+      ? [{key: BOOK_SORTING.identityKey("synthetic-author", "unknown"), label: selectionMessage("unknownAuthor"), sortKey: BOOK_SORTING.normalizePhrase("Unknown author"), searchUrl: null, stableLabel: "Unknown author"}]
+      : authors.length >= 6
+        ? [{key: BOOK_SORTING.identityKey("synthetic-author", "many"), label: selectionMessage("manyAuthors"), sortKey: BOOK_SORTING.normalizePhrase("Many authors (6+)"), searchUrl: null, stableLabel: "Many authors (6+)"}]
+        : authors;
     const seriesLink = entry.querySelector(".result-row__series a");
+    const seriesLabel = seriesLink?.textContent;
+    const seriesIdentityValue = seriesLink?.dataset?.identityKey
+      || seriesLink?.getAttribute("data-identity-key")
+      || seriesLabel;
+    const seriesSortKey = seriesLink?.dataset?.sortKey
+      || seriesLink?.getAttribute("data-sort-key")
+      || BOOK_SORTING.normalizeSortKey(seriesLabel);
     const seriesNumber = entry.querySelector("[data-series-number]")?.textContent.trim().replace(/^#/, "") || null;
     const renderedTitle = entry.querySelector(".result-row__title")?.textContent.trim();
     const unknownEntry = entry.dataset.status === "unknown";
+    const title = renderedTitle || selectionMessage("unknownSelection");
     return {
       publicId: entry.dataset.publicId,
-      title: renderedTitle || selectionMessage("unknownSelection"),
-      titleSort: unknownEntry ? "unknown selection" : entry.dataset.titleSortKey || renderedTitle || "unknown selection",
+      title,
+      titleSortKey: unknownEntry
+        ? "unknown selection"
+        : entry.dataset.titleSortKey || BOOK_SORTING.normalizeSortKey(title),
       authors,
+      groupAuthors,
       series: seriesLink ? {
-        key: selectedGroupKey("series", seriesLink.textContent),
-        label: seriesLink.textContent,
-        sortLabel: seriesLink.textContent,
+        key: selectedGroupKey("series", seriesIdentityValue),
+        label: seriesLabel,
+        sortKey: seriesSortKey,
+        identityValue: seriesIdentityValue,
         number: seriesNumber,
         searchUrl: seriesLink.getAttribute("href"),
       } : null,
@@ -703,11 +623,7 @@
   }
 
   function compareSelectedTreeEntries(left, right) {
-    const leftMetadata = selectedEntryMetadata(left);
-    const rightMetadata = selectedEntryMetadata(right);
-    return compareSelectedSeriesNumbers(leftMetadata.series?.number, rightMetadata.series?.number)
-      || selectedUnicodeScalarCompare(leftMetadata.titleSort, rightMetadata.titleSort)
-      || selectedUnicodeScalarCompare(leftMetadata.publicId, rightMetadata.publicId);
+    return BOOK_SORTING.treeComparator(selectedEntryMetadata(left), selectedEntryMetadata(right));
   }
 
   function cloneSelectedEntry(entry) {
@@ -737,22 +653,35 @@
     const groups = new Map();
     for (const entry of entries) {
       const metadata = selectedEntryMetadata(entry);
-      for (const author of metadata.authors) {
-        let branch = groups.get(author.key);
+      for (const groupAuthor of metadata.groupAuthors) {
+        let branch = groups.get(groupAuthor.key);
         if (!branch) {
-          branch = {label: author.label, sortLabel: author.sortLabel || author.label, entries: [], searchUrls: [], series: new Map()};
-          groups.set(author.key, branch);
+          branch = {
+            label: groupAuthor.label,
+            stableLabel: groupAuthor.stableLabel || groupAuthor.label,
+            sortKey: BOOK_SORTING.normalizePhrase(groupAuthor.label),
+            key: groupAuthor.key,
+            entries: [],
+            searchUrls: [],
+            series: new Map(),
+          };
+          groups.set(groupAuthor.key, branch);
         }
         branch.entries.push(entry);
-        if (author.searchUrl) branch.searchUrls.push(author.searchUrl);
-        const seriesKey = metadata.series?.key || "synthetic-series:without-series";
+        if (groupAuthor.searchUrl) branch.searchUrls.push(groupAuthor.searchUrl);
+        const seriesKey = metadata.series
+          ? BOOK_SORTING.identityKey("series", groupAuthor.key, "named", metadata.series.identityValue)
+          : BOOK_SORTING.identityKey("series", groupAuthor.key, "without-series");
         let leaf = branch.series.get(seriesKey);
         if (!leaf) {
           leaf = {
+            key: seriesKey,
             label: metadata.series?.label || selectionMessage("booksWithoutSeries"),
-            sortLabel: metadata.series?.label || "Books without series",
+            stableLabel: metadata.series?.label || "Books without series",
+            sortKey: metadata.series?.sortKey || null,
             entries: [],
             searchUrls: [],
+            withoutSeries: !metadata.series,
           };
           branch.series.set(seriesKey, leaf);
         }
@@ -761,7 +690,7 @@
       }
     }
     const tree = selectedElement("div", "catalog-tree-view selected-tree-view");
-    const branches = [...groups.values()].sort((left, right) => selectedTextCompare(left.sortLabel, right.sortLabel));
+    const branches = [...groups.values()].sort(BOOK_SORTING.compareGroups);
     for (const branch of branches) {
       const author = selectedElement("details", "catalog-tree-author");
       const authorSummary = selectedElement("summary", "catalog-tree-author__summary");
@@ -769,7 +698,11 @@
       authorSummary.append(selectedMetadataLink(branch.label, branch.searchUrls));
       authorSummary.append(selectedElement("span", "catalog-tree-count", ` (${formatInteger(new Set(branch.entries.map((entry) => entry.dataset.publicId)).size)})`));
       author.append(authorSummary);
-      const leaves = [...branch.series.values()].sort((left, right) => selectedTextCompare(left.sortLabel, right.sortLabel));
+      const leaves = [...branch.series.values()]
+        .filter((leaf) => !leaf.withoutSeries)
+        .sort(BOOK_SORTING.compareGroups);
+      const withoutSeries = [...branch.series.values()].find((leaf) => leaf.withoutSeries);
+      if (withoutSeries) leaves.push(withoutSeries);
       for (const leaf of leaves) {
         const series = selectedElement("details", "catalog-tree-series");
         const summary = selectedElement("summary", "catalog-tree-series__summary");

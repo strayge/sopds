@@ -3,6 +3,8 @@ import {readFileSync} from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
+const sortingPath = new URL("../src/sopds/web/static/book_sorting.js", import.meta.url);
+const sortingSource = readFileSync(sortingPath, "utf8");
 const scriptPath = new URL("../src/sopds/web/static/selection.js", import.meta.url);
 const source = readFileSync(scriptPath, "utf8");
 const exportHook = `
@@ -11,6 +13,7 @@ const exportHook = `
     syncFormatSelector,
     readSelectionI18n,
     selectionMessage,
+    sorting: BOOK_SORTING,
     selectedTableStatusKey,
     selectedTableAuthorModel,
     compareSelectedSeriesNumbers,
@@ -207,6 +210,7 @@ const context = vm.createContext({
   window: windowStub,
 });
 context.globalThis = context;
+vm.runInContext(sortingSource, context, {filename: sortingPath.pathname});
 vm.runInContext(instrumented, context, {filename: scriptPath.pathname});
 const behavior = context.selectionBehavior;
 
@@ -343,8 +347,10 @@ test("selection messages localize safely, group integers with ASCII spaces, and 
 });
 
 test("selected Tree metadata groups visible names and merges availability searches", () => {
-  assert.equal(behavior.selectedGroupKey("author", "Ａuthor"), "author:author");
-  assert.equal(behavior.selectedGroupKey("series", "Saga"), "series:saga");
+  assert.equal(behavior.selectedGroupKey("author", "Ａuthor"), '["author","Ａuthor"]');
+  assert.notEqual(behavior.selectedGroupKey("author", "Ёж"), behavior.selectedGroupKey("author", "Еж"));
+  assert.equal(behavior.selectedGroupKey("series", "Saga"), '["series","Saga"]');
+  assert.equal(Object.isFrozen(behavior.sorting), true);
   assert.equal(
     behavior.mergeSelectedSearchUrls([
       "/?q=Writer&search_field=author",
@@ -421,6 +427,10 @@ test("selected Tree follows catalog series-number ordering before title", () => 
     renderedSelectedEntry("two-a", "downloadable", "Alpha title", "Author", "Series", "2"),
     renderedSelectedEntry("missing", "downloadable", "Missing number", "Author", "Series"),
   ];
+  const metadata = behavior.selectedEntryMetadata(entries[0]);
+  assert.equal(metadata.titleSortKey, "first title");
+  assert.equal(metadata.authors[0].sortKey, "author");
+  assert.equal(metadata.series.sortKey, "series");
   assert.deepEqual(
     entries.sort(behavior.compareSelectedTreeEntries).map((entry) => entry.dataset.publicId),
     ["two-a", "two-b", "ten", "missing"],
@@ -436,11 +446,42 @@ test("selected Tree follows catalog series-number ordering before title", () => 
   );
 });
 
+test("selected comparators use the canonical catalog ordering contract", () => {
+  const catalogBooks = [
+    {publicId: "ten", titleSortKey: "еж 10", authors: [{sortKey: "елка"}], series: {sortKey: "серия", number: "10"}},
+    {publicId: "two", titleSortKey: "еж 2", authors: [{sortKey: "елка"}], series: {sortKey: "серия", number: "2"}},
+    {publicId: "missing", titleSortKey: "a", authors: [], series: null},
+  ];
+  const selectedEntries = [
+    renderedSelectedEntry("ten", "downloadable", "Ёж 10", "Ёлка", "Серия", "10"),
+    renderedSelectedEntry("two", "downloadable", "Ёж 2", "Ёлка", "Серия", "2"),
+    renderedSelectedEntry("missing", "downloadable", "A"),
+  ];
+  for (const [sort, direction] of [["title", "asc"], ["title", "desc"], ["author", "asc"], ["series", "asc"], ["series", "desc"]]) {
+    const catalogOrder = [...catalogBooks]
+      .sort(behavior.sorting.tableComparator(sort, direction))
+      .map((book) => book.publicId);
+    const selectedOrder = [...selectedEntries]
+      .sort((left, right) => behavior.compareSelectedMetadata(
+        behavior.selectedEntryMetadata(left),
+        behavior.selectedEntryMetadata(right),
+        sort,
+        direction,
+      ))
+      .map((entry) => entry.dataset.publicId);
+    assert.deepEqual(selectedOrder, catalogOrder, `${sort} ${direction} ordering matches catalog`);
+  }
+  assert.deepEqual(
+    [...selectedEntries].sort(behavior.compareSelectedTreeEntries).map((entry) => entry.dataset.publicId),
+    [...catalogBooks].sort(behavior.sorting.treeComparator).map((book) => book.publicId),
+  );
+});
+
 test("selected Table metadata sorting supports three columns and both directions", () => {
   const values = [
-    {publicId: "b", title: "Beta", authors: [{label: "Alpha"}], series: {label: "Series 2"}},
-    {publicId: "a", title: "Alpha", authors: [{label: "Beta"}], series: null},
-    {publicId: "c", title: "Gamma", authors: [{label: "Alpha"}], series: {label: "Series 1"}},
+    {publicId: "b", titleSortKey: "beta", authors: [{sortKey: "alpha"}], series: {sortKey: "series 2", number: null}},
+    {publicId: "a", titleSortKey: "alpha", authors: [{sortKey: "beta"}], series: null},
+    {publicId: "c", titleSortKey: "gamma", authors: [{sortKey: "alpha"}], series: {sortKey: "series 1", number: null}},
   ];
   const sorted = (sort, direction) => [...values]
     .sort((left, right) => behavior.compareSelectedMetadata(left, right, sort, direction))
@@ -454,10 +495,10 @@ test("selected Table metadata sorting supports three columns and both directions
   assert.deepEqual(sorted("series", "desc"), ["a", "b", "c"]);
 
   const numbered = [
-    {publicId: "two", title: "Alpha", authors: [{label: "Author"}], series: {label: "Дозоры", number: "2"}},
-    {publicId: "one", title: "Delta", authors: [{label: "Author"}], series: {label: "Дозоры", number: "1"}},
-    {publicId: "four", title: "Beta", authors: [{label: "Author"}], series: {label: "Дозоры", number: "4"}},
-    {publicId: "three", title: "Gamma", authors: [{label: "Author"}], series: {label: "Дозоры", number: "3"}},
+    {publicId: "two", titleSortKey: "alpha", authors: [{sortKey: "author"}], series: {sortKey: "дозоры", number: "2"}},
+    {publicId: "one", titleSortKey: "delta", authors: [{sortKey: "author"}], series: {sortKey: "дозоры", number: "1"}},
+    {publicId: "four", titleSortKey: "beta", authors: [{sortKey: "author"}], series: {sortKey: "дозоры", number: "4"}},
+    {publicId: "three", titleSortKey: "gamma", authors: [{sortKey: "author"}], series: {sortKey: "дозоры", number: "3"}},
   ];
   assert.deepEqual(
     [...numbered]

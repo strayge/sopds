@@ -3,6 +3,8 @@ import {readFileSync} from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
+const sortingPath = new URL("../src/sopds/web/static/book_sorting.js", import.meta.url);
+const sortingSource = readFileSync(sortingPath, "utf8");
 const scriptPath = new URL("../src/sopds/web/static/catalog.js", import.meta.url);
 const source = readFileSync(scriptPath, "utf8");
 const exportHook = `
@@ -15,13 +17,14 @@ const exportHook = `
     freshCriteriaState,
     appendPresentationFragment,
     synchronizeCriteriaLinks,
-    normalizePhrase,
-    unicodeScalarCompare,
-    naturalTextCompare,
-    parseSeriesNumber,
-    compareSeriesNumberValues,
-    flatComparator,
-    tableComparator,
+    sorting: BOOK_SORTING,
+    normalizePhrase: BOOK_SORTING.normalizePhrase,
+    unicodeScalarCompare: BOOK_SORTING.unicodeScalarCompare,
+    naturalTextCompare: BOOK_SORTING.naturalTextCompare,
+    parseSeriesNumber: BOOK_SORTING.parseSeriesNumber,
+    compareSeriesNumberValues: BOOK_SORTING.compareSeriesNumberValues,
+    flatComparator: BOOK_SORTING.flatComparator,
+    tableComparator: BOOK_SORTING.tableComparator,
     matchesFilters,
     filterBooks,
     validatePayload,
@@ -218,6 +221,7 @@ const context = vm.createContext({
   window: windowStub,
 });
 context.globalThis = context;
+vm.runInContext(sortingSource, context, {filename: sortingPath.pathname});
 vm.runInContext(instrumented, context, {filename: scriptPath.pathname});
 const behavior = context.catalogBehavior;
 
@@ -489,6 +493,23 @@ test("Tree grouping applies no-author, one, duplicate 2–5, and Many authors 6+
   assert.equal(tree.find((branch) => branch.books.some((book) => book.publicId === "six")).label, "Many authors (6+)");
   assert.equal(tree.find((branch) => branch.books.some((book) => book.publicId === "unknown")).label, "Unknown author");
 });
+
+test("Tree identity keeps distinct authors that share a normalized sort key", () => {
+  const author = (raw) => [{
+    raw,
+    display: raw,
+    sortKey: "еж",
+    scopeUrl: `/?q=${encodeURIComponent(raw)}&search_field=author`,
+  }];
+  const tree = behavior.buildTreeModel(books(
+    rawBook("yo", {authors: author("Ёж"), seriesName: null}),
+    rawBook("ye", {authors: author("Еж"), seriesName: null}),
+  ));
+
+  assert.equal(tree.length, 2);
+  assert.notEqual(tree[0].key, tree[1].key);
+});
+
 
 test("Tree branch counts are unique, named series sort naturally by name, and no-series is last", () => {
   const duplicateAuthor = [{raw: "A", display: "A", sortKey: "a", scopeUrl: "/?q=A&search_field=author"}];

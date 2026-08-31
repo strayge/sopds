@@ -178,6 +178,12 @@ def test_index_uses_shared_server_rendered_shell(migrated_app_config: AppConfig)
     assert 'hx-trigger="load, every 30s"' not in response.text
     assert "function localizeCatalogTimes(root)" not in response.text
     assert "/static/locale.js" in response.text
+    assert "/static/book_sorting.js" in response.text
+    assert (
+        response.text.index("/static/book_sorting.js")
+        < response.text.index("/static/selection.js")
+        < response.text.index("/static/catalog.js")
+    )
     assert "/static/css/app.css" in response.text
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
     assert "<style>" not in response.text
@@ -218,6 +224,7 @@ def test_vendored_javascript_is_served_locally_and_revalidated(
     with TestClient(create_app(migrated_app_config)) as client:
         htmx = client.get("/static/vendor/htmx/htmx-2.0.10.min.js")
         locale = client.get("/static/locale.js")
+        book_sorting = client.get("/static/book_sorting.js")
         reader = client.get("/static/reader/app.js")
         reader_i18n = client.get("/static/reader/i18n.js")
 
@@ -229,6 +236,10 @@ def test_vendored_javascript_is_served_locally_and_revalidated(
     assert "javascript" in locale.headers["content-type"]
     assert locale.headers["cache-control"] == "no-cache"
     assert "sopds_ui_language" in locale.text
+    assert book_sorting.status_code == 200
+    assert "javascript" in book_sorting.headers["content-type"]
+    assert book_sorting.headers["cache-control"] == "no-cache"
+    assert "SOPDSBookSorting" in book_sorting.text
     assert reader.status_code == 200
     assert reader.headers["cache-control"] == "no-cache"
     assert "from './i18n.js'" in reader.text

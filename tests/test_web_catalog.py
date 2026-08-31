@@ -531,6 +531,7 @@ def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
     assert "result-row--catalog" not in page.text
     assert "catalog-pagination" not in page.text
     assert "next-token" not in page.text
+    assert "/static/book_sorting.js" in page.text
     assert "/static/catalog.js" in page.text
     assert "private/archive/member.fb2" not in page.text
     assert "private-library-id" not in page.text
@@ -1720,6 +1721,7 @@ def test_selected_page_preview_and_download_use_strict_matching_requests() -> No
     assert "<title>Selected books · SOPDS</title>" in page.text
     assert '<a href="/selected" aria-current="page">Selected <span' in page.text
     assert "data-selection-count hidden>0</span>" in page.text
+    assert "/static/book_sorting.js" in page.text
     assert "/static/selection.js" in page.text
     assert 'action="/selected/download"' in page.text
     assert 'method="post"' in page.text
