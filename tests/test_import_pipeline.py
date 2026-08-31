@@ -664,6 +664,27 @@ async def test_archive_availability_refreshes_without_new_run(app_config: AppCon
     assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(1,)]
 
 
+async def test_manual_import_refreshes_archive_availability_without_new_run(
+    app_config: AppConfig,
+) -> None:
+    _write_inpx(app_config.catalog.inpx_path, _line())
+    archive = app_config.catalog.archive_root / "nested" / "books.zip"
+    async with _coordinator(app_config) as (coordinator, _):
+        await coordinator.check_for_changes()
+        assert _query(app_config.database.path, "SELECT available FROM archive") == [(0,)]
+        archive.parent.mkdir(exist_ok=True)
+        archive.touch()
+
+        assert coordinator.start_manual_import()
+        task = coordinator._manual_task
+        assert task is not None
+        result = await task
+
+    assert result.outcome is ImportOutcome.UNCHANGED
+    assert _query(app_config.database.path, "SELECT available FROM archive") == [(1,)]
+    assert _query(app_config.database.path, "SELECT count(*) FROM import_run") == [(1,)]
+
+
 async def test_source_identity_change_clears_matching_metadata_fingerprint(
     app_config: AppConfig,
 ) -> None:

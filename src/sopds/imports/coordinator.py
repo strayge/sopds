@@ -159,8 +159,7 @@ class ImportCoordinator:
         request_started = perf_counter()
         try:
             _LOGGER.info(f"Catalog source check started trigger={trigger.value} force={force}")
-            if trigger is ImportTrigger.SCHEDULED:
-                await self.refresh_archive_availability()
+            await self.refresh_archive_availability()
             await self._repository.ensure_source(self._namespace, self._source_path)
             try:
                 metadata = await stat_source(self._source_path)
