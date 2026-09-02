@@ -1,23 +1,9 @@
 """Command-line entry point for the single-process server."""
 
 import argparse
-import asyncio
 import logging
-import logging.config
-from copy import deepcopy
 from pathlib import Path
-from time import perf_counter
 from typing import Any, cast
-
-import uvicorn
-from uvicorn.config import LOGGING_CONFIG
-
-from sopds.access_log import AccessLogMiddleware, configure_access_logging
-from sopds.app import create_app
-from sopds.config import ConfigurationError, load_config
-from sopds.db.connection import DatabaseError
-from sopds.db.migrations_runner import MigrationError, apply_migrations
-from sopds.reloader import run_reload_supervisor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _logging_config() -> dict[str, Any]:
+    from copy import deepcopy
+
+    from uvicorn.config import LOGGING_CONFIG
+
+    from sopds.access_log import configure_access_logging
+
     config = deepcopy(LOGGING_CONFIG)
     configure_access_logging(config)
     loggers = cast(dict[str, Any], config["loggers"])
@@ -51,16 +43,22 @@ def _logging_config() -> dict[str, Any]:
     return config
 
 
-def main() -> None:
-    parser = build_parser()
-    arguments = parser.parse_args()
-    if arguments.reload:
-        logging.config.dictConfig(_logging_config())
-        run_reload_supervisor(arguments.config, Path(__file__).resolve().parent)
-        return
+def _run_server(parser: argparse.ArgumentParser, config_path: Path) -> None:
+    """Import application dependencies only in the worker process."""
+    import asyncio
+    import logging.config
+    from time import perf_counter
+
+    import uvicorn
+
+    from sopds.access_log import AccessLogMiddleware
+    from sopds.app import create_app
+    from sopds.config import ConfigurationError, load_config
+    from sopds.db.connection import DatabaseError
+    from sopds.db.migrations_runner import MigrationError, apply_migrations
 
     try:
-        config = load_config(arguments.config)
+        config = load_config(config_path)
     except ConfigurationError as error:
         parser.error(str(error))
 
@@ -90,6 +88,19 @@ def main() -> None:
         log_config=logging_config,
         access_log=False,
     )
+
+
+def main() -> None:
+    parser = build_parser()
+    arguments = parser.parse_args()
+    if arguments.reload:
+        from sopds.reloader import run_reload_supervisor
+
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
+        run_reload_supervisor(arguments.config, Path(__file__).resolve().parent)
+        return
+
+    _run_server(parser, arguments.config)
 
 
 if __name__ == "__main__":

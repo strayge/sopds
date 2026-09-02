@@ -1,5 +1,6 @@
 """Command-line startup ordering tests."""
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,8 +23,8 @@ def test_cli_reload_uses_supervisor_without_starting_app(
     def unexpected_load_config(_path: Path) -> AppConfig:
         pytest.fail("reload parent must not initialize the application")
 
-    monkeypatch.setattr(__main__, "run_reload_supervisor", fake_run_reload_supervisor)
-    monkeypatch.setattr(__main__, "load_config", unexpected_load_config)
+    monkeypatch.setattr("sopds.reloader.run_reload_supervisor", fake_run_reload_supervisor)
+    monkeypatch.setattr("sopds.config.load_config", unexpected_load_config)
     monkeypatch.setattr(sys, "argv", ["sopds", "--config", str(config_path), "--reload"])
 
     __main__.main()
@@ -31,6 +32,24 @@ def test_cli_reload_uses_supervisor_without_starting_app(
     assert supervisor_arguments is not None
     assert supervisor_arguments[0] == config_path
     assert supervisor_arguments[1].name == "sopds"
+
+
+def test_cli_module_does_not_import_worker_dependencies() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, 'src'); import sopds.__main__; "
+            "heavy = {'uvicorn', 'fastapi', 'pydantic', 'tortoise', 'asyncpg', "
+            "'sopds.app', 'sopds.lifecycle'}; "
+            "assert heavy.isdisjoint(sys.modules), heavy.intersection(sys.modules)",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_cli_applies_migrations_before_uvicorn(
@@ -48,9 +67,9 @@ def test_cli_applies_migrations_before_uvicorn(
         uvicorn_arguments.update(kwargs)
         events.append("uvicorn")
 
-    monkeypatch.setattr(__main__, "load_config", lambda _path: app_config)
-    monkeypatch.setattr(__main__, "apply_migrations", fake_apply_migrations)
-    monkeypatch.setattr("sopds.__main__.uvicorn.run", fake_uvicorn_run)
+    monkeypatch.setattr("sopds.config.load_config", lambda _path: app_config)
+    monkeypatch.setattr("sopds.db.migrations_runner.apply_migrations", fake_apply_migrations)
+    monkeypatch.setattr("uvicorn.run", fake_uvicorn_run)
     monkeypatch.setattr(sys, "argv", ["sopds", "--config", "unused.toml"])
 
     __main__.main()
