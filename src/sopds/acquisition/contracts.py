@@ -101,13 +101,6 @@ class ObservedOriginalStream(AsyncByteStream, Protocol):
 
 
 class AcquisitionRepository(Protocol):
-    async def acquisition_target(
-        self,
-        public_id: str,
-        *,
-        expected_generation_id: int | None = None,
-    ) -> AcquisitionTarget | None: ...
-
     async def acquisition_targets(
         self,
         public_ids: Sequence[str],

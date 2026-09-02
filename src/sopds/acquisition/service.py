@@ -51,14 +51,10 @@ class AcquisitionService:
         expected_generation_id: int | None,
     ) -> AcquisitionTarget:
         _validate_public_id(public_id)
-        target = (
-            await self._repository.acquisition_target(public_id)
-            if expected_generation_id is None
-            else await self._repository.acquisition_target(
-                public_id,
-                expected_generation_id=expected_generation_id,
-            )
+        targets = await self._repository.acquisition_targets(
+            (public_id,), expected_generation_id=expected_generation_id
         )
+        target = targets.get(public_id)
         if target is None:
             raise AcquisitionNotFoundError("Original is unavailable")
         return target

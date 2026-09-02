@@ -978,35 +978,6 @@ class CatalogRepository:
             member_filename=str(member),
         )
 
-    async def acquisition_target(
-        self,
-        public_id: str,
-        *,
-        expected_generation_id: int | None = None,
-    ) -> AcquisitionTarget | None:
-        """Materialize all file coordinates from one active-generation query."""
-        query = Book.filter(
-            public_id=public_id,
-            archive__available=True,
-            generation__active_catalog_states__id=1,
-        )
-        if expected_generation_id is not None:
-            query = query.filter(generation_id=expected_generation_id)
-        rows = await (
-            query.using_db(self._connection)
-            .limit(1)
-            .values_list(
-                "generation_id",
-                "public_id",
-                "title",
-                "size",
-                "original_format",
-                "archive__relative_path",
-                "member_filename",
-            )
-        )
-        return self._acquisition_target(rows[0]) if rows else None
-
     async def acquisition_targets(
         self,
         public_ids: Sequence[str],

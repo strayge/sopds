@@ -319,7 +319,7 @@ async def test_summary_reads_follow_archive_availability_without_rematerializing
         assert (await catalog.statistics()).missed_books == 1
 
 
-async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Path) -> None:
+async def test_acquisition_targets_are_one_active_available_snapshot(tmp_path: Path) -> None:
     async with _catalog() as (_catalog_service, repository):
         await _seed(repository)
         connection = repository._connection
@@ -346,30 +346,31 @@ async def test_acquisition_target_is_one_active_available_snapshot(tmp_path: Pat
             original_format="fb2",
         )
 
-        target = await repository.acquisition_target("book-001")
-        expected_target = await repository.acquisition_target("book-001", expected_generation_id=1)
-        assert target is not None
-        assert expected_target == target
-        assert await repository.acquisition_target("book-001", expected_generation_id=2) is None
+        targets = await repository.acquisition_targets(["book-001"])
+        expected_targets = await repository.acquisition_targets(
+            ["book-001"], expected_generation_id=1
+        )
+        assert targets["book-001"] == expected_targets["book-001"]
+        assert await repository.acquisition_targets(["book-001"], expected_generation_id=2) == {}
+        target = targets["book-001"]
         assert target.generation_id == 1
         assert target.archive_relative_path == "available.zip"
         assert target.member_filename == "book-001.fb2"
         assert target.expected_size == 101
-        assert await repository.acquisition_target("hidden") is None
-        assert await repository.acquisition_target("staged") is None
-        assert await repository.acquisition_target("old") is None
-        assert await repository.acquisition_target("missing") is None
+        assert await repository.acquisition_targets(["hidden", "staged", "old", "missing"]) == {}
 
         await CatalogState.filter(id=1).using_db(connection).update(active_generation_id=2)
         await CatalogGeneration.filter(id=1).using_db(connection).delete()
         assert target.generation_id == 1
         assert target.title == "Ёжик"
-        activated = await repository.acquisition_target("staged")
-        assert activated is not None
+        activated_targets = await repository.acquisition_targets(["staged"])
+        activated = activated_targets["staged"]
         assert activated.generation_id == 2
-        assert await repository.acquisition_target("staged", expected_generation_id=2) == activated
-        assert await repository.acquisition_target("staged", expected_generation_id=1) is None
-        assert await repository.acquisition_target("book-001", expected_generation_id=1) is None
+        assert await repository.acquisition_targets(["staged"], expected_generation_id=2) == {
+            "staged": activated
+        }
+        assert await repository.acquisition_targets(["staged"], expected_generation_id=1) == {}
+        assert await repository.acquisition_targets(["book-001"], expected_generation_id=1) == {}
 
 
 async def test_acquisition_targets_are_bounded_and_exclude_unavailable_books(
@@ -381,7 +382,7 @@ async def test_acquisition_targets_are_bounded_and_exclude_unavailable_books(
         monkeypatch.setattr("sopds.db.repository.PUBLIC_ID_LOOKUP_BATCH_SIZE", 2)
 
         targets = await repository.acquisition_targets(
-            ["book-000", "book-001", "book-002", "hidden", "missing"]
+            ["book-000", "book-001", "book-002", "book-001", "hidden", "missing"]
         )
 
         assert set(targets) == {"book-000", "book-001", "book-002"}
