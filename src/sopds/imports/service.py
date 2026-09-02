@@ -243,9 +243,9 @@ class CatalogImportService:
         try:
             ids = _MutableIds.from_counters(await self._repository.id_counters())
             archives: dict[str, int] = {}
-            authors: dict[tuple[str, str], int] = {}
+            authors: dict[str, int] = {}
             genres: dict[str, int] = {}
-            series_entries: dict[tuple[str, str], int] = {}
+            series_entries: dict[str, int] = {}
             worker = _ParserWorker(self._source_path, self._batch_size)
             while batch := await worker.next_batch():
                 counters[0] += len(batch)
@@ -499,9 +499,9 @@ class CatalogImportService:
         records: list[InpxRecord],
         ids: _MutableIds,
         archive_map: dict[str, int],
-        author_map: dict[tuple[str, str], int],
+        author_map: dict[str, int],
         genre_map: dict[str, int],
-        series_map: dict[tuple[str, str], int],
+        series_map: dict[str, int],
     ) -> int:
         archive_rows: list[ArchiveRow] = []
         author_rows: list[AuthorRow] = []
@@ -536,17 +536,16 @@ class CatalogImportService:
             author_ids: list[int] = []
             seen_authors: set[int] = set()
             for name in record.authors:
-                key = (normalize_sort_key(name), name)
-                author_id = author_map.get(key)
+                author_id = author_map.get(name)
                 if author_id is None:
                     author_id = ids.next("author")
-                    author_map[key] = author_id
+                    author_map[name] = author_id
                     author_rows.append(
                         AuthorRow(
                             id=author_id,
                             generation_id=generation_id,
                             name=name,
-                            name_sort=key[0],
+                            name_sort=normalize_sort_key(name),
                         )
                     )
                 if author_id not in seen_authors:
@@ -573,17 +572,16 @@ class CatalogImportService:
                 genre_labels.append(label)
             series_id = None
             if record.series is not None:
-                series_key = (normalize_sort_key(record.series), record.series)
-                series_id = series_map.get(series_key)
+                series_id = series_map.get(record.series)
                 if series_id is None:
                     series_id = ids.next("series")
-                    series_map[series_key] = series_id
+                    series_map[record.series] = series_id
                     series_rows.append(
                         SeriesRow(
                             id=series_id,
                             generation_id=generation_id,
                             name=record.series,
-                            name_sort=series_key[0],
+                            name_sort=normalize_sort_key(record.series),
                         )
                     )
             published_date = _parse_date(record.date)

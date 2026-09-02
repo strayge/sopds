@@ -317,6 +317,27 @@ async def test_bulk_and_single_record_batches_persist_identical_catalogs(
     assert await _catalog_snapshot(app_config) == single_record_batches
 
 
+async def test_deduplication_keeps_distinct_names_with_equal_sort_keys(
+    app_config: AppConfig,
+) -> None:
+    composed = "É"
+    decomposed = "E\N{COMBINING ACUTE ACCENT}"
+    assert composed != decomposed
+    assert normalize_sort_key(composed) == normalize_sort_key(decomposed)
+    _write_inpx(
+        app_config.catalog.inpx_path,
+        _line(FILE="composed", AUTHOR=f"{composed}:", SERIES=composed),
+        _line(FILE="decomposed", AUTHOR=f"{decomposed}:", SERIES=decomposed),
+    )
+
+    async with _coordinator(app_config, batch_size=1) as (coordinator, _):
+        assert (await _run_forced_import(coordinator)).outcome is ImportOutcome.IMPORTED
+
+    expected = [(composed, "é"), (decomposed, "é")]
+    assert await _query(app_config, "SELECT name,name_sort FROM author ORDER BY id") == expected
+    assert await _query(app_config, "SELECT name,name_sort FROM series ORDER BY id") == expected
+
+
 async def test_import_emits_start_progress_and_completion_logs(
     app_config: AppConfig,
     monkeypatch: pytest.MonkeyPatch,
