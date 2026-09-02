@@ -227,11 +227,20 @@ def test_implicit_layout_requires_final_empty_compatibility_slot(tmp_path: Path)
         next(records)
 
 
-def test_records_require_crlf_line_endings(tmp_path: Path) -> None:
-    payload = _implicit_line().removesuffix(b"\r\n") + b"\n"
-    archive_path = _write_archive(tmp_path / "lf.inpx", [("books.inp", payload)])
+def test_records_accept_lf_and_an_unterminated_final_record(tmp_path: Path) -> None:
+    first = _implicit_line(TITLE="first", FILE="one").removesuffix(b"\r\n")
+    second = _implicit_line(TITLE="second", FILE="two").removesuffix(b"\r\n")
+    archive_path = _write_archive(tmp_path / "lf.inpx", [("books.inp", first + b"\n" + second)])
 
-    with parse_inpx(archive_path) as records, pytest.raises(InpxParserError, match="CRLF"):
+    with parse_inpx(archive_path) as records:
+        assert [record.title for record in records] == ["first", "second"]
+
+
+def test_records_reject_bare_cr_line_endings(tmp_path: Path) -> None:
+    payload = _implicit_line().removesuffix(b"\r\n") + b"\r"
+    archive_path = _write_archive(tmp_path / "cr.inpx", [("books.inp", payload)])
+
+    with parse_inpx(archive_path) as records, pytest.raises(InpxParserError, match="bare CR"):
         next(records)
 
 

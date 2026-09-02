@@ -274,14 +274,20 @@ def _parse_line(
     source_entry: str,
     line_number: int,
 ) -> InpxRecord:
-    if not raw_line.endswith(b"\r\n"):
+    if raw_line.endswith(b"\r\n"):
+        record_bytes = raw_line[:-2]
+    elif raw_line.endswith(b"\n"):
+        record_bytes = raw_line[:-1]
+    else:
+        record_bytes = raw_line
+    if b"\r" in record_bytes:
         raise InpxParserError(
-            "INPX record does not end with CRLF",
+            "INPX record contains a bare CR",
             source_entry=source_entry,
             line_number=line_number,
         )
     try:
-        text = raw_line[:-2].decode("utf-8")
+        text = record_bytes.decode("utf-8")
     except UnicodeDecodeError as error:
         raise InpxParserError(
             "INPX record is not valid UTF-8",
