@@ -373,15 +373,10 @@ class CatalogRepository:
         read, imported, deleted, rejected = counters
         now = datetime.now(UTC)
         async with in_transaction(CONNECTION_NAME) as transaction:
-            _, state_rows = await transaction.execute_query(
-                "SELECT active_generation_id, updated_at FROM catalog_state WHERE id=$1 FOR UPDATE",
-                [1],
-            )
-            if len(state_rows) != 1:
-                raise RuntimeError("Catalog state singleton is missing")
-            previous_value = state_rows[0]["active_generation_id"]
+            state = await self._locked_catalog_state(transaction)
+            previous_value = state.active_generation_id  # type: ignore[attr-defined]
             previous = int(previous_value) if previous_value is not None else None
-            previous_revision = state_rows[0]["updated_at"]
+            previous_revision = state.updated_at
             if not isinstance(previous_revision, datetime):
                 raise RuntimeError("Catalog state revision is invalid")
             if previous_revision.tzinfo is None:
@@ -537,27 +532,32 @@ class CatalogRepository:
             "SELECT COUNT(*) AS count FROM book_fts WHERE generation_id=$1", [generation_id]
         )
         fts = int(rows[0]["count"]) if len(rows) == 1 else -1
-        generation_rows = await self._connection.execute_query(
-            "SELECT visible_book_count, hidden_book_count FROM catalog_generation WHERE id=$1",
-            [generation_id],
+        generation_rows = await (
+            CatalogGeneration.filter(id=generation_id)
+            .using_db(self._connection)
+            .values("visible_book_count", "hidden_book_count")
         )
-        summary_complete = len(generation_rows[1]) == 1
+        summary_complete = len(generation_rows) == 1
         if summary_complete:
-            summary = generation_rows[1][0]
+            summary = generation_rows[0]
             visible = int(summary["visible_book_count"])
             hidden = int(summary["hidden_book_count"])
-            _, visible_rows = await self._connection.execute_query(
-                "SELECT COUNT(*) AS count FROM book WHERE generation_id=$1 AND NOT hidden",
-                [generation_id],
+            visible_books = await (
+                Book.filter(generation_id=generation_id, hidden=False)
+                .using_db(self._connection)
+                .count()
             )
-            _, archive_count_rows = await self._connection.execute_query(
-                "SELECT SUM(visible_book_count) AS count FROM archive WHERE generation_id=$1",
-                [generation_id],
+            archive_count_rows = await (
+                Archive.filter(generation_id=generation_id)
+                .using_db(self._connection)
+                .annotate(count=Sum("visible_book_count"))
+                .values("count")
             )
+            archive_book_count = archive_count_rows[0]["count"] if archive_count_rows else None
             summary_complete = (
-                visible == int(visible_rows[0]["count"])
+                visible == visible_books
                 and hidden == books - visible
-                and int(archive_count_rows[0]["count"] or 0) == visible
+                and int(archive_book_count or 0) == visible
             )
         if summary_complete:
             _, archive_rows = await self._connection.execute_query(
@@ -733,14 +733,15 @@ class CatalogRepository:
             stale = await stale_query.order_by("id").first()
             return stale.id if stale is not None else None
 
-    async def _locked_active_generation_id(self, transaction: BaseDBAsyncClient) -> int | None:
-        _, state_rows = await transaction.execute_query(
-            "SELECT active_generation_id FROM catalog_state WHERE id=$1 FOR UPDATE",
-            [1],
-        )
-        if len(state_rows) != 1:
+    async def _locked_catalog_state(self, transaction: BaseDBAsyncClient) -> CatalogState:
+        state = await CatalogState.filter(id=1).using_db(transaction).select_for_update().first()
+        if state is None:
             raise RuntimeError("Catalog state singleton is missing")
-        active_value = state_rows[0]["active_generation_id"]
+        return state
+
+    async def _locked_active_generation_id(self, transaction: BaseDBAsyncClient) -> int | None:
+        state = await self._locked_catalog_state(transaction)
+        active_value = state.active_generation_id  # type: ignore[attr-defined]
         return int(active_value) if active_value is not None else None
 
     async def _is_inactive_cleanup_target(
@@ -829,13 +830,8 @@ class CatalogRepository:
         if not values:
             return ArchiveAvailabilitySummary(0, 0, 0, 0, 0)
         async with in_transaction(CONNECTION_NAME) as transaction:
-            _, state_rows = await transaction.execute_query(
-                "SELECT active_generation_id, updated_at FROM catalog_state WHERE id=$1 FOR UPDATE",
-                [1],
-            )
-            if len(state_rows) != 1:
-                raise RuntimeError("Catalog state singleton is missing")
-            active_value = state_rows[0]["active_generation_id"]
+            state = await self._locked_catalog_state(transaction)
+            active_value = state.active_generation_id  # type: ignore[attr-defined]
             if active_value is None:
                 return ArchiveAvailabilitySummary(0, 0, 0, 0, 0)
             active_generation_id = int(active_value)
@@ -878,7 +874,7 @@ class CatalogRepository:
                 batch_size=self._cleanup_batch_size,
                 using_db=transaction,
             )
-            previous = state_rows[0]["updated_at"]
+            previous = state.updated_at
             if not isinstance(previous, datetime):
                 raise RuntimeError("Catalog state revision is invalid")
             if previous.tzinfo is None:
