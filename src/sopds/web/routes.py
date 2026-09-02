@@ -301,19 +301,38 @@ def _catalog_request(
     )
 
 
-def _catalog_url(path: str, catalog_request: CatalogRequest) -> str:
+def _availability_values(include_missed: bool, include_hidden: bool) -> dict[str, str]:
+    return {
+        name: "true"
+        for name, enabled in (
+            ("include_missed", include_missed),
+            ("include_hidden", include_hidden),
+        )
+        if enabled
+    }
+
+
+def _catalog_query(
+    catalog_request: CatalogRequest,
+    *,
+    query: str | None = None,
+    search_field: str | None = None,
+) -> str:
     values = {
-        "q": catalog_request.query,
-        "search_field": catalog_request.search_field.value,
+        "q": catalog_request.query if query is None else query,
+        "search_field": (
+            catalog_request.search_field.value if search_field is None else search_field
+        ),
         "language": catalog_request.language or "",
         "genre": catalog_request.genre or "",
         "original_format": catalog_request.original_format or "",
+        **_availability_values(catalog_request.include_missed, catalog_request.include_hidden),
     }
-    if catalog_request.include_missed:
-        values["include_missed"] = "true"
-    if catalog_request.include_hidden:
-        values["include_hidden"] = "true"
-    return f"{path}?{urlencode(values)}"
+    return urlencode(values)
+
+
+def _catalog_url(path: str, catalog_request: CatalogRequest) -> str:
+    return f"{path}?{_catalog_query(catalog_request)}"
 
 
 def _catalog_filter_state_context(catalog_request: CatalogRequest) -> dict[str, object]:
@@ -365,16 +384,7 @@ async def _catalog_form_context(
 
 
 def _availability_query(include_missed: bool, include_hidden: bool) -> str:
-    return urlencode(
-        {
-            name: "true"
-            for name, enabled in (
-                ("include_missed", include_missed),
-                ("include_hidden", include_hidden),
-            )
-            if enabled
-        }
-    )
+    return urlencode(_availability_values(include_missed, include_hidden))
 
 
 def _availability_suffix(include_missed: bool, include_hidden: bool) -> str:
@@ -387,18 +397,7 @@ def _metadata_search_url(
     query: str,
     catalog_request: CatalogRequest,
 ) -> str:
-    values = {
-        "q": query,
-        "search_field": search_field,
-        "language": catalog_request.language or "",
-        "genre": catalog_request.genre or "",
-        "original_format": catalog_request.original_format or "",
-    }
-    if catalog_request.include_missed:
-        values["include_missed"] = "true"
-    if catalog_request.include_hidden:
-        values["include_hidden"] = "true"
-    return f"/?{urlencode(values)}"
+    return f"/?{_catalog_query(catalog_request, query=query, search_field=search_field)}"
 
 
 def _normalized_source_format(value: str) -> str | None:
@@ -413,15 +412,15 @@ def _catalog_book_payload(
     book: CatalogBook,
     catalog_request: CatalogRequest,
 ) -> dict[str, object]:
-    path_id = quote(book.public_id, safe="")
-    suffix = _availability_suffix(
-        catalog_request.include_missed,
-        catalog_request.include_hidden,
+    reader_url, download_url, detail_url = _reader_book_urls(
+        book.public_id,
+        include_missed=catalog_request.include_missed,
+        include_hidden=catalog_request.include_hidden,
     )
     available_download = book.downloadable and book.availability.value != "missed"
     source_format = _normalized_source_format(book.original_format)
     read_url = (
-        f"/books/{path_id}/read{suffix}"
+        reader_url
         if available_download
         and source_format in {"fb2", "epub"}
         and book.size <= _READER_SOURCE_LIMIT
@@ -430,7 +429,7 @@ def _catalog_book_payload(
     conversions = (
         [
             {
-                "url": f"/books/{path_id}/download/{choice.key}",
+                "url": f"{download_url}/{choice.key}",
                 "label": choice.label,
             }
             for choice in _additional_download_formats(request, book.original_format)
@@ -482,11 +481,11 @@ def _catalog_book_payload(
         "availability": book.availability.value,
         "selectable": available_download,
         "downloadable": available_download,
-        "detailUrl": f"/books/{path_id}{suffix}",
+        "detailUrl": detail_url,
         "readUrl": read_url,
         "originalDownload": (
             {
-                "url": f"/books/{path_id}/download",
+                "url": download_url,
                 "label": _source_format_label(book.original_format),
             }
             if available_download
@@ -1255,13 +1254,7 @@ def _reader_book_urls(
     include_hidden: bool,
 ) -> tuple[str, str, str]:
     path_id = quote(public_id, safe="")
-    values: dict[str, str] = {}
-    if include_missed:
-        values["include_missed"] = "true"
-    if include_hidden:
-        values["include_hidden"] = "true"
-    query = urlencode(values)
-    suffix = f"?{query}" if query else ""
+    suffix = _availability_suffix(include_missed, include_hidden)
     return (
         f"/books/{path_id}/read{suffix}",
         f"/books/{path_id}/download",
@@ -1270,10 +1263,7 @@ def _reader_book_urls(
 
 
 def _reader_source_format(value: str) -> str | None:
-    try:
-        source_format = normalize_format(value)
-    except ValueError:
-        return None
+    source_format = _normalized_source_format(value)
     return source_format if source_format in {"fb2", "epub"} else None
 
 

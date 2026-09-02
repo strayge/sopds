@@ -1,5 +1,6 @@
 """OPDS 1.2 and OpenSearch HTTP routes."""
 
+from datetime import datetime
 from typing import cast
 from urllib.parse import quote
 
@@ -32,6 +33,13 @@ from sopds.opds.render import (
 
 router = APIRouter(prefix="/opds")
 _XML_CHARSET = "; charset=UTF-8"
+_ROOT_NAVIGATION = (
+    ("navigation:books", "Books", "/opds/titles/", NAVIGATION_TYPE),
+    ("navigation:authors", "Authors", "/opds/authors/", NAVIGATION_TYPE),
+    ("navigation:genres", "Genres", "/opds/genres/", NAVIGATION_TYPE),
+    ("navigation:series", "Series", "/opds/series/", NAVIGATION_TYPE),
+    ("navigation:languages", "Languages", "/opds/languages/", NAVIGATION_TYPE),
+)
 
 
 def _catalog(request: Request) -> Catalog:
@@ -42,6 +50,37 @@ def _base_path(request: Request) -> str:
     """Keep links on the client's origin while preserving a configured proxy prefix."""
     config = cast(AppConfig, request.app.state.config)
     return (config.server.base_url.path or "").rstrip("/")
+
+
+def _acquisition_feed(
+    request: Request,
+    base_path: str,
+    *,
+    feed_id: str,
+    title: str,
+    updated_at: datetime,
+    self_url: str,
+    start_url: str,
+    up_url: str,
+    search_url: str,
+    next_url: str | None,
+    books: tuple[CatalogBook, ...],
+) -> bytes:
+    book_urls = tuple(f"{base_path}/books/{quote(book.public_id, safe='')}" for book in books)
+    return acquisition_feed(
+        feed_id=feed_id,
+        title=title,
+        updated_at=updated_at,
+        self_url=self_url,
+        start_url=start_url,
+        up_url=up_url,
+        search_url=search_url,
+        next_url=next_url,
+        books=books,
+        book_urls=book_urls,
+        download_urls=tuple(f"{book_url}/download" for book_url in book_urls),
+        conversion_links=_conversion_links(request, base_path, books),
+    )
 
 
 def _conversion_links(
@@ -100,42 +139,15 @@ async def root(request: Request) -> Response:
     base_path = _base_path(request)
     start_url, search_url = _common(base_path)
     snapshot = await _catalog(request).snapshot()
-    entries = (
+    entries = tuple(
         (
-            stable_id("navigation:books"),
-            "Books",
+            stable_id(navigation_id),
+            title,
             None,
-            f"{base_path}/opds/titles/",
-            NAVIGATION_TYPE,
-        ),
-        (
-            stable_id("navigation:authors"),
-            "Authors",
-            None,
-            f"{base_path}/opds/authors/",
-            NAVIGATION_TYPE,
-        ),
-        (
-            stable_id("navigation:genres"),
-            "Genres",
-            None,
-            f"{base_path}/opds/genres/",
-            NAVIGATION_TYPE,
-        ),
-        (
-            stable_id("navigation:series"),
-            "Series",
-            None,
-            f"{base_path}/opds/series/",
-            NAVIGATION_TYPE,
-        ),
-        (
-            stable_id("navigation:languages"),
-            "Languages",
-            None,
-            f"{base_path}/opds/languages/",
-            NAVIGATION_TYPE,
-        ),
+            f"{base_path}{path}",
+            media_type,
+        )
+        for navigation_id, title, path, media_type in _ROOT_NAVIGATION
     )
     body = navigation_feed(
         feed_id=stable_id("feed:root"),
@@ -215,7 +227,9 @@ async def books(
             f"{base_path}/opds/{active_origins[0][0]}/" if len(active_origins) == 1 else start_url
         )
     )
-    body = acquisition_feed(
+    body = _acquisition_feed(
+        request,
+        base_path,
         feed_id=stable_id("feed:books", state),
         title="Books",
         updated_at=page.updated_at,
@@ -225,13 +239,6 @@ async def books(
         search_url=search_url,
         next_url=next_url,
         books=page.books,
-        book_urls=tuple(
-            f"{base_path}/books/{quote(book.public_id, safe='')}" for book in page.books
-        ),
-        download_urls=tuple(
-            f"{base_path}/books/{quote(book.public_id, safe='')}/download" for book in page.books
-        ),
-        conversion_links=_conversion_links(request, base_path, page.books),
     )
     return _xml(body, ACQUISITION_TYPE)
 
@@ -310,7 +317,9 @@ async def _navigation(
         return _xml(body, NAVIGATION_TYPE)
 
     if kind == "titles":
-        body = acquisition_feed(
+        body = _acquisition_feed(
+            request,
+            base_path,
             feed_id=stable_id("feed:titles", [page.prefix, exact]),
             title="Books",
             updated_at=page.updated_at,
@@ -320,14 +329,6 @@ async def _navigation(
             search_url=search_url,
             next_url=next_url,
             books=page.books,
-            book_urls=tuple(
-                f"{base_path}/books/{quote(book.public_id, safe='')}" for book in page.books
-            ),
-            download_urls=tuple(
-                f"{base_path}/books/{quote(book.public_id, safe='')}/download"
-                for book in page.books
-            ),
-            conversion_links=_conversion_links(request, base_path, page.books),
         )
         return _xml(body, ACQUISITION_TYPE)
 
