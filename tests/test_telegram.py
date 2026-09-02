@@ -4,21 +4,22 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import cast, override
+from typing import Any, cast, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from aiogram import Bot, Dispatcher
-from aiogram.filters import Command
-from aiogram.types import (
+from telegram import (
+    Bot,
     CallbackQuery,
     Chat,
     InaccessibleMessage,
+    InputFile,
     Message,
-    TelegramObject,
+    MessageEntity,
     Update,
     User,
 )
+from telegram.ext import Application, CommandHandler
 
 from sopds.acquisition.contracts import (
     AcquiredOriginal,
@@ -52,10 +53,10 @@ from sopds.telegram.formatting import (
     utf16_length,
 )
 from sopds.telegram.handlers import TelegramHandlers
-from sopds.telegram.middleware import ActiveUpdateTracker, AllowlistMiddleware
+from sopds.telegram.middleware import TelegramUpdateProcessor
 from sopds.telegram.runner import TelegramRunner
 from sopds.telegram.state import CallbackStateStore, DownloadState, PageState
-from sopds.telegram.upload import StreamingInputFile
+from sopds.telegram.upload import StagedInputFile
 
 
 def _message(chat_id: int, text: str = "search") -> Message:
@@ -68,13 +69,12 @@ def _message(chat_id: int, text: str = "search") -> Message:
     )
 
 
-async def test_allowlist_filters_private_group_callback_and_unknown_updates() -> None:
-    middleware = AllowlistMiddleware((10, -20))
+async def test_update_processor_filters_private_group_callback_and_unknown_updates() -> None:
+    processor = TelegramUpdateProcessor((10, -20))
     handled: list[int] = []
 
-    async def handler(event: object, data: dict[str, object]) -> None:
-        del data
-        handled.append(cast(Update, event).update_id)
+    async def handle(update: Update) -> None:
+        handled.append(update.update_id)
 
     allowed_private = Update(update_id=1, message=_message(10))
     allowed_group = Update(update_id=2, message=_message(-20))
@@ -86,11 +86,15 @@ async def test_allowlist_filters_private_group_callback_and_unknown_updates() ->
         message=_message(-20),
         data="d:book",
     )
-    await middleware(handler, allowed_private, {})
-    await middleware(handler, allowed_group, {})
-    await middleware(handler, denied, {})
-    await middleware(handler, Update(update_id=4, callback_query=callback), {})
-    await middleware(handler, Update(update_id=5), {})
+    updates = (
+        allowed_private,
+        allowed_group,
+        denied,
+        Update(update_id=4, callback_query=callback),
+        Update(update_id=5),
+    )
+    for update in updates:
+        await processor.process_update(update, handle(update))
 
     assert handled == [1, 2, 4]
 
@@ -172,28 +176,43 @@ class _Stream:
         self.closed += 1
 
 
-async def test_streaming_input_file_yields_chunks_and_closes_once() -> None:
+async def test_staged_input_file_uses_disk_and_closes_source_before_upload() -> None:
     stream = _Stream()
-    upload = StreamingInputFile(cast(AsyncByteStream, stream), "book.fb2")
-    chunks = [chunk async for chunk in upload.read(cast(Bot, object()))]
+    upload = await StagedInputFile.create(cast(AsyncByteStream, stream), "book.fb2")
+
+    assert upload.input_file is not None
+    content = upload.input_file.input_file_content
+    assert not isinstance(content, bytes)
+    assert content.read() == b"onetwo"
+    assert stream.closed == 1
+
     await upload.aclose()
-    assert chunks == [b"one", b"two"]
+    assert content.closed
     assert stream.closed == 1
 
 
-async def test_streaming_input_file_closes_after_read_failure() -> None:
+async def test_staged_input_file_closes_after_read_failure() -> None:
     stream = _Stream(fail=True)
-    upload = StreamingInputFile(cast(AsyncByteStream, stream), "book.fb2")
-    try:
-        _ = [chunk async for chunk in upload.read(cast(Bot, object()))]
-    except OSError:
-        pass
-    else:
-        raise AssertionError("stream failure was not propagated")
+
+    with pytest.raises(OSError, match="read failed"):
+        await StagedInputFile.create(cast(AsyncByteStream, stream), "book.fb2")
+
     assert stream.closed == 1
 
 
-async def test_streaming_close_has_one_persistent_task_under_repeated_cancellation() -> None:
+async def test_staging_closes_source_when_temporary_file_creation_fails() -> None:
+    stream = _Stream()
+
+    with (
+        patch("sopds.telegram.upload.tempfile.TemporaryFile", side_effect=OSError("disk full")),
+        pytest.raises(OSError, match="disk full"),
+    ):
+        await StagedInputFile.create(cast(AsyncByteStream, stream), "book.fb2")
+
+    assert stream.closed == 1
+
+
+async def test_staging_waits_for_source_cleanup_when_cancelled() -> None:
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -205,23 +224,18 @@ async def test_streaming_close_has_one_persistent_task_under_repeated_cancellati
             await release.wait()
 
     stream = BlockingCloseStream()
-    upload = StreamingInputFile(cast(AsyncByteStream, stream), "book.fb2")
-    first = asyncio.create_task(upload.aclose())
-    second = asyncio.create_task(upload.aclose())
+    task = asyncio.create_task(StagedInputFile.create(cast(AsyncByteStream, stream), "book.fb2"))
     await started.wait()
-    first.cancel()
-    await asyncio.sleep(0)
-    first.cancel()
+    task.cancel()
     release.set()
 
     with pytest.raises(asyncio.CancelledError):
-        await first
-    await second
+        await task
     assert stream.closed == 1
 
 
 async def test_unauthorized_callback_does_not_answer() -> None:
-    middleware = AllowlistMiddleware((10,))
+    processor = TelegramUpdateProcessor((10,))
     callback = CallbackQuery(
         id="callback",
         from_user=User(id=2, is_bot=False, first_name="User"),
@@ -231,11 +245,11 @@ async def test_unauthorized_callback_does_not_answer() -> None:
     )
     answer = AsyncMock()
 
-    async def handler(event: object, data: dict[str, object]) -> None:
-        del event, data
+    async def handler() -> None:
         await answer()
 
-    await middleware(handler, Update(update_id=1, callback_query=callback), {})
+    update = Update(update_id=1, callback_query=callback)
+    await processor.process_update(update, handler())
     answer.assert_not_awaited()
 
 
@@ -262,21 +276,23 @@ class _FakeMessage:
             self.document_release.set()
         self.answers: list[tuple[str, object | None]] = []
         self.edits: list[tuple[str, object | None]] = []
-        self.documents: list[tuple[StreamingInputFile, str]] = []
+        self.documents: list[tuple[InputFile, str]] = []
+        self.document_payloads: list[bytes] = []
 
-    async def answer(self, text: str, *, reply_markup: object | None = None) -> None:
+    async def reply_text(self, text: str, *, reply_markup: object | None = None) -> None:
         self.answers.append((text, reply_markup))
 
     async def edit_text(self, text: str, *, reply_markup: object | None = None) -> None:
         self.edits.append((text, reply_markup))
 
-    async def answer_document(self, document: StreamingInputFile, *, caption: str) -> None:
+    async def reply_document(self, document: InputFile, *, caption: str) -> None:
         self.documents.append((document, caption))
         if self.fail_document:
             raise OSError("send failed")
         self.document_started.set()
         await self.document_release.wait()
-        _ = [chunk async for chunk in document.read(cast(Bot, object()))]
+        content = document.input_file_content
+        self.document_payloads.append(content if isinstance(content, bytes) else content.read())
 
 
 class _FakeCallback:
@@ -715,13 +731,24 @@ async def test_converted_upload_failure_and_cancellation_close_artifacts() -> No
 
 async def test_command_filter_rejects_mentions_for_another_bot() -> None:
     bot = Bot("123456:secret")
-    bot._me = User(id=123456, is_bot=True, first_name="SOPDS", username="sopds_bot")
-    command = Command("start")
+    bot._bot_user = User(id=123456, is_bot=True, first_name="SOPDS", username="sopds_bot")
+    command = CommandHandler("start", AsyncMock())
 
-    assert await command(_message(10, "/start@other_bot"), bot) is False
-    assert await command(_message(10, "/start@sopds_bot"), bot) is not False
+    def update(text: str) -> Update:
+        entity = MessageEntity(type=MessageEntity.BOT_COMMAND, offset=0, length=len(text))
+        message = Message(
+            message_id=1,
+            date=datetime(1970, 1, 1, tzinfo=UTC),
+            chat=Chat(id=10, type="private"),
+            from_user=User(id=2, is_bot=False, first_name="User"),
+            text=text,
+            entities=(entity,),
+        )
+        message.set_bot(bot)
+        return Update(update_id=1, message=message)
 
-    await bot.session.close()
+    assert command.check_update(update("/start@other_bot")) is None
+    assert command.check_update(update("/start@sopds_bot")) is not None
 
 
 @pytest.mark.parametrize(
@@ -822,116 +849,188 @@ async def test_download_classifies_only_length_difference_as_size_mismatch(
     assert "failure_type=size_mismatch" in caplog.text
 
 
-async def test_tracker_closes_admission_and_cancels_active_update() -> None:
-    tracker = ActiveUpdateTracker()
+async def test_processor_closes_admission_and_cancels_active_update() -> None:
+    processor = TelegramUpdateProcessor((10,))
     started = asyncio.Event()
     invoked = 0
 
-    async def handler(event: object, data: dict[str, object]) -> None:
-        del event, data
+    async def handler() -> None:
         nonlocal invoked
         invoked += 1
         started.set()
         await asyncio.Event().wait()
 
-    active = asyncio.create_task(tracker(handler, cast(TelegramObject, object()), {}))
+    update = Update(update_id=1, message=_message(10))
+    active = asyncio.create_task(processor.process_update(update, handler()))
     await started.wait()
-    tracker.stop_accepting()
-    await tracker(handler, cast(TelegramObject, object()), {})
-    await tracker.cancel_and_wait()
+    processor.stop_accepting()
+    await processor.process_update(update, handler())
+    await processor.cancel_and_wait()
 
     assert invoked == 1
     assert active.cancelled()
 
 
-class _FakeSession:
-    def __init__(self) -> None:
-        self.close_calls = 0
-
-    async def close(self) -> None:
-        self.close_calls += 1
-
-
 class _FakeBot:
-    def __init__(self, *, delete_failures: int = 0) -> None:
-        self.session = _FakeSession()
-        self.delete_calls = 0
-        self.delete_failures = delete_failures
-        self.delete_attempted = asyncio.Event()
-
-    async def delete_webhook(self, *, drop_pending_updates: bool) -> None:
-        assert drop_pending_updates is True
-        self.delete_calls += 1
-        self.delete_attempted.set()
-        if self.delete_calls <= self.delete_failures:
-            raise OSError("offline")
-
-
-class _FakeMiddlewareManager:
     def __init__(self) -> None:
-        self.values: list[object] = []
+        self.shutdown_calls = 0
 
-    def outer_middleware(self, middleware: object) -> None:
-        self.values.append(middleware)
-
-
-class _FakeObserver:
-    def __init__(self) -> None:
-        self.outer = _FakeMiddlewareManager()
-
-    def outer_middleware(self, middleware: object) -> None:
-        self.outer.outer_middleware(middleware)
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
 
 
-class _FakeDispatcher:
-    def __init__(self, *, polling_failures: int = 0) -> None:
-        self.update = _FakeObserver()
-        self._handle_update_tasks: set[asyncio.Task[object]] = set()
+class _FakeUpdater:
+    def __init__(self, *, polling_failures: int = 0, runtime_polling_failures: int = 0) -> None:
+        self.polling_failures = polling_failures
+        self.runtime_polling_failures = runtime_polling_failures
+        self.polling_calls = 0
+        self.stop_calls = 0
+        self.shutdown_calls = 0
         self.polling_started = asyncio.Event()
         self.polling_retried = asyncio.Event()
-        self.polling_stopped = asyncio.Event()
+        self.second_polling_started = asyncio.Event()
         self.polling_arguments: dict[str, object] = {}
-        self.polling_failures = polling_failures
-        self.polling_calls = 0
-        self.router_count = 0
+        self.polling_arguments_history: list[dict[str, object]] = []
+        self.runtime_failure_requested = asyncio.Event()
+        self._polling_stop = asyncio.Event()
+        self.running = False
+        self._Updater__polling_task: asyncio.Task[None] | None = None
 
-    def include_router(self, router: object) -> None:
-        del router
-        self.router_count += 1
-
-    async def start_polling(self, bot: object, **kwargs: object) -> None:
-        del bot
+    async def start_polling(self, **kwargs: object) -> asyncio.Queue[object]:
         self.polling_arguments = kwargs
+        self.polling_arguments_history.append(kwargs)
         self.polling_calls += 1
         self.polling_started.set()
+        if self.polling_calls >= 2:
+            self.second_polling_started.set()
         if self.polling_calls <= self.polling_failures:
             raise RuntimeError("polling failed")
         self.polling_retried.set()
-        await self.polling_stopped.wait()
+        self.running = True
+        self._polling_stop = asyncio.Event()
 
-    async def stop_polling(self) -> None:
-        self.polling_stopped.set()
+        async def poll() -> None:
+            if self.runtime_polling_failures:
+                self.runtime_polling_failures -= 1
+                await self.runtime_failure_requested.wait()
+                raise RuntimeError("runtime polling failed")
+            await self._polling_stop.wait()
+
+        self._Updater__polling_task = asyncio.create_task(poll())
+        return asyncio.Queue()
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+        self.running = False
+        self._polling_stop.set()
+        polling_task = self._Updater__polling_task
+        if polling_task is not None:
+            await polling_task
+        self._Updater__polling_task = None
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
 
 
-async def test_runner_wires_conversion_and_output_policy_into_handlers() -> None:
-    bot = _FakeBot()
-    dispatcher = _FakeDispatcher()
-    config = TelegramConfig.model_validate(
-        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
+class _FakeApplication:
+    def __init__(
+        self,
+        processor: TelegramUpdateProcessor,
+        *,
+        initialization_failures: int = 0,
+        polling_failures: int = 0,
+        runtime_polling_failures: int = 0,
+    ) -> None:
+        self.processor = processor
+        self.bot = _FakeBot()
+        self.updater = _FakeUpdater(
+            polling_failures=polling_failures,
+            runtime_polling_failures=runtime_polling_failures,
+        )
+        self.initialization_failures = initialization_failures
+        self.initialize_calls = 0
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.shutdown_calls = 0
+        self.handlers: list[object] = []
+        self.running = False
+        self.initialize_attempted = asyncio.Event()
+
+    def add_handler(self, handler: object) -> None:
+        self.handlers.append(handler)
+
+    async def initialize(self) -> None:
+        self.initialize_calls += 1
+        self.initialize_attempted.set()
+        if self.initialize_calls <= self.initialization_failures:
+            raise OSError("offline")
+        await self.processor.initialize()
+
+    async def start(self) -> None:
+        self.start_calls += 1
+        self.running = True
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+        self.running = False
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+        await self.processor.shutdown()
+        await self.updater.shutdown()
+        await self.bot.shutdown()
+
+
+def _telegram_config() -> TelegramConfig:
+    return TelegramConfig.model_validate(
+        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10, -20]}
     )
+
+
+def _runner_with_application(
+    application: _FakeApplication,
+    processor: TelegramUpdateProcessor,
+    *,
+    catalog: Catalog | None = None,
+    acquisition: Acquisition | None = None,
+    conversion: ConversionService | None = None,
+) -> TelegramRunner:
+    return TelegramRunner(
+        _telegram_config(),
+        catalog or cast(Catalog, _FakeCatalog([])),
+        acquisition or cast(Acquisition, _FakeAcquisition(1)),
+        conversion,
+        application=cast(Application[Any, Any, Any, Any, Any, Any], application),
+        processor=processor,
+    )
+
+
+async def test_runner_builds_ptb_application_without_network_access() -> None:
+    runner = TelegramRunner(
+        _telegram_config(),
+        cast(Catalog, _FakeCatalog([])),
+        cast(Acquisition, _FakeAcquisition(1)),
+    )
+
+    assert runner.processor.max_concurrent_updates == 4
+    assert sum(len(group) for group in runner.application.handlers.values()) == 3
+    await runner.shutdown()
+
+
+async def test_runner_wires_handlers_into_application() -> None:
+    processor = TelegramUpdateProcessor((10, -20))
+    application = _FakeApplication(processor)
     catalog = cast(Catalog, _FakeCatalog([]))
     acquisition = cast(Acquisition, _FakeAcquisition(1))
     conversion = cast(ConversionService, _FakeConversion())
 
     with patch("sopds.telegram.runner.TelegramHandlers") as handlers_type:
-        runner = TelegramRunner(
-            config,
-            catalog,
-            acquisition,
-            conversion,
-            OUTPUT_POLICY,
-            bot=cast(Bot, bot),
-            dispatcher=cast(Dispatcher, dispatcher),
+        runner = _runner_with_application(
+            application,
+            processor,
+            catalog=catalog,
+            acquisition=acquisition,
+            conversion=conversion,
         )
 
     handlers_type.assert_called_once_with(
@@ -941,213 +1040,170 @@ async def test_runner_wires_conversion_and_output_policy_into_handlers() -> None
         conversion,
         OUTPUT_POLICY,
     )
+    handlers_type.return_value.register.assert_called_once_with(application)
     await runner.shutdown()
 
 
-async def test_runner_drops_pending_once_and_uses_bounded_polling() -> None:
-    bot = _FakeBot()
-    dispatcher = _FakeDispatcher()
-    config = TelegramConfig.model_validate(
-        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10, -20]}
-    )
-    runner = TelegramRunner(
-        config,
-        cast(Catalog, _FakeCatalog([])),
-        cast(Acquisition, _FakeAcquisition(1)),
-        bot=cast(Bot, bot),
-        dispatcher=cast(Dispatcher, dispatcher),
-    )
+async def test_runner_uses_bounded_polling_and_idempotent_shutdown() -> None:
+    processor = TelegramUpdateProcessor((10, -20))
+    application = _FakeApplication(processor)
+    runner = _runner_with_application(application, processor)
+
     runner.start()
-    await asyncio.wait_for(dispatcher.polling_started.wait(), timeout=1)
-    assert bot.delete_calls == 1
-    assert dispatcher.polling_arguments == {
-        "allowed_updates": ["message", "callback_query"],
-        "handle_signals": False,
-        "close_bot_session": False,
-        "handle_as_tasks": True,
-        "tasks_concurrency_limit": 4,
-    }
+    await asyncio.wait_for(application.updater.polling_started.wait(), timeout=1)
+
+    arguments = application.updater.polling_arguments
+    assert arguments["allowed_updates"] == ["message", "callback_query"]
+    assert arguments["drop_pending_updates"] is True
+    assert arguments["bootstrap_retries"] == 0
+    assert callable(arguments["error_callback"])
 
     await runner.shutdown()
     await runner.shutdown()
-    assert bot.session.close_calls == 1
+
+    assert application.initialize_calls == 1
+    assert application.start_calls == 1
+    assert application.updater.stop_calls == 1
+    assert application.stop_calls == 1
+    assert application.shutdown_calls == 1
+    assert application.bot.shutdown_calls == 1
 
 
-async def test_runner_deletes_webhook_once_across_fatal_polling_retry() -> None:
-    bot = _FakeBot()
-    dispatcher = _FakeDispatcher(polling_failures=1)
-    config = TelegramConfig.model_validate(
-        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
-    )
-    runner = TelegramRunner(
-        config,
-        cast(Catalog, _FakeCatalog([])),
-        cast(Acquisition, _FakeAcquisition(1)),
-        bot=cast(Bot, bot),
-        dispatcher=cast(Dispatcher, dispatcher),
-    )
-    runner.start()
-    await asyncio.wait_for(dispatcher.polling_retried.wait(), timeout=2)
-
-    assert dispatcher.polling_calls == 2
-    assert bot.delete_calls == 1
-    await runner.shutdown()
-
-
-async def test_runner_resets_polling_delay_after_successful_recovery(
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize("failure_phase", ["initialize", "polling"])
+async def test_runner_retries_failed_start_without_blocking_http_lifecycle(
+    failure_phase: str,
 ) -> None:
-    bot = _FakeBot()
-
-    class CyclingDispatcher(_FakeDispatcher):
-        @override
-        async def start_polling(self, bot: object, **kwargs: object) -> None:
-            del bot, kwargs
-            self.polling_calls += 1
-            if self.polling_calls in {1, 3}:
-                raise RuntimeError("polling failed")
-
-    dispatcher = CyclingDispatcher()
-    config = TelegramConfig.model_validate(
-        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
+    processor = TelegramUpdateProcessor((10, -20))
+    application = _FakeApplication(
+        processor,
+        initialization_failures=1 if failure_phase == "initialize" else 0,
+        polling_failures=1 if failure_phase == "polling" else 0,
     )
-    runner = TelegramRunner(
-        config,
-        cast(Catalog, _FakeCatalog([])),
-        cast(Acquisition, _FakeAcquisition(1)),
-        bot=cast(Bot, bot),
-        dispatcher=cast(Dispatcher, dispatcher),
-    )
-    delays: list[float] = []
+    runner = _runner_with_application(application, processor)
 
-    async def record_retry(delay: float) -> bool:
-        delays.append(delay)
-        if len(delays) == 3:
-            runner._stop.set()
-            return True
+    async def immediate_retry(delay: float) -> bool:
+        assert delay == 1.0
         return False
 
-    runner._retry_delay = record_retry  # type: ignore[method-assign]
-    caplog.set_level("INFO", logger="sopds.telegram.runner")
-    await runner._run()
-
-    assert delays == [1.0, 1.0, 1.0]
-    assert "Telegram polling recovered" in caplog.text
-    assert "Telegram polling cycle ended" in caplog.text
-    assert caplog.text.count("Telegram polling stopped") == 1
-
-
-async def test_runner_retries_initial_webhook_delete_and_shutdown_wakes_retry() -> None:
-    bot = _FakeBot(delete_failures=10)
-    dispatcher = _FakeDispatcher()
-    config = TelegramConfig.model_validate(
-        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
-    )
-    runner = TelegramRunner(
-        config,
-        cast(Catalog, _FakeCatalog([])),
-        cast(Acquisition, _FakeAcquisition(1)),
-        bot=cast(Bot, bot),
-        dispatcher=cast(Dispatcher, dispatcher),
-    )
+    runner._retry_delay = immediate_retry  # type: ignore[method-assign]
     runner.start()
-    await bot.delete_attempted.wait()
+    await asyncio.wait_for(application.updater.polling_retried.wait(), timeout=1)
+
+    assert application.initialize_calls == 2
+    assert application.bot.shutdown_calls == 1
+
+    await runner.shutdown()
+    assert application.bot.shutdown_calls == 2
+
+
+async def test_runner_retries_terminal_polling_failure_without_dropping_updates_again() -> None:
+    processor = TelegramUpdateProcessor((10, -20))
+    application = _FakeApplication(processor, runtime_polling_failures=1)
+    runner = _runner_with_application(application, processor)
+
+    async def immediate_retry(delay: float) -> bool:
+        assert delay == 1.0
+        return False
+
+    runner._retry_delay = immediate_retry  # type: ignore[method-assign]
+    runner.start()
+    await application.updater.polling_started.wait()
+    application.updater.runtime_failure_requested.set()
+    await asyncio.wait_for(application.updater.second_polling_started.wait(), timeout=1)
+
+    assert [
+        arguments["drop_pending_updates"]
+        for arguments in application.updater.polling_arguments_history
+    ] == [True, False]
+
+    await runner.shutdown()
+
+
+async def test_runner_shutdown_interrupts_blocked_initialization() -> None:
+    processor = TelegramUpdateProcessor((10, -20))
+    application = _FakeApplication(processor)
+    blocked = asyncio.Event()
+
+    async def blocked_initialize() -> None:
+        application.initialize_calls += 1
+        blocked.set()
+        await asyncio.Event().wait()
+
+    application.initialize = blocked_initialize  # type: ignore[method-assign]
+    runner = _runner_with_application(application, processor)
+    runner.start()
+    await blocked.wait()
 
     await asyncio.wait_for(runner.shutdown(), timeout=0.2)
 
-    assert bot.delete_calls == 1
-    assert bot.session.close_calls == 1
-    assert not dispatcher.polling_started.is_set()
+    assert application.bot.shutdown_calls == 1
 
 
-async def test_runner_retries_delete_before_polling() -> None:
-    bot = _FakeBot(delete_failures=1)
-    dispatcher = _FakeDispatcher()
-    config = TelegramConfig.model_validate(
-        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
-    )
-    runner = TelegramRunner(
-        config,
-        cast(Catalog, _FakeCatalog([])),
-        cast(Acquisition, _FakeAcquisition(1)),
-        bot=cast(Bot, bot),
-        dispatcher=cast(Dispatcher, dispatcher),
-    )
+async def test_runner_shutdown_wakes_failed_start_retry() -> None:
+    processor = TelegramUpdateProcessor((10, -20))
+    application = _FakeApplication(processor, initialization_failures=10)
+    runner = _runner_with_application(application, processor)
+
     runner.start()
-    await asyncio.wait_for(dispatcher.polling_started.wait(), timeout=2)
+    await application.initialize_attempted.wait()
+    await asyncio.wait_for(runner.shutdown(), timeout=0.2)
 
-    assert bot.delete_calls == 2
-    await runner.shutdown()
+    assert application.initialize_calls == 1
+    assert application.bot.shutdown_calls >= 1
+    assert application.updater.polling_calls == 0
 
 
-async def test_runner_cancels_aiogram_task_paused_before_tracker_entry() -> None:
-    bot = _FakeBot()
-    dispatcher = _FakeDispatcher()
-    config = TelegramConfig.model_validate(
-        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
-    )
-    runner = TelegramRunner(
-        config,
-        cast(Catalog, _FakeCatalog([])),
-        cast(Acquisition, _FakeAcquisition(1)),
-        bot=cast(Bot, bot),
-        dispatcher=cast(Dispatcher, dispatcher),
-    )
-    release = asyncio.Event()
+async def test_processor_cancels_active_and_discards_queued_update() -> None:
+    processor = TelegramUpdateProcessor((10,), max_concurrent_updates=1)
+    first_started = asyncio.Event()
     service_calls = 0
 
-    async def aiogram_task() -> None:
+    async def active_service() -> None:
+        first_started.set()
+        await asyncio.Event().wait()
+
+    async def queued_service() -> None:
         nonlocal service_calls
-        await release.wait()
+        service_calls += 1
 
-        async def service(event: object, data: dict[str, object]) -> None:
-            nonlocal service_calls
-            del event, data
-            service_calls += 1
-
-        await runner.tracker(service, cast(TelegramObject, object()), {})
-
-    task = asyncio.create_task(aiogram_task())
-    dispatcher._handle_update_tasks.add(cast(asyncio.Task[object], task))
+    update = Update(update_id=1, message=_message(10))
+    active = asyncio.create_task(processor.process_update(update, active_service()))
+    await first_started.wait()
+    queued = asyncio.create_task(processor.process_update(update, queued_service()))
     await asyncio.sleep(0)
 
-    await runner.shutdown()
-    release.set()
+    processor.stop_accepting()
+    await processor.cancel_and_wait()
+    await queued
 
-    assert task.done()
-    assert task.cancelled()
+    assert active.cancelled()
     assert service_calls == 0
-    assert bot.session.close_calls == 1
 
 
 async def test_runner_shutdown_cancels_active_upload_and_closes_stream() -> None:
-    bot = _FakeBot()
-    dispatcher = _FakeDispatcher()
-    config = TelegramConfig.model_validate(
-        {"enabled": True, "token": "123456:secret", "allowed_chat_ids": [10]}
-    )
+    processor = TelegramUpdateProcessor((10, -20))
+    application = _FakeApplication(processor)
     acquisition = _FakeAcquisition(1)
     handlers = TelegramHandlers(
         cast(Catalog, _FakeCatalog([])), cast(Acquisition, acquisition), CallbackStateStore()
     )
-    runner = TelegramRunner(
-        config,
-        cast(Catalog, _FakeCatalog([])),
-        cast(Acquisition, acquisition),
-        bot=cast(Bot, bot),
-        dispatcher=cast(Dispatcher, dispatcher),
+    runner = _runner_with_application(
+        application,
+        processor,
+        acquisition=cast(Acquisition, acquisition),
     )
     message = _FakeMessage(block_document=True)
+    update = Update(update_id=1, message=_message(10))
 
-    async def upload(event: object, data: dict[str, object]) -> None:
-        del event, data
+    async def upload() -> None:
         await handlers.on_callback(cast(CallbackQuery, _FakeCallback("x:book-0", message)))
 
-    task = asyncio.create_task(runner.tracker(upload, cast(TelegramObject, object()), {}))
-    dispatcher._handle_update_tasks.add(cast(asyncio.Task[object], task))
+    task = asyncio.create_task(processor.process_update(update, upload()))
     await message.document_started.wait()
 
     await runner.shutdown()
 
     assert task.done()
+    assert task.cancelled()
     assert acquisition.stream.closed == 1
+    assert application.bot.shutdown_calls == 1

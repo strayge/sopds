@@ -1,11 +1,12 @@
-"""Failure-isolated aiogram polling lifecycle."""
+"""Failure-isolated python-telegram-bot polling lifecycle."""
 
 import asyncio
 import logging
 from contextlib import suppress
 from typing import Any, cast
 
-from aiogram import Bot, Dispatcher
+from telegram.error import TelegramError
+from telegram.ext import Application
 
 from sopds.acquisition.contracts import Acquisition
 from sopds.catalog.contracts import Catalog
@@ -13,33 +14,16 @@ from sopds.config import TelegramConfig
 from sopds.conversion.policy import OUTPUT_POLICY, OutputPolicy
 from sopds.conversion.service import ConversionService
 from sopds.telegram.handlers import TelegramHandlers
-from sopds.telegram.middleware import ActiveUpdateTracker, AllowlistMiddleware
+from sopds.telegram.middleware import TelegramUpdateProcessor
 from sopds.telegram.state import CallbackStateStore
 
 _LOGGER = logging.getLogger(__name__)
-
-
-async def _cancel_aiogram_update_tasks(dispatcher: Dispatcher) -> None:
-    """Drain aiogram 3.30 tasks that may not have reached adapter middleware yet.
-
-    Dispatcher._handle_update_tasks is private and this compatibility boundary is why
-    the project pins aiogram exactly. Polling must already be joined before this runs,
-    so the set cannot gain another update task while its snapshot is being cancelled.
-    """
-    raw_tasks = getattr(dispatcher, "_handle_update_tasks", None)
-    if raw_tasks is None:
-        return
-    tasks = cast(set[asyncio.Task[Any]], raw_tasks)
-    current = asyncio.current_task()
-    pending = [task for task in tuple(tasks) if task is not current and not task.done()]
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+_PTB_POLLING_TASK_ATTRIBUTE = "_Updater__polling_task"
+type TelegramApplication = Application[Any, Any, Any, Any, Any, Any]
 
 
 class TelegramRunner:
-    """Own every Telegram resource without making HTTP startup depend on the network."""
+    """Own PTB resources without making HTTP startup depend on Telegram availability."""
 
     def __init__(
         self,
@@ -49,34 +33,49 @@ class TelegramRunner:
         conversion: ConversionService | None = None,
         output_policy: OutputPolicy = OUTPUT_POLICY,
         *,
-        bot: Bot | None = None,
-        dispatcher: Dispatcher | None = None,
+        application: TelegramApplication | None = None,
+        processor: TelegramUpdateProcessor | None = None,
     ) -> None:
         if not config.enabled:
             raise ValueError("A runner is only created for an enabled Telegram configuration")
         if config.token is None:
             raise ValueError("Enabled Telegram configuration requires a token")
-        self.bot = bot or Bot(config.token.get_secret_value())
-        self.dispatcher = dispatcher or Dispatcher()
+
         self.state = CallbackStateStore()
-        self.tracker = ActiveUpdateTracker()
-        self.dispatcher.update.outer_middleware(AllowlistMiddleware(config.allowed_chat_ids))
-        self.dispatcher.update.outer_middleware(self.tracker)
-        self.dispatcher.include_router(
-            TelegramHandlers(
-                catalog,
-                acquisition,
-                self.state,
-                conversion,
-                output_policy,
-            ).router()
-        )
+        self.processor = processor or TelegramUpdateProcessor(config.allowed_chat_ids)
+        if application is None:
+            self.application = cast(
+                TelegramApplication,
+                Application.builder()
+                .token(config.token.get_secret_value())
+                .concurrent_updates(self.processor)
+                .media_write_timeout(60)
+                .build(),
+            )
+        else:
+            if processor is None:
+                raise ValueError("An injected Telegram application requires its update processor")
+            self.application = application
+
+        updater = self.application.updater
+        if updater is None:
+            raise ValueError("Telegram polling requires an Application with an Updater")
+        self.updater = updater
+        TelegramHandlers(
+            catalog,
+            acquisition,
+            self.state,
+            conversion,
+            output_policy,
+        ).register(self.application)
+
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
-        self._polling_active = False
-        self._webhook_deleted = False
-        self._session_closed = False
+        self._application_initialized = False
+        self._application_running = False
+        self._polling_running = False
+        self._pending_updates_dropped = False
 
     def start(self) -> None:
         if self._task is None:
@@ -88,73 +87,125 @@ class TelegramRunner:
 
     async def _run(self) -> None:
         delay = 1.0
-        webhook_failures = 0
-        while not self._stop.is_set() and not self._webhook_deleted:
-            try:
-                await self.bot.delete_webhook(drop_pending_updates=True)
-                self._webhook_deleted = True
-                if webhook_failures:
-                    _LOGGER.info(
-                        f"Telegram webhook setup recovered phase=webhook "
-                        f"failure_count={webhook_failures}"
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                webhook_failures += 1
-                _LOGGER.warning(
-                    f"Telegram webhook setup failed phase=webhook "
-                    f"failure_type={type(error).__name__} attempt={webhook_failures} "
-                    f"retry_delay_seconds={delay}"
-                )
-                if await self._retry_delay(delay):
+        failures = 0
+        try:
+            while not self._stop.is_set():
+                try:
+                    await self._start_application()
+                    if failures:
+                        _LOGGER.info(
+                            f"Telegram polling recovered phase=polling failure_count={failures}"
+                        )
+                        failures = 0
+                        delay = 1.0
+                    _LOGGER.info("Telegram polling started phase=polling")
+                    await self._wait_for_stop_or_polling_failure()
                     return
-                delay = min(delay * 2, 30)
-
-        delay = 1.0
-        polling_failures = 0
-        while not self._stop.is_set() and self._webhook_deleted:
-            failed = False
-            try:
-                self._polling_active = True
-                _LOGGER.info("Telegram polling started phase=polling")
-                await self.dispatcher.start_polling(
-                    self.bot,
-                    allowed_updates=["message", "callback_query"],
-                    handle_signals=False,
-                    close_bot_session=False,
-                    handle_as_tasks=True,
-                    tasks_concurrency_limit=4,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                failed = True
-                polling_failures += 1
-                _LOGGER.warning(
-                    f"Telegram polling failed phase=polling "
-                    f"failure_type={type(error).__name__} attempt={polling_failures} "
-                    f"retry_delay_seconds={delay}"
-                )
-            finally:
-                self._polling_active = False
-                if self._stop.is_set():
-                    _LOGGER.info("Telegram polling stopped phase=polling")
-            if self._stop.is_set():
-                return
-            if not failed:
-                if polling_failures:
-                    _LOGGER.info(
-                        f"Telegram polling recovered phase=polling failure_count={polling_failures}"
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    failures += 1
+                    _LOGGER.warning(
+                        f"Telegram polling failed phase=polling "
+                        f"failure_type={type(error).__name__} attempt={failures} "
+                        f"retry_delay_seconds={delay}"
                     )
-                    polling_failures = 0
-                delay = 1.0
-            _LOGGER.info(f"Telegram polling cycle ended phase=polling retry_delay_seconds={delay}")
-            if await self._retry_delay(delay):
-                _LOGGER.info("Telegram polling stopped phase=polling")
+                    await self._cleanup_after_failed_start()
+                    if self._stop.is_set() or await self._retry_delay(delay):
+                        return
+                    delay = min(delay * 2, 30)
+        finally:
+            await self._stop_application()
+            _LOGGER.info("Telegram polling stopped phase=polling")
+
+    async def _start_application(self) -> None:
+        await self.application.initialize()
+        self._application_initialized = True
+        await self.updater.start_polling(
+            allowed_updates=["message", "callback_query"],
+            drop_pending_updates=not self._pending_updates_dropped,
+            bootstrap_retries=0,
+            error_callback=self._polling_error,
+        )
+        self._pending_updates_dropped = True
+        self._polling_running = True
+        await self.application.start()
+        self._application_running = True
+
+    async def _wait_for_stop_or_polling_failure(self) -> None:
+        """Observe PTB's private task because its public start call returns only the queue."""
+        polling_task = getattr(self.updater, _PTB_POLLING_TASK_ATTRIBUTE, None)
+        if not isinstance(polling_task, asyncio.Task):
+            raise RuntimeError("PTB polling task is unavailable")
+        stop_task = asyncio.create_task(self._stop.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                (polling_task, stop_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if stop_task in done:
                 return
-            if failed:
-                delay = min(delay * 2, 30)
+            await polling_task
+            raise RuntimeError("PTB polling stopped unexpectedly")
+        finally:
+            if not stop_task.done():
+                stop_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await stop_task
+
+    def _polling_error(self, error: TelegramError) -> None:
+        _LOGGER.warning(
+            f"Telegram polling request failed phase=polling failure_type={type(error).__name__}"
+        )
+
+    async def _cleanup_after_failed_start(self) -> None:
+        try:
+            await self._stop_application()
+        except Exception as error:
+            _LOGGER.warning(
+                f"Telegram failed-start cleanup failed phase=cleanup "
+                f"failure_type={type(error).__name__}"
+            )
+
+    async def _stop_application(self) -> None:
+        self.processor.stop_accepting()
+        failures: list[BaseException] = []
+
+        if self._polling_running or self.updater.running:
+            try:
+                await self.updater.stop()
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                self._polling_running = False
+
+        try:
+            await self.processor.cancel_and_wait()
+        except BaseException as error:
+            failures.append(error)
+
+        if self._application_running or self.application.running:
+            try:
+                await self.application.stop()
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                self._application_running = False
+
+        if self._application_initialized:
+            try:
+                await self.application.shutdown()
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                self._application_initialized = False
+        else:
+            try:
+                await self.application.bot.shutdown()
+            except BaseException as error:
+                failures.append(error)
+
+        if failures:
+            raise failures[0]
 
     async def _retry_delay(self, delay: float) -> bool:
         try:
@@ -180,22 +231,14 @@ class TelegramRunner:
             raise asyncio.CancelledError
 
     async def _shutdown(self) -> None:
-        self.tracker.stop_accepting()
+        self.processor.stop_accepting()
         self._stop.set()
-        if self._polling_active:
-            with suppress(RuntimeError):
-                await self.dispatcher.stop_polling()
-
         task = self._task
-        if task is not None and not task.done():
-            task.cancel()
         if task is not None:
+            if not task.done():
+                task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-
-        await _cancel_aiogram_update_tasks(self.dispatcher)
-        await self.tracker.cancel_and_wait()
-        if not self._session_closed:
-            self._session_closed = True
-            await self.bot.session.close()
+        else:
+            await self._stop_application()
         _LOGGER.info("Telegram shutdown completed phase=shutdown")

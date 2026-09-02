@@ -1,4 +1,4 @@
-"""Allowlisted aiogram presentation adapter."""
+"""Allowlisted python-telegram-bot presentation adapter."""
 
 from sopds.telegram.runner import TelegramRunner
 

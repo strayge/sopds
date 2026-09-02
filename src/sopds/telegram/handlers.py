@@ -3,15 +3,23 @@
 import asyncio
 import logging
 import re
+from typing import Any, cast
 
-from aiogram import F, Router
-from aiogram.filters import Command
-from aiogram.types import (
+from telegram import (
     CallbackQuery,
     InaccessibleMessage,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    Update,
+)
+from telegram.ext import (
+    Application,
+    CallbackContext,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
 )
 
 from sopds.acquisition.contracts import (
@@ -47,7 +55,7 @@ from sopds.telegram.formatting import (
     truncate,
 )
 from sopds.telegram.state import CallbackStateStore, DownloadState, PageState
-from sopds.telegram.upload import StreamingInputFile
+from sopds.telegram.upload import StagedInputFile, close_stream
 
 _LOGGER = logging.getLogger(__name__)
 _PUBLIC_ID = re.compile(r"[A-Za-z0-9._~-]{1,62}\Z")
@@ -69,15 +77,36 @@ class TelegramHandlers:
         self._conversion = conversion
         self._output_policy = output_policy
 
-    def router(self) -> Router:
-        router = Router(name="telegram")
-        router.message.register(self.on_start_command, Command("start"))
-        router.message.register(self.on_plain_text, F.text & ~F.text.startswith("/"))
-        router.callback_query.register(self.on_callback)
-        return router
+    def register(self, application: Application[Any, Any, Any, Any, Any, Any]) -> None:
+        application.add_handler(CommandHandler("start", self._dispatch_start))
+        application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self._dispatch_plain_text)
+        )
+        application.add_handler(CallbackQueryHandler(self._dispatch_callback))
+
+    async def _dispatch_start(
+        self, update: Update, context: CallbackContext[Any, Any, Any, Any]
+    ) -> None:
+        del context
+        if update.message is not None:
+            await self.on_start_command(update.message)
+
+    async def _dispatch_plain_text(
+        self, update: Update, context: CallbackContext[Any, Any, Any, Any]
+    ) -> None:
+        del context
+        if update.message is not None:
+            await self.on_plain_text(update.message)
+
+    async def _dispatch_callback(
+        self, update: Update, context: CallbackContext[Any, Any, Any, Any]
+    ) -> None:
+        del context
+        if update.callback_query is not None:
+            await self.on_callback(update.callback_query)
 
     async def on_start_command(self, message: Message) -> None:
-        await message.answer(f"i'm here. your id is {message.chat.id}")
+        await message.reply_text(f"i'm here. your id is {message.chat.id}")
 
     async def on_plain_text(self, message: Message) -> None:
         text = message.text
@@ -118,25 +147,26 @@ class TelegramHandlers:
             raise
         except Exception as error:
             _LOGGER.warning(f"Telegram search failed failure_type={type(error).__name__}")
-            await message.answer("Search is temporarily unavailable.")
+            await message.reply_text("Search is temporarily unavailable.")
             return
         markup = await self._result_markup(message.chat.id, query, page)
-        await message.answer(results_text(page.books), reply_markup=markup)
+        await message.reply_text(results_text(page.books), reply_markup=markup)
 
     async def _detail(self, callback: CallbackQuery, public_id: str) -> None:
         message = callback.message
         if message is None or isinstance(message, InaccessibleMessage):
             return
+        message = cast(Message, message)
         try:
             book = await self._catalog.details(public_id)
         except asyncio.CancelledError:
             raise
         except Exception as error:
             _LOGGER.warning(f"Telegram detail failed failure_type={type(error).__name__}")
-            await message.answer("Book details are temporarily unavailable.")
+            await message.reply_text("Book details are temporarily unavailable.")
             return
         if book is None:
-            await message.answer("Book is no longer available.")
+            await message.reply_text("Book is no longer available.")
             return
         buttons = [
             InlineKeyboardButton(
@@ -155,7 +185,7 @@ class TelegramHandlers:
                     raise AssertionError("Callback state token exceeds Telegram's limit")
                 buttons.append(InlineKeyboardButton(text=choice.label, callback_data=callback_data))
         markup = InlineKeyboardMarkup(inline_keyboard=[buttons]) if book.downloadable else None
-        await message.answer(detail_text(book), reply_markup=markup)
+        await message.reply_text(detail_text(book), reply_markup=markup)
 
     async def _page(self, callback: CallbackQuery, token: str) -> None:
         message = callback.message
@@ -167,6 +197,7 @@ class TelegramHandlers:
         ):
             await callback.answer()
             return
+        message = cast(Message, message)
         state = await self._state.get(token, message.chat.id)
         if state is None:
             await callback.answer("This search page has expired.", show_alert=True)
@@ -180,7 +211,7 @@ class TelegramHandlers:
             raise
         except Exception as error:
             _LOGGER.warning(f"Telegram pagination failed failure_type={type(error).__name__}")
-            await message.answer("Search is temporarily unavailable.")
+            await message.reply_text("Search is temporarily unavailable.")
             return
         markup = await self._result_markup(message.chat.id, state.query, page)
         await message.edit_text(results_text(page.books), reply_markup=markup)
@@ -195,6 +226,7 @@ class TelegramHandlers:
         ):
             await callback.answer()
             return
+        message = cast(Message, message)
         state = await self._state.get_download(token, message.chat.id)
         if state is None or not _valid_public_id(state.public_id) or self._conversion is None:
             await callback.answer("This format choice is unavailable or expired.", show_alert=True)
@@ -214,15 +246,16 @@ class TelegramHandlers:
         message = callback.message
         if message is None or isinstance(message, InaccessibleMessage):
             return
+        message = cast(Message, message)
         try:
             description = await self._acquisition.describe(public_id)
             if description.content_length > _UPLOAD_LIMIT:
-                await message.answer("This file is too large to send through Telegram.")
+                await message.reply_text("This file is too large to send through Telegram.")
                 return
             acquired = await self._acquisition.acquire(public_id)
             if acquired.content_length > _UPLOAD_LIMIT:
-                await self._close_stream(acquired.stream, acquired.filename)
-                await message.answer("This file is too large to send through Telegram.")
+                await self._close_stream(acquired.stream)
+                await message.reply_text("This file is too large to send through Telegram.")
                 return
             mismatch = _description_mismatch(description, acquired)
             if mismatch is not None:
@@ -230,8 +263,8 @@ class TelegramHandlers:
                     f"Telegram acquisition integrity check failed surface=telegram "
                     f"phase=acquisition failure_type={mismatch}"
                 )
-                await self._close_stream(acquired.stream, acquired.filename)
-                await message.answer("The original file is currently unavailable.")
+                await self._close_stream(acquired.stream)
+                await message.reply_text("The original file is currently unavailable.")
                 return
             await self._send_document(
                 message,
@@ -254,20 +287,20 @@ class TelegramHandlers:
                     f"Telegram acquisition failed surface=telegram phase=acquisition "
                     f"failure_type={type(error).__name__}"
                 )
-            await message.answer("The original file is currently unavailable.")
+            await message.reply_text("The original file is currently unavailable.")
         except Exception as error:
             _LOGGER.warning(
                 f"Telegram acquisition failed surface=telegram phase=acquisition "
                 f"failure_type={type(error).__name__}"
             )
-            await message.answer("The original file is currently unavailable.")
+            await message.reply_text("The original file is currently unavailable.")
 
     async def _download_conversion(
         self, message: Message, public_id: str, target_format: str
     ) -> None:
         conversion = self._conversion
         if conversion is None:
-            await message.answer("This format is unavailable.")
+            await message.reply_text("This format is unavailable.")
             return
         try:
             book = await self._catalog.details(public_id)
@@ -278,30 +311,30 @@ class TelegramHandlers:
                 f"Telegram conversion metadata failed surface=telegram phase=metadata "
                 f"failure_type={type(error).__name__}"
             )
-            await message.answer("The source file is currently unavailable.")
+            await message.reply_text("The source file is currently unavailable.")
             return
         if book is None or not book.downloadable:
-            await message.answer("The source file is currently unavailable.")
+            await message.reply_text("The source file is currently unavailable.")
             return
         if not conversion.supports(book.original_format, target_format):
-            await message.answer("This format is unavailable.")
+            await message.reply_text("This format is unavailable.")
             return
         try:
             result = await conversion.convert(public_id, target_format)
         except asyncio.CancelledError:
             raise
         except SourceUnavailableError:
-            await message.answer("The source file is currently unavailable.")
+            await message.reply_text("The source file is currently unavailable.")
             return
         except UnsupportedConversionError:
-            await message.answer("This format is unavailable.")
+            await message.reply_text("This format is unavailable.")
             return
         except ConversionTimeoutError as error:
             _LOGGER.warning(
                 f"Telegram conversion timed out surface=telegram phase=conversion "
                 f"failure_type={type(error).__name__}"
             )
-            await message.answer("Conversion timed out.")
+            await message.reply_text("Conversion timed out.")
             return
         except (
             ConversionSourceError,
@@ -314,19 +347,19 @@ class TelegramHandlers:
                 f"Telegram conversion failed surface=telegram phase=conversion "
                 f"failure_type={type(error).__name__}"
             )
-            await message.answer("Conversion failed.")
+            await message.reply_text("Conversion failed.")
             return
         except Exception as error:
             _LOGGER.warning(
                 f"Telegram conversion failed surface=telegram phase=conversion "
                 f"failure_type={type(error).__name__}"
             )
-            await message.answer("Conversion failed.")
+            await message.reply_text("Conversion failed.")
             return
 
         if result.content_length > _UPLOAD_LIMIT:
-            await self._close_stream(result.stream, result.filename)
-            await message.answer("This file is too large to send through Telegram.")
+            await self._close_stream(result.stream)
+            await message.reply_text("This file is too large to send through Telegram.")
             return
         await self._send_document(
             message,
@@ -342,10 +375,13 @@ class TelegramHandlers:
         filename: str,
         title: str,
     ) -> None:
-        upload = StreamingInputFile(stream, safe_filename(filename))
+        upload: StagedInputFile | None = None
         try:
-            await message.answer_document(
-                upload,
+            upload = await StagedInputFile.create(stream, safe_filename(filename))
+            if upload.input_file is None:
+                raise AssertionError("Staged Telegram upload has no input file")
+            await message.reply_document(
+                upload.input_file,
                 caption=truncate(sanitize(title), 1_024) or "Book",
             )
         except asyncio.CancelledError:
@@ -355,22 +391,22 @@ class TelegramHandlers:
                 f"Telegram upload failed surface=telegram phase=upload "
                 f"failure_type={type(error).__name__}"
             )
-            await message.answer("Telegram could not send this file.")
+            await message.reply_text("Telegram could not send this file.")
         finally:
-            try:
-                await upload.aclose()
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                _LOGGER.warning(
-                    f"Telegram upload cleanup failed surface=telegram phase=cleanup "
-                    f"failure_type={type(error).__name__}"
-                )
+            if upload is not None:
+                try:
+                    await upload.aclose()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    _LOGGER.warning(
+                        f"Telegram upload cleanup failed surface=telegram phase=cleanup "
+                        f"failure_type={type(error).__name__}"
+                    )
 
-    async def _close_stream(self, stream: AsyncByteStream, filename: str) -> None:
-        upload = StreamingInputFile(stream, safe_filename(filename))
+    async def _close_stream(self, stream: AsyncByteStream) -> None:
         try:
-            await upload.aclose()
+            await close_stream(stream)
         except asyncio.CancelledError:
             raise
         except Exception as error:
