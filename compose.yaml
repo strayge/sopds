@@ -21,8 +21,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-    networks:
-      - database
 
   sopds:
     build:
@@ -39,10 +37,3 @@ services:
       - ./config.toml:/config/config.toml:ro
       - ./library:/library:ro
       - ./data:/data
-    networks:
-      - default
-      - database
-
-networks:
-  database:
-    internal: true
