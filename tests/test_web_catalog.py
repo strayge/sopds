@@ -2490,6 +2490,36 @@ async def test_selected_download_completion_disconnect_race_closes_returned_arch
     assert messages == []
 
 
+async def test_discard_route_task_disposes_result_while_owner_is_cancelling() -> None:
+    result = object()
+
+    async def completed() -> object:
+        return result
+
+    operation = asyncio.create_task(completed())
+    await operation
+    disposed: list[object] = []
+
+    async def dispose(value: object) -> bool:
+        disposed.append(value)
+        return False
+
+    owner = asyncio.current_task()
+    assert owner is not None
+    owner.cancel()
+    try:
+        cancelled = await routes._discard_route_task(
+            operation,
+            cancel=False,
+            dispose=dispose,
+        )
+    finally:
+        owner.uncancel()
+
+    assert cancelled
+    assert disposed == [result]
+
+
 async def test_selected_download_repeated_cancellation_drains_build_cleanup() -> None:
     app, _, _ = _app()
     build_started = asyncio.Event()

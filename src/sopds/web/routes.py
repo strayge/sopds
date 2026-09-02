@@ -4,9 +4,9 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from pathlib import Path
-from typing import Literal, cast, override
+from typing import Any, Literal, cast, override
 from urllib.parse import parse_qsl, quote, urlencode
 
 from fastapi import APIRouter, HTTPException, Request
@@ -860,23 +860,38 @@ async def selected_preview(request: Request) -> Response:
     )
 
 
-async def _close_staged_archive(staged: StagedArchive, *, response_started: bool) -> bool:
-    """Finish archive cleanup even when its response task is repeatedly cancelled."""
-    cleanup = asyncio.create_task(staged.aclose())
+async def _finish_route_cleanup(
+    cleanup: Callable[[], Awaitable[None]],
+    *,
+    on_error: Callable[[BaseException], None],
+) -> bool:
+    """Complete owned cleanup despite repeated cancellation of its caller."""
+
+    async def run_cleanup() -> None:
+        await cleanup()
+
+    cleanup_task = asyncio.create_task(run_cleanup())
     cancelled = False
-    while not cleanup.done():
+    while not cleanup_task.done():
         try:
-            await asyncio.shield(cleanup)
+            await asyncio.shield(cleanup_task)
         except asyncio.CancelledError:
             cancelled = True
     try:
-        cleanup.result()
+        cleanup_task.result()
     except BaseException as error:
-        _LOGGER.error(
+        on_error(error)
+    return cancelled
+
+
+async def _close_staged_archive(staged: StagedArchive, *, response_started: bool) -> bool:
+    return await _finish_route_cleanup(
+        staged.aclose,
+        on_error=lambda error: _LOGGER.error(
             f"Selected-books archive cleanup failed surface=web phase=cleanup "
             f"failure_type={type(error).__name__} response_started={response_started}"
-        )
-    return cancelled
+        ),
+    )
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -900,56 +915,64 @@ async def _drain_route_task[T](task: asyncio.Task[T]) -> bool:
     return cancelled
 
 
-async def _discard_archive_build(build: asyncio.Task[StagedArchive], *, cancel: bool) -> bool:
-    """Drain an abandoned build and close any archive produced by a completion race."""
-    if cancel and not build.done():
-        build.cancel()
-    cancelled = await _drain_route_task(build)
-    if build.cancelled():
+async def _discard_route_task[T](
+    task: asyncio.Task[T],
+    *,
+    cancel: bool,
+    dispose: Callable[[T], Awaitable[bool]],
+) -> bool:
+    """Drain an abandoned task and dispose of any successful result it produced."""
+    if cancel and not task.done():
+        task.cancel()
+    cancelled = await _drain_route_task(task)
+    if task.cancelled():
         return cancelled
     try:
-        staged = build.result()
+        result = task.result()
     except BaseException:
         return cancelled
-    close_cancelled = await _close_staged_archive(staged, response_started=False)
-    return cancelled or close_cancelled
+    dispose_cancelled = await dispose(result)
+    return cancelled or dispose_cancelled
 
 
-async def _download_while_connected(
-    request: Request, archive_request: ArchiveRequest
-) -> StagedArchive | None:
-    build = asyncio.create_task(_archive(request).download(archive_request))
-    disconnect = asyncio.create_task(_wait_for_disconnect(request))
+async def _run_while_connected[T](
+    request: Request,
+    operation: Coroutine[Any, Any, T],
+    dispose: Callable[[T], Awaitable[bool]],
+) -> T | None:
+    """Run one operation until it completes or the client disconnects."""
+    operation_task = asyncio.create_task(operation)
+    disconnect_task = asyncio.create_task(_wait_for_disconnect(request))
     try:
         completed, _pending = await asyncio.wait(
-            {build, disconnect}, return_when=asyncio.FIRST_COMPLETED
+            {operation_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
         )
     except asyncio.CancelledError:
-        disconnect.cancel()
-        build.cancel()
-        await _drain_route_task(disconnect)
-        await _discard_archive_build(build, cancel=False)
+        disconnect_task.cancel()
+        operation_task.cancel()
+        await _drain_route_task(disconnect_task)
+        await _discard_route_task(operation_task, cancel=False, dispose=dispose)
         raise
 
-    if disconnect in completed:
+    if disconnect_task in completed:
         disconnect_error: BaseException | None = None
         try:
-            disconnect.result()
+            disconnect_task.result()
         except BaseException as error:
             disconnect_error = error
-        cancelled = await _discard_archive_build(build, cancel=True)
+        cancelled = await _discard_route_task(operation_task, cancel=True, dispose=dispose)
         if cancelled:
             raise asyncio.CancelledError
         if disconnect_error is not None:
             raise disconnect_error
         return None
 
-    disconnect.cancel()
-    cancelled = await _drain_route_task(disconnect)
+    disconnect_task.cancel()
+    cancelled = await _drain_route_task(disconnect_task)
     if cancelled:
-        await _discard_archive_build(build, cancel=False)
+        await _discard_route_task(operation_task, cancel=False, dispose=dispose)
         raise asyncio.CancelledError
-    return build.result()
+    return operation_task.result()
 
 
 class _ClientDisconnectedResponse(Response):
@@ -1019,7 +1042,11 @@ async def selected_download(request: Request) -> Response:
         return _selected_input_error(request, error, fragment=False)
 
     try:
-        staged = await _download_while_connected(request, archive_request)
+        staged = await _run_while_connected(
+            request,
+            _archive(request).download(archive_request),
+            lambda staged: _close_staged_archive(staged, response_started=False),
+        )
     except ArchiveInputError as error:
         return _selected_input_error(request, error, fragment=False)
     except CatalogInputError:
@@ -1373,22 +1400,13 @@ async def _stream_original(
 async def _close_owned_stream(
     original: AcquiredOriginal | ConversionResult, *, response_started: bool
 ) -> bool:
-    """Finish response-owned cleanup even when its caller is repeatedly cancelled."""
-    cleanup = asyncio.create_task(original.stream.aclose())
-    cancelled = False
-    while not cleanup.done():
-        try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            cancelled = True
-    try:
-        cleanup.result()
-    except BaseException as error:
-        _LOGGER.error(
+    return await _finish_route_cleanup(
+        original.stream.aclose,
+        on_error=lambda error: _LOGGER.error(
             f"Original download cleanup failed surface=web phase=cleanup "
             f"failure_type={type(error).__name__} response_started={response_started}"
-        )
-    return cancelled
+        ),
+    )
 
 
 class _OwnedStreamingResponse(StreamingResponse):
@@ -1426,58 +1444,6 @@ class _OwnedStreamingResponse(StreamingResponse):
                 response_started=response_started,
             ):
                 raise asyncio.CancelledError
-
-
-async def _discard_conversion(conversion: asyncio.Task[ConversionResult], *, cancel: bool) -> bool:
-    """Drain an abandoned conversion and close any artifact won in a completion race."""
-    if cancel and not conversion.done():
-        conversion.cancel()
-    cancelled = await _drain_route_task(conversion)
-    if conversion.cancelled():
-        return cancelled
-    try:
-        result = conversion.result()
-    except BaseException:
-        return cancelled
-    close_cancelled = await _close_owned_stream(result, response_started=False)
-    return cancelled or close_cancelled
-
-
-async def _convert_while_connected(
-    request: Request, public_id: str, target_format: str
-) -> ConversionResult | None:
-    conversion = asyncio.create_task(_conversion(request).convert(public_id, target_format))
-    disconnect = asyncio.create_task(_wait_for_disconnect(request))
-    try:
-        completed, _pending = await asyncio.wait(
-            {conversion, disconnect}, return_when=asyncio.FIRST_COMPLETED
-        )
-    except asyncio.CancelledError:
-        disconnect.cancel()
-        conversion.cancel()
-        await _drain_route_task(disconnect)
-        await _discard_conversion(conversion, cancel=False)
-        raise
-
-    if disconnect in completed:
-        disconnect_error: BaseException | None = None
-        try:
-            disconnect.result()
-        except BaseException as error:
-            disconnect_error = error
-        cancelled = await _discard_conversion(conversion, cancel=True)
-        if cancelled:
-            raise asyncio.CancelledError
-        if disconnect_error is not None:
-            raise disconnect_error
-        return None
-
-    disconnect.cancel()
-    cancelled = await _drain_route_task(disconnect)
-    if cancelled:
-        await _discard_conversion(conversion, cancel=False)
-        raise asyncio.CancelledError
-    return conversion.result()
 
 
 @router.get("/books/{public_id}/download")
@@ -1533,7 +1499,11 @@ async def download_conversion(
             headers={"Cache-Control": "no-store"},
         )
     try:
-        result = await _convert_while_connected(request, public_id, target_format)
+        result = await _run_while_connected(
+            request,
+            _conversion(request).convert(public_id, target_format),
+            lambda result: _close_owned_stream(result, response_started=False),
+        )
     except UnsupportedConversionError as error:
         raise HTTPException(
             status_code=422,
