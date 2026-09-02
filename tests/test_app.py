@@ -1,6 +1,8 @@
 """Smoke tests for the initial HTTP application."""
 
 import asyncio
+import subprocess
+import sys
 import time
 from unittest.mock import AsyncMock, patch
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -346,11 +348,28 @@ async def test_partial_cache_cleanup_failure_recovers_once(
     assert "failure_count=1" in caplog.text
 
 
+def test_importing_http_application_does_not_import_telegram_library() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, 'src'); import sopds.app; "
+            "assert not any(name == 'telegram' or name.startswith('telegram.') "
+            "for name in sys.modules)",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_disabled_lifecycle_does_not_construct_telegram_bot(
     migrated_app_config: AppConfig,
 ) -> None:
     with (
-        patch("sopds.lifecycle.TelegramRunner") as runner,
+        patch("sopds.lifecycle._create_telegram_runner") as runner,
         TestClient(create_app(migrated_app_config)),
     ):
         pass
@@ -391,7 +410,7 @@ def test_telegram_starts_only_after_cache_startup_and_recovery(
     with (
         patch.object(ArtifactCache, "startup", autospec=True, side_effect=cache_startup),
         patch.object(ImportCoordinator, "recover", autospec=True, side_effect=recover),
-        patch("sopds.lifecycle.TelegramRunner", FakeRunner),
+        patch("sopds.lifecycle._create_telegram_runner", FakeRunner),
         TestClient(app),
     ):
         assert events == ["constructed", "cache", "recover", "started"]

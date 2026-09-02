@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from datetime import UTC, datetime
 from time import perf_counter
+from typing import Protocol
 
 from fastapi import FastAPI
 
@@ -13,7 +14,7 @@ from sopds.acquisition.archive import ArchiveService
 from sopds.acquisition.service import AcquisitionService
 from sopds.acquisition.zip_store import ZipOriginalStore
 from sopds.catalog.service import CatalogService
-from sopds.config import AppConfig
+from sopds.config import AppConfig, TelegramConfig
 from sopds.conversion.adapters import (
     EpubToAzw3Converter,
     Fb2ToAzw3Converter,
@@ -21,16 +22,34 @@ from sopds.conversion.adapters import (
 )
 from sopds.conversion.cache import ArtifactCache
 from sopds.conversion.contracts import Converter
-from sopds.conversion.policy import OUTPUT_POLICY
+from sopds.conversion.policy import OUTPUT_POLICY, OutputPolicy
 from sopds.conversion.registry import ConverterRegistry
 from sopds.conversion.service import ConversionService
 from sopds.db.connection import close_database, initialize_database
 from sopds.db.migrations_runner import validate_migration_state
 from sopds.db.repository import CatalogRepository
 from sopds.imports.coordinator import ImportCoordinator
-from sopds.telegram.runner import TelegramRunner
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _TelegramLifecycle(Protocol):
+    def start(self) -> None: ...
+
+    async def shutdown(self) -> None: ...
+
+
+def _create_telegram_runner(
+    config: TelegramConfig,
+    catalog: CatalogService,
+    acquisition: AcquisitionService,
+    conversion: ConversionService,
+    output_policy: OutputPolicy,
+) -> _TelegramLifecycle:
+    """Load the optional adapter only after configuration enables it."""
+    from sopds.telegram.runner import TelegramRunner
+
+    return TelegramRunner(config, catalog, acquisition, conversion, output_policy)
 
 
 @asynccontextmanager
@@ -96,10 +115,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.archive = archive
             app.state.conversion = conversion
             app.state.converter_registry = registry
-            telegram: TelegramRunner | None = None
+            telegram: _TelegramLifecycle | None = None
             if config.telegram.enabled:
                 try:
-                    telegram = TelegramRunner(
+                    telegram = _create_telegram_runner(
                         config.telegram,
                         catalog,
                         acquisition,
