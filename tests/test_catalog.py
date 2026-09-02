@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import gc
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -711,6 +712,26 @@ async def test_search_window_caps_and_reports_keyset_overflow(tmp_path: Path) ->
         assert remainder.next_cursor is None
         assert [len(batch) for batch in hydrated_batches] == [1_000, 1_000, 1]
         assert all(len(set(batch)) == len(batch) for batch in hydrated_batches)
+
+
+async def test_large_search_does_not_retain_book_model_cycles(tmp_path: Path) -> None:
+    async with _catalog() as (catalog, repository):
+        await _seed_search_window(repository, 1_000)
+        gc.collect()
+        models_before = sum(isinstance(item, Book) for item in gc.get_objects())
+        collection_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            page = await catalog.browse(CatalogRequest(query="matching", page_size=1_000))
+            assert len(page.books) == 1_000
+            del page
+            models_after = sum(isinstance(item, Book) for item in gc.get_objects())
+        finally:
+            if collection_was_enabled:
+                gc.enable()
+            gc.collect()
+
+        assert models_after == models_before
 
 
 @pytest.mark.parametrize("change", ["availability", "cleanup"])

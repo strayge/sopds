@@ -2,14 +2,14 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import TypedDict, cast
 
 from tortoise.backends.base.client import BaseDBAsyncClient
 from tortoise.expressions import Q, Subquery
 from tortoise.functions import Count, Max, Sum
 from tortoise.models import Model
-from tortoise.query_utils import Prefetch
 from tortoise.queryset import QuerySet
 from tortoise.transactions import in_transaction
 
@@ -81,6 +81,24 @@ class IdCounters:
     book: int
     book_author: int
     book_genre: int
+
+
+class _BookValueRow(TypedDict):
+    id: int
+    public_id: str
+    title: str
+    series_name: str | None
+    series_number: str | None
+    language: str | None
+    original_format: str
+    size: int
+    member_filename: str
+    published_date: date | None
+    libid: str | None
+    rating: int | None
+    keywords: str | None
+    hidden: bool
+    archive_available: bool
 
 
 async def _bulk_create_batched[ModelT: Model](
@@ -1165,7 +1183,7 @@ class CatalogRepository:
     ) -> list[CatalogBook]:
         if not book_ids:
             return []
-        books = await self._hydrated_books(
+        by_id = await self._catalog_books(
             self._visible_books(
                 generation_id,
                 language=None,
@@ -1178,7 +1196,6 @@ class CatalogRepository:
             ).filter(id__in=book_ids),
             generation_id,
         )
-        by_id = {int(book.id): self._catalog_book(book) for book in books}
         return [by_id[book_id] for book_id in book_ids if book_id in by_id]
 
     async def summaries_by_public_ids(
@@ -1192,7 +1209,7 @@ class CatalogRepository:
         by_public_id: dict[str, CatalogBook] = {}
         for offset in range(0, len(public_ids), PUBLIC_ID_LOOKUP_BATCH_SIZE):
             chunk = public_ids[offset : offset + PUBLIC_ID_LOOKUP_BATCH_SIZE]
-            books = await self._hydrated_books(
+            books = await self._catalog_books(
                 Book.filter(
                     Q(series_id=None) | Q(series__generation_id=generation_id),
                     generation_id=generation_id,
@@ -1201,7 +1218,7 @@ class CatalogRepository:
                 ).using_db(self._connection),
                 generation_id,
             )
-            by_public_id.update((book.public_id, self._catalog_book(book)) for book in books)
+            by_public_id.update((book.public_id, book) for book in books.values())
         return [by_public_id[public_id] for public_id in public_ids if public_id in by_public_id]
 
     async def detail(
@@ -1212,7 +1229,7 @@ class CatalogRepository:
         include_missed: bool = False,
         include_hidden: bool = False,
     ) -> CatalogBook | None:
-        books = await self._hydrated_books(
+        books = await self._catalog_books(
             self._visible_books(
                 generation_id,
                 language=None,
@@ -1227,63 +1244,101 @@ class CatalogRepository:
         )
         if not books:
             return None
-        return self._catalog_book(books[0])
+        return next(iter(books.values()))
 
-    async def _hydrated_books(self, query: QuerySet[Book], generation_id: int) -> list[Book]:
-        return await (
-            query.using_db(self._connection)
-            .select_related("series", "archive")
-            .prefetch_related(
-                Prefetch(
-                    "author_links",
-                    queryset=BookAuthor.filter(
-                        book__generation_id=generation_id,
-                        author__generation_id=generation_id,
-                    )
-                    .order_by("position")
-                    .select_related("author"),
-                ),
-                Prefetch(
-                    "genre_links",
-                    queryset=BookGenre.filter(
-                        book__generation_id=generation_id,
-                        genre__generation_id=generation_id,
-                    ).select_related("genre"),
-                ),
-            )
-        )
-
-    @staticmethod
-    def _catalog_book(book: Book) -> CatalogBook:
-        return CatalogBook(
-            public_id=book.public_id,
-            title=book.title,
-            authors=tuple(link.author.name for link in book.author_links),
-            series=book.series.name if book.series is not None else None,
-            series_number=book.series_number,
-            language=book.language,
-            original_format=book.original_format,
-            size=book.size,
-            member_filename=book.member_filename,
-            genres=tuple(
-                sorted(
-                    ((link.genre.code, link.genre.label) for link in book.genre_links),
-                    key=lambda item: (item[1].casefold(), item[0]),
-                )
+    async def _catalog_books(
+        self, query: QuerySet[Book], generation_id: int
+    ) -> dict[int, CatalogBook]:
+        """Project flat values so reverse-relation containers cannot retain model cycles."""
+        rows = cast(
+            list[_BookValueRow],
+            await query.using_db(self._connection).values(
+                "id",
+                "public_id",
+                "title",
+                "series_number",
+                "language",
+                "original_format",
+                "size",
+                "member_filename",
+                "published_date",
+                "libid",
+                "rating",
+                "keywords",
+                "hidden",
+                series_name="series__name",
+                archive_available="archive__available",
             ),
-            published_date=book.published_date,
-            libid=book.libid,
-            rating=book.rating,
-            keywords=book.keywords,
-            availability=CatalogRepository._availability(book),
-            downloadable=book.archive.available,
+        )
+        if not rows:
+            return {}
+
+        book_ids = [row["id"] for row in rows]
+        author_rows = cast(
+            list[tuple[int, str]],
+            await BookAuthor.filter(
+                book_id__in=book_ids,
+                book__generation_id=generation_id,
+                author__generation_id=generation_id,
+            )
+            .using_db(self._connection)
+            .order_by("book_id", "position")
+            .values_list("book_id", "author__name"),
+        )
+        genre_rows = cast(
+            list[tuple[int, str, str]],
+            await BookGenre.filter(
+                book_id__in=book_ids,
+                book__generation_id=generation_id,
+                genre__generation_id=generation_id,
+            )
+            .using_db(self._connection)
+            .values_list("book_id", "genre__code", "genre__label"),
         )
 
+        authors_by_book: dict[int, list[str]] = {}
+        for book_id, name in author_rows:
+            authors_by_book.setdefault(book_id, []).append(name)
+        genres_by_book: dict[int, list[tuple[str, str]]] = {}
+        for book_id, code, label in genre_rows:
+            genres_by_book.setdefault(book_id, []).append((code, label))
+
+        books: dict[int, CatalogBook] = {}
+        for row in rows:
+            book_id = row["id"]
+            archive_available = row["archive_available"]
+            books[book_id] = CatalogBook(
+                public_id=row["public_id"],
+                title=row["title"],
+                authors=tuple(authors_by_book.get(book_id, ())),
+                series=row["series_name"],
+                series_number=row["series_number"],
+                language=row["language"],
+                original_format=row["original_format"],
+                size=row["size"],
+                member_filename=row["member_filename"],
+                genres=tuple(
+                    sorted(
+                        genres_by_book.get(book_id, ()),
+                        key=lambda item: (item[1].casefold(), item[0]),
+                    )
+                ),
+                published_date=row["published_date"],
+                libid=row["libid"],
+                rating=row["rating"],
+                keywords=row["keywords"],
+                availability=self._availability(
+                    hidden=row["hidden"], archive_available=archive_available
+                ),
+                downloadable=archive_available,
+            )
+        return books
+
     @staticmethod
-    def _availability(book: Book) -> BookAvailability:
-        if book.hidden:
+    def _availability(*, hidden: bool, archive_available: bool) -> BookAvailability:
+        if hidden:
             return BookAvailability.HIDDEN
-        if not book.archive.available:
+        if not archive_available:
             return BookAvailability.MISSED
         return BookAvailability.ACTIVE
 
