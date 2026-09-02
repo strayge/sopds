@@ -15,7 +15,7 @@ services:
       - -c
       - work_mem=2MB
     volumes:
-      - postgres-data:/var/lib/postgresql
+      - ./data/db:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sopds -d sopds"]
       interval: 5s
@@ -46,6 +46,3 @@ services:
 networks:
   database:
     internal: true
-
-volumes:
-  postgres-data:

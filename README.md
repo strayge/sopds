@@ -96,11 +96,11 @@ retry if the page reports that it has expired.
 
 ## Docker Compose
 
-The container runs as UID 1000. Prepare the deployment:
+The SOPDS container runs as UID 1000. Prepare the deployment:
 
 ```shell
 cp config.example.toml config.toml
-mkdir -p library data
+mkdir -p library data/db
 sudo chown -R 1000:1000 config.toml library data
 sudo chmod 600 config.toml
 ```
@@ -137,14 +137,14 @@ Default mounts:
 
 - `config.toml` → `/config/config.toml` (read-only);
 - `library/` → `/library` (read-only);
-- `data/` → `/data` (writable; conversion cache and temporary application data
-  only).
+- `data/` → `/data` (writable; conversion cache and temporary application data);
+- `data/db/` → `/var/lib/postgresql` (PostgreSQL catalog data).
 
-The PostgreSQL data lives in Compose's `postgres-data` volume, not in `/data`.
-UID 1000 needs the corresponding access. Allow space in `data/` for cached
-conversions. Provision `postgres-data` for the PostgreSQL catalog and its
-indexes. Multi-book ZIPs use temporary container storage; a maximum-size ZIP
-needs slightly more than 10 GB.
+PostgreSQL manages the ownership and contents of `data/db/` after its first
+startup; do not modify or recursively change ownership of that directory while
+the database is initialized. Allow space in `data/` for both cached conversions
+and the PostgreSQL catalog and indexes. Multi-book ZIPs use temporary container
+storage; a maximum-size ZIP needs slightly more than 10 GB.
 
 ## Configuration
 
@@ -195,7 +195,7 @@ Keep these items together in each backup set:
 Create the backup through the Compose `postgres` service. The command stops
 SOPDS while collecting the database, configuration, and library, then restarts
 it. Do not change `config.toml` or `library/` until the command finishes. Do not
-copy the named-volume files as a live database backup.
+copy the live `data/db/` files as a database backup.
 
 ```shell
 set -eu
