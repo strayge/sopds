@@ -33,11 +33,19 @@ from sopds.db.rows import (
 )
 from sopds.imports.availability import archive_availability
 from sopds.imports.fingerprint import SourceFingerprint, hash_source
-from sopds.imports.inpx import InpxParserError, InpxRecord, InpxRecordIterator, parse_inpx
+from sopds.imports.inpx import (
+    InpxParserError,
+    InpxRecord,
+    InpxRecordIterator,
+    InpxRecordRejection,
+    parse_inpx,
+)
 from sopds.imports.status import ImportOutcome, ImportResult, ImportState, ImportTrigger
 
 _LOGGER = logging.getLogger(__name__)
 _PROGRESS_RECORD_INTERVAL = 100_000
+_MAX_REJECTION_DETAIL_LOGS = 10
+_MAX_BIGINT = 2**63 - 1
 
 
 def _log_import_terminal(
@@ -74,6 +82,32 @@ class CatalogDataError(ValueError):
     """Identifies invalid mapped metadata without retaining raw record contents."""
 
 
+def _log_record_rejection(
+    run_id: int, rejection_number: int, rejection: InpxRecordRejection
+) -> None:
+    if rejection_number > _MAX_REJECTION_DETAIL_LOGS:
+        return
+    _LOGGER.warning(
+        f"Catalog record rejected phase=staging run_id={run_id} "
+        f"source_entry={rejection.source_entry!r} line_number={rejection.line_number} "
+        f"reason={rejection.reason!r}"
+    )
+
+
+def _validate_import_counters(counters: list[int]) -> None:
+    records_read, imported, deleted, rejected = counters
+    if records_read != imported + deleted + rejected:
+        raise CatalogDataError("Import counters failed structural validation")
+    valid_records = imported + deleted
+    if records_read and valid_records == 0:
+        raise CatalogDataError("Catalog source contains no valid records")
+    allowed_rejections = max(1, records_read // 10)
+    if rejected > allowed_rejections:
+        raise CatalogDataError(
+            f"Catalog rejected {rejected} of {records_read} records, exceeding the 10% limit"
+        )
+
+
 class _ParserWorker:
     """Pull bounded record batches through exactly one dedicated parser thread."""
 
@@ -84,10 +118,10 @@ class _ParserWorker:
         self._records: InpxRecordIterator | None = None
         self._close_task: asyncio.Task[None] | None = None
 
-    def _next_batch(self) -> list[InpxRecord]:
+    def _next_batch(self) -> list[InpxRecord | InpxRecordRejection]:
         if self._records is None:
             self._records = parse_inpx(self._path)
-        batch: list[InpxRecord] = []
+        batch: list[InpxRecord | InpxRecordRejection] = []
         for _ in range(self._batch_size):
             try:
                 batch.append(next(self._records))
@@ -95,7 +129,7 @@ class _ParserWorker:
                 break
         return batch
 
-    async def next_batch(self) -> list[InpxRecord]:
+    async def next_batch(self) -> list[InpxRecord | InpxRecordRejection]:
         return await asyncio.wrap_future(self._executor.submit(self._next_batch))
 
     def _close(self) -> None:
@@ -215,21 +249,35 @@ class CatalogImportService:
             worker = _ParserWorker(self._source_path, self._batch_size)
             while batch := await worker.next_batch():
                 counters[0] += len(batch)
-                counters[2] += sum(record.deleted for record in batch)
-                try:
-                    imported = await self._write_records(
+                records: list[InpxRecord] = []
+                for item in batch:
+                    if isinstance(item, InpxRecordRejection):
+                        rejection = item
+                    else:
+                        try:
+                            _validate_mapped_metadata(item)
+                        except CatalogDataError as error:
+                            rejection = InpxRecordRejection(
+                                str(error),
+                                item.source_entry or "unknown",
+                                item.line_number or 0,
+                            )
+                        else:
+                            records.append(item)
+                            continue
+                    counters[3] += 1
+                    _log_record_rejection(run_id, counters[3], rejection)
+                counters[2] += sum(record.deleted for record in records)
+                if records:
+                    counters[1] += await self._write_records(
                         generation_id,
-                        batch,
+                        records,
                         ids,
                         archives,
                         authors,
                         genres,
                         series_entries,
                     )
-                except CatalogDataError, PostgresError, BaseORMException:
-                    counters[3] += 1
-                    raise
-                counters[1] += imported
                 await self._repository.update_run_counters(run_id, _counter_tuple(counters))
                 if counters[0] >= next_progress_record:
                     _LOGGER.info(
@@ -240,20 +288,27 @@ class CatalogImportService:
                     next_progress_record = (
                         counters[0] // _PROGRESS_RECORD_INTERVAL + 1
                     ) * _PROGRESS_RECORD_INTERVAL
-            if counters[0] != counters[1] + counters[2] or counters[3] != 0:
-                raise CatalogDataError("Import counters failed structural validation")
+            if counters[3]:
+                _LOGGER.warning(
+                    f"Catalog import encountered rejected records phase=staging run_id={run_id} "
+                    f"generation_id={generation_id} rejected={counters[3]} "
+                    f"details_logged={min(counters[3], _MAX_REJECTION_DETAIL_LOGS)}"
+                )
+            _validate_import_counters(counters)
+            valid_records = counters[1] + counters[2]
             await self._repository.synchronize_explicit_id_sequences()
             staging_duration_ms = int((perf_counter() - staging_started) * 1000)
             _LOGGER.info(
                 f"Catalog import staging completed phase=staging run_id={run_id} "
                 f"generation_id={generation_id} duration_ms={staging_duration_ms} "
-                f"read={counters[0]} imported={counters[1]} deleted={counters[2]}"
+                f"read={counters[0]} imported={counters[1]} deleted={counters[2]} "
+                f"rejected={counters[3]}"
             )
 
             materialization_started = perf_counter()
             _LOGGER.info(
                 f"Catalog import materialization started phase=materialization run_id={run_id} "
-                f"generation_id={generation_id} records={counters[0]}"
+                f"generation_id={generation_id} records={valid_records}"
             )
             await self._repository.materialize_generation_summaries(generation_id)
             materialization_duration_ms = int((perf_counter() - materialization_started) * 1000)
@@ -265,9 +320,9 @@ class CatalogImportService:
             validation_started = perf_counter()
             _LOGGER.info(
                 f"Catalog import validation started phase=validation run_id={run_id} "
-                f"generation_id={generation_id} records={counters[0]}"
+                f"generation_id={generation_id} records={valid_records}"
             )
-            await self._repository.validate_generation_counts(generation_id, counters[0])
+            await self._repository.validate_generation_counts(generation_id, valid_records)
             validation_duration_ms = int((perf_counter() - validation_started) * 1000)
             _LOGGER.info(
                 f"Catalog import validation completed phase=validation run_id={run_id} "
@@ -345,8 +400,6 @@ class CatalogImportService:
                 )
                 terminal_outcome = ImportOutcome.IMPORTED
                 return ImportResult(ImportOutcome.IMPORTED, None)
-            if isinstance(error, InpxParserError):
-                counters[3] += 1
             terminal_outcome = ImportOutcome.FAILED
             terminal_failure_type = type(error).__name__
             _LOGGER.exception(
@@ -458,8 +511,6 @@ class CatalogImportService:
         book_author_rows: list[BookAuthorRow] = []
         book_genre_rows: list[BookGenreRow] = []
         search_rows: list[BookSearchRow] = []
-        for record in records:
-            _validate_mapped_metadata(record)
         new_archive_paths = {
             record.locator.archive_relative_path.as_posix()
             for record in records
@@ -618,6 +669,7 @@ def _validate_mapped_metadata(record: InpxRecord) -> None:
             for value in (
                 record.series,
                 record.series_number,
+                record.library_id,
                 record.language,
                 record.keywords,
             )
@@ -647,6 +699,9 @@ def _validate_mapped_metadata(record: InpxRecord) -> None:
     if record.language is not None:
         _validate_max_length(record.language, 32)
     _validate_max_length(record.extension, 32)
+    if record.size > _MAX_BIGINT:
+        raise CatalogDataError("A catalog record contains a size larger than supported")
+    _parse_date(record.date)
 
 
 def _validate_max_length(value: str, maximum: int) -> None:

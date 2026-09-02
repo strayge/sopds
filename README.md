@@ -89,6 +89,11 @@ SOPDS checks the INPX source at startup and at the configured interval. Readers
 can keep using the previous catalog while an import runs or after it fails. If
 no import has ever succeeded, the catalog is empty.
 
+Individual malformed book records are excluded when they make up no more than
+10% of the source, with one rejected record always allowed. The management page
+shows the **Rejected** count. An import with no valid records or more than 10%
+rejected records fails and leaves the previous catalog active.
+
 The management page provides **Import changes**, **Force import**, and **Vacuum
 database**. **Vacuum database** performs safe PostgreSQL `VACUUM (ANALYZE)`
 maintenance without changing catalog contents or overlapping an import. Reload and

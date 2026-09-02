@@ -1,4 +1,4 @@
-"""Strict, bounded-memory parsing of INPX catalog archives."""
+"""Bounded-memory parsing of INPX catalog archives."""
 
 import re
 import stat
@@ -7,11 +7,16 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import TracebackType
-from typing import override
+from typing import IO, override
 from zipfile import BadZipFile, ZipFile, ZipInfo
 from zlib import error as ZlibError
 
-from sopds.imports.inpx.records import InpxExtensionField, InpxRecord, PhysicalBookLocator
+from sopds.imports.inpx.records import (
+    InpxExtensionField,
+    InpxRecord,
+    InpxRecordRejection,
+    PhysicalBookLocator,
+)
 
 _FIELD_SEPARATOR = "\x04"
 _IMPLICIT_FIELDS = (
@@ -34,10 +39,11 @@ _PHYSICAL_IDENTITY_FIELDS = frozenset({"FILE", "EXT"})
 _DESCRIPTION_FIELDS = frozenset({"AUTHOR", "GENRE", "TITLE"})
 _RECORD_VALIDATION_FIELDS = frozenset({"SIZE", "DEL"})
 _REQUIRED_FIELDS = _PHYSICAL_IDENTITY_FIELDS | _DESCRIPTION_FIELDS | _RECORD_VALIDATION_FIELDS
-_KNOWN_FIELDS = frozenset(_IMPLICIT_FIELDS)
+_KNOWN_FIELDS = frozenset((*_IMPLICIT_FIELDS, "FOLDER"))
 _INTEGER_PATTERN = re.compile(r"[0-9]+\Z")
 _MAX_RECORD_BYTES = 4 * 1024 * 1024
 _MAX_STRUCTURE_BYTES = 64 * 1024
+_DRAIN_CHUNK_BYTES = 64 * 1024
 _INPX_READ_ERRORS = (OSError, BadZipFile, RuntimeError, NotImplementedError, EOFError, ZlibError)
 
 
@@ -51,6 +57,7 @@ class InpxParserError(ValueError):
         source_entry: str | None = None,
         line_number: int | None = None,
     ) -> None:
+        self.reason = message
         self.source_entry = source_entry
         self.line_number = line_number
         context = ""
@@ -61,14 +68,20 @@ class InpxParserError(ValueError):
         super().__init__(f"{message}{context}")
 
 
+class _InpxRecordError(InpxParserError):
+    """Identifies a malformed record after its boundary is known to be safe."""
+
+
 @dataclass(frozen=True, slots=True)
 class _Schema:
     fields: tuple[str, ...]
     implicit_compatibility_slot: bool
 
 
-class InpxRecordIterator(AbstractContextManager["InpxRecordIterator"], Iterator[InpxRecord]):
-    """Owns the ZIP resources so callers can deterministically close partial iteration."""
+class InpxRecordIterator(
+    AbstractContextManager["InpxRecordIterator"], Iterator[InpxRecord | InpxRecordRejection]
+):
+    """Streams valid records and recoverable rejections while owning ZIP resources."""
 
     def __init__(self, path: Path) -> None:
         self._closed = False
@@ -93,7 +106,7 @@ class InpxRecordIterator(AbstractContextManager["InpxRecordIterator"], Iterator[
         return self
 
     @override
-    def __next__(self) -> InpxRecord:
+    def __next__(self) -> InpxRecord | InpxRecordRejection:
         if self._closed:
             raise StopIteration
         try:
@@ -134,7 +147,7 @@ class InpxRecordIterator(AbstractContextManager["InpxRecordIterator"], Iterator[
 
     def _iterate_records(
         self, schema: _Schema, entries: tuple[ZipInfo, ...]
-    ) -> Generator[InpxRecord]:
+    ) -> Generator[InpxRecord | InpxRecordRejection]:
         try:
             for entry in entries:
                 source_entry = entry.filename
@@ -145,12 +158,23 @@ class InpxRecordIterator(AbstractContextManager["InpxRecordIterator"], Iterator[
                         while line := stream.readline(_MAX_RECORD_BYTES + 1):
                             line_number += 1
                             if len(line) > _MAX_RECORD_BYTES:
-                                raise InpxParserError(
+                                _drain_oversized_record(stream, line, source_entry, line_number)
+                                yield InpxRecordRejection(
                                     "INPX record exceeds the size limit",
-                                    source_entry=source_entry,
-                                    line_number=line_number,
+                                    source_entry,
+                                    line_number,
                                 )
-                            yield _parse_line(line, schema, archive_path, source_entry, line_number)
+                                continue
+                            try:
+                                yield _parse_line(
+                                    line, schema, archive_path, source_entry, line_number
+                                )
+                            except _InpxRecordError as error:
+                                yield InpxRecordRejection(
+                                    error.reason,
+                                    source_entry,
+                                    line_number,
+                                )
                 except InpxParserError:
                     raise
                 except _INPX_READ_ERRORS as error:
@@ -161,8 +185,50 @@ class InpxRecordIterator(AbstractContextManager["InpxRecordIterator"], Iterator[
             self._archive.close()
 
 
+def _drain_oversized_record(
+    stream: IO[bytes],
+    initial: bytes,
+    source_entry: str,
+    line_number: int,
+) -> None:
+    pending_cr = False
+    chunk = initial
+    while chunk:
+        if pending_cr:
+            if chunk.startswith(b"\n"):
+                return
+            raise InpxParserError(
+                "INPX record contains a bare CR",
+                source_entry=source_entry,
+                line_number=line_number,
+            )
+        if chunk.endswith(b"\n"):
+            body = chunk[:-1]
+            if b"\r" in body[:-1] or (b"\r" in body and not body.endswith(b"\r")):
+                raise InpxParserError(
+                    "INPX record contains a bare CR",
+                    source_entry=source_entry,
+                    line_number=line_number,
+                )
+            return
+        if b"\r" in chunk:
+            if not chunk.endswith(b"\r") or b"\r" in chunk[:-1]:
+                raise InpxParserError(
+                    "INPX record contains a bare CR",
+                    source_entry=source_entry,
+                    line_number=line_number,
+                )
+            pending_cr = True
+        chunk = stream.readline(_DRAIN_CHUNK_BYTES)
+    raise InpxParserError(
+        "Oversized INPX record has no terminating LF",
+        source_entry=source_entry,
+        line_number=line_number,
+    )
+
+
 def parse_inpx(path: Path) -> InpxRecordIterator:
-    """Open an INPX archive as a synchronous, context-managed streaming iterator."""
+    """Stream valid records and record-level rejections from an INPX archive."""
     return InpxRecordIterator(path)
 
 
@@ -289,7 +355,7 @@ def _parse_line(
     try:
         text = record_bytes.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise InpxParserError(
+        raise _InpxRecordError(
             "INPX record is not valid UTF-8",
             source_entry=source_entry,
             line_number=line_number,
@@ -298,7 +364,7 @@ def _parse_line(
     values = text.split(_FIELD_SEPARATOR)
     if schema.implicit_compatibility_slot:
         if len(values) != len(schema.fields) + 1 or values[-1] != "":
-            raise InpxParserError(
+            raise _InpxRecordError(
                 "Implicit INPX record has an invalid field count or compatibility slot",
                 source_entry=source_entry,
                 line_number=line_number,
@@ -307,7 +373,7 @@ def _parse_line(
     elif len(values) == len(schema.fields) + 1 and values[-1] == "":
         values = values[:-1]
     elif len(values) != len(schema.fields):
-        raise InpxParserError(
+        raise _InpxRecordError(
             "Declared INPX record has an invalid field count",
             source_entry=source_entry,
             line_number=line_number,
@@ -323,6 +389,9 @@ def _make_record(
     source_entry: str,
     line_number: int,
 ) -> InpxRecord:
+    folder = fields.get("FOLDER")
+    if folder:
+        archive_path = _parse_archive_path(folder, source_entry, line_number)
     filename = fields["FILE"]
     extension = fields["EXT"]
     _validate_member_component(filename, "FILE", source_entry, line_number)
@@ -331,7 +400,7 @@ def _make_record(
 
     deleted_value = fields["DEL"]
     if deleted_value not in {"", "0", "1"}:
-        raise InpxParserError(
+        raise _InpxRecordError(
             "DEL must be empty, 0, or 1", source_entry=source_entry, line_number=line_number
         )
 
@@ -340,7 +409,7 @@ def _make_record(
     if rating_text:
         rating = _parse_nonnegative_integer(rating_text, "LIBRATE", source_entry, line_number)
         if rating not in range(1, 6):
-            raise InpxParserError(
+            raise _InpxRecordError(
                 "LIBRATE must be an integer from 1 to 5",
                 source_entry=source_entry,
                 line_number=line_number,
@@ -366,12 +435,33 @@ def _make_record(
             for name, value in fields.items()
             if name not in _KNOWN_FIELDS
         ),
+        source_entry=source_entry,
+        line_number=line_number,
     )
+
+
+def _parse_archive_path(value: str, source_entry: str, line_number: int) -> PurePosixPath:
+    path = PurePosixPath(value)
+    unsafe = (
+        "\\" in value
+        or _has_control_character(value)
+        or path.is_absolute()
+        or PureWindowsPath(value).is_absolute()
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+        or path.suffix.lower() != ".zip"
+    )
+    if unsafe:
+        raise _InpxRecordError(
+            "FOLDER is unsafe for an archive path",
+            source_entry=source_entry,
+            line_number=line_number,
+        )
+    return path
 
 
 def _validate_member_component(value: str, field: str, source_entry: str, line_number: int) -> None:
     if not value or "/" in value or "\\" in value or _has_control_character(value):
-        raise InpxParserError(
+        raise _InpxRecordError(
             f"{field} is unsafe for a ZIP member filename",
             source_entry=source_entry,
             line_number=line_number,
@@ -380,7 +470,7 @@ def _validate_member_component(value: str, field: str, source_entry: str, line_n
 
 def _parse_nonnegative_integer(value: str, field: str, source_entry: str, line_number: int) -> int:
     if _INTEGER_PATTERN.fullmatch(value) is None:
-        raise InpxParserError(
+        raise _InpxRecordError(
             f"{field} must be a nonnegative integer",
             source_entry=source_entry,
             line_number=line_number,
@@ -388,7 +478,7 @@ def _parse_nonnegative_integer(value: str, field: str, source_entry: str, line_n
     try:
         return int(value)
     except ValueError as error:
-        raise InpxParserError(
+        raise _InpxRecordError(
             f"{field} integer is too large",
             source_entry=source_entry,
             line_number=line_number,

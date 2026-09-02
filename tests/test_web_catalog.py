@@ -651,7 +651,7 @@ def test_manage_page_groups_counts_localizes_times_and_preserves_action_contract
     imports = _Imports(
         _status(
             ImportState.SUCCEEDED,
-            records_read=702_461,
+            records_read=703_695,
             records_imported=589_111,
             records_deleted=113_350,
             records_rejected=1_234,
@@ -680,7 +680,7 @@ def test_manage_page_groups_counts_localizes_times_and_preserves_action_contract
         ("Imported", "589 111"),
         ("Deleted", "113 350"),
         ("Rejected", "1 234"),
-        ("Read", "702 461"),
+        ("Read", "703 695"),
     ):
         assert f"<dt>{label}</dt><dd>{value}</dd>" in management.text
 

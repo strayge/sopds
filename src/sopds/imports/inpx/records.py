@@ -21,6 +21,15 @@ class InpxExtensionField:
 
 
 @dataclass(frozen=True, slots=True)
+class InpxRecordRejection:
+    """Reports why one safely delimited record could not enter the catalog."""
+
+    reason: str
+    source_entry: str
+    line_number: int
+
+
+@dataclass(frozen=True, slots=True)
 class InpxRecord:
     """Keeps source metadata lossless except for explicit INPX syntax delimiters."""
 
@@ -39,3 +48,5 @@ class InpxRecord:
     library_rating: int | None
     keywords: str | None
     extension_fields: tuple[InpxExtensionField, ...]
+    source_entry: str | None = None
+    line_number: int | None = None

@@ -46,7 +46,7 @@ from sopds.imports.fingerprint import (
     hash_source,
     stat_source,
 )
-from sopds.imports.inpx import InpxRecord
+from sopds.imports.inpx import InpxRecord, InpxRecordRejection
 from sopds.imports.service import CatalogImportService, derive_public_id, normalize_sort_key
 from sopds.imports.status import ImportOutcome, ImportResult, ImportState, ImportTrigger
 from tests.conftest import reset_test_database
@@ -117,6 +117,36 @@ async def _coordinator(
 
 async def _run_forced_import(coordinator: ImportCoordinator) -> ImportResult:
     return await coordinator._request(ImportTrigger.MANUAL, force=True)
+
+
+@pytest.mark.parametrize(
+    "counters",
+    [
+        [0, 0, 0, 0],
+        [1, 0, 1, 0],
+        [9, 8, 0, 1],
+        [10, 9, 0, 1],
+        [20, 18, 0, 2],
+        [100_000, 90_000, 0, 10_000],
+    ],
+)
+def test_rejection_budget_accepts_ten_percent_with_one_record_grace(
+    counters: list[int],
+) -> None:
+    service_module._validate_import_counters(counters)
+
+
+@pytest.mark.parametrize(
+    ("counters", "message"),
+    [
+        ([1, 0, 0, 1], "no valid records"),
+        ([20, 17, 0, 3], "10% limit"),
+        ([2, 1, 0, 0], "structural validation"),
+    ],
+)
+def test_rejection_budget_rejects_unsafe_catalogs(counters: list[int], message: str) -> None:
+    with pytest.raises(service_module.CatalogDataError, match=message):
+        service_module._validate_import_counters(counters)
 
 
 async def _query(config: AppConfig, sql: str) -> list[tuple[object, ...]]:
@@ -498,7 +528,9 @@ async def test_source_mutation_preserving_metadata_after_parse_prevents_activati
     original_next = service_module._ParserWorker.next_batch
     mutated = False
 
-    async def mutate_after_parse(worker: service_module._ParserWorker) -> list[InpxRecord]:
+    async def mutate_after_parse(
+        worker: service_module._ParserWorker,
+    ) -> list[InpxRecord | InpxRecordRejection]:
         nonlocal mutated
         batch = await original_next(worker)
         if not batch and not mutated:
@@ -1050,28 +1082,43 @@ async def test_nul_in_searchable_metadata_fails_safely_without_activation(
     assert await _query(app_config, "SELECT count(*) FROM book_fts") == [(0,)]
 
 
-@pytest.mark.parametrize(
-    ("lines", "batch_size", "expected"),
-    [
-        ((_line(), _line(TITLE="duplicate")), 2, (2, 0, 0, 1)),
-        ((_line(), _line(FILE="bad-date", DATE="not-a-date")), 1, (2, 1, 0, 1)),
-    ],
-)
-async def test_failed_batch_counters_include_only_committed_books(
+async def test_failed_database_batch_does_not_count_records_as_rejected(
     app_config: AppConfig,
-    lines: tuple[bytes, ...],
-    batch_size: int,
-    expected: tuple[int, int, int, int],
 ) -> None:
-    _write_inpx(app_config.catalog.inpx_path, *lines)
-    async with _coordinator(app_config, batch_size=batch_size) as (coordinator, _):
+    _write_inpx(app_config.catalog.inpx_path, _line(), _line(TITLE="duplicate"))
+    async with _coordinator(app_config, batch_size=2) as (coordinator, _):
         result = await _run_forced_import(coordinator)
 
     assert result.outcome is ImportOutcome.FAILED
     assert await _query(
         app_config,
         "SELECT records_read,records_imported,records_deleted,records_rejected FROM import_run",
-    ) == [expected]
+    ) == [(2, 0, 0, 0)]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        _line(FILE="bad-date", DATE="not-a-date"),
+        _line(FILE="deleted-broken", DEL="1", EXT=""),
+        _line(FILE="oversized", SIZE=str(2**63)),
+        _line(FILE="bad-libid", LIBID="visible\x00private"),
+    ],
+)
+async def test_one_invalid_record_is_excluded_from_a_successful_import(
+    app_config: AppConfig, invalid: bytes
+) -> None:
+    valid = tuple(_line(FILE=f"book-{index}", LIBID=f"lib-{index}") for index in range(9))
+    _write_inpx(app_config.catalog.inpx_path, *valid, invalid)
+    async with _coordinator(app_config, batch_size=2) as (coordinator, _):
+        result = await _run_forced_import(coordinator)
+
+    assert result.outcome is ImportOutcome.IMPORTED
+    assert await _query(
+        app_config,
+        "SELECT records_read,records_imported,records_deleted,records_rejected FROM import_run",
+    ) == [(10, 9, 0, 1)]
+    assert await _query(app_config, "SELECT count(*) FROM book") == [(9,)]
 
 
 async def test_extreme_valid_metadata_has_a_bounded_search_projection(
