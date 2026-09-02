@@ -207,6 +207,21 @@ async def _validate(path: Path, validator: Callable[[Path], None]) -> None:
         raise
 
 
+async def _run_single_step(
+    runner: ProcessRunner,
+    command: tuple[str, ...],
+    output_path: Path,
+    validator: Callable[[Path], None],
+) -> None:
+    await _remove(output_path)
+    try:
+        await runner(command)
+        await _validate(output_path, validator)
+    except BaseException:
+        await _remove(output_path)
+        raise
+
+
 class Fb2ToEpubConverter:
     """Own the pinned fb2cng invocation and validate its EPUB2 artifact."""
 
@@ -227,23 +242,20 @@ class Fb2ToEpubConverter:
 
     async def convert(self, source_path: Path, target_format: str, output_path: Path) -> None:
         del target_format
-        await _remove(output_path)
-        try:
-            await self._runner(
-                (
-                    self._executable,
-                    "convert",
-                    "--to",
-                    "epub2",
-                    "--output-file",
-                    os.fspath(output_path),
-                    os.fspath(source_path),
-                )
-            )
-            await _validate(output_path, validate_epub)
-        except BaseException:
-            await _remove(output_path)
-            raise
+        await _run_single_step(
+            self._runner,
+            (
+                self._executable,
+                "convert",
+                "--to",
+                "epub2",
+                "--output-file",
+                os.fspath(output_path),
+                os.fspath(source_path),
+            ),
+            output_path,
+            validate_epub,
+        )
 
 
 class EpubToAzw3Converter:
@@ -268,22 +280,19 @@ class EpubToAzw3Converter:
 
     async def convert(self, source_path: Path, target_format: str, output_path: Path) -> None:
         del target_format
-        await _remove(output_path)
-        try:
-            await self._runner(
-                (
-                    self._executable,
-                    "build",
-                    os.fspath(source_path),
-                    "-o",
-                    os.fspath(output_path),
-                    "--no-embed-source",
-                )
-            )
-            await _validate(output_path, validate_azw3)
-        except BaseException:
-            await _remove(output_path)
-            raise
+        await _run_single_step(
+            self._runner,
+            (
+                self._executable,
+                "build",
+                os.fspath(source_path),
+                "-o",
+                os.fspath(output_path),
+                "--no-embed-source",
+            ),
+            output_path,
+            validate_azw3,
+        )
 
 
 class Fb2ToAzw3Converter:

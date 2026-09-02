@@ -835,8 +835,7 @@
       synchronizeCriteriaLinks(document, state);
       return null;
     }
-    if (activeController?.root === root) activeController.destroy();
-    else activeController?.destroy();
+    activeController?.destroy();
     canonicalizeState(state);
     activeController = new CatalogController(root, readPayload(root), state);
     synchronizeCriteriaLinks(document, state);

@@ -17,7 +17,6 @@ from starlette.requests import ClientDisconnect
 from starlette.types import Message, Receive, Scope, Send
 
 from sopds.acquisition.archive import (
-    ArchiveError,
     ArchiveInputError,
     ArchiveLimitError,
     ArchiveManifest,
@@ -1060,28 +1059,6 @@ async def selected_download(request: Request) -> Response:
             request,
             message="Service is shutting down",
             status_code=503,
-            fragment=False,
-        )
-    except AcquisitionError as error:
-        _LOGGER.warning(
-            f"Selected-books archive acquisition failed surface=web phase=build "
-            f"failure_type={type(error).__name__}"
-        )
-        return _selected_error_response(
-            request,
-            message="The selected books archive could not be created",
-            status_code=500,
-            fragment=False,
-        )
-    except ArchiveError as error:
-        _LOGGER.warning(
-            f"Selected-books archive build failed surface=web phase=build "
-            f"failure_type={type(error).__name__}"
-        )
-        return _selected_error_response(
-            request,
-            message="The selected books archive could not be created",
-            status_code=500,
             fragment=False,
         )
     except Exception as error:

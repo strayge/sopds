@@ -8,6 +8,7 @@ from pathlib import Path
 from tortoise.backends.base.client import BaseDBAsyncClient
 from tortoise.expressions import Q, Subquery
 from tortoise.functions import Count, Max, Sum
+from tortoise.models import Model
 from tortoise.query_utils import Prefetch
 from tortoise.queryset import QuerySet
 from tortoise.transactions import in_transaction
@@ -80,6 +81,12 @@ class IdCounters:
     book: int
     book_author: int
     book_genre: int
+
+
+async def _bulk_create_batched[ModelT: Model](
+    model: type[ModelT], models: Sequence[ModelT], connection: BaseDBAsyncClient
+) -> None:
+    await model.bulk_create(models, batch_size=DEFAULT_BATCH_SIZE, using_db=connection)
 
 
 class CatalogRepository:
@@ -207,9 +214,7 @@ class CatalogRepository:
                     )
                     for row in batch.archives[offset : offset + DEFAULT_BATCH_SIZE]
                 ]
-                await Archive.bulk_create(
-                    archives, batch_size=DEFAULT_BATCH_SIZE, using_db=transaction
-                )
+                await _bulk_create_batched(Archive, archives, transaction)
             for offset in range(0, len(batch.authors), DEFAULT_BATCH_SIZE):
                 authors = [
                     Author(
@@ -220,9 +225,7 @@ class CatalogRepository:
                     )
                     for row in batch.authors[offset : offset + DEFAULT_BATCH_SIZE]
                 ]
-                await Author.bulk_create(
-                    authors, batch_size=DEFAULT_BATCH_SIZE, using_db=transaction
-                )
+                await _bulk_create_batched(Author, authors, transaction)
             for offset in range(0, len(batch.genres), DEFAULT_BATCH_SIZE):
                 genres = [
                     Genre(
@@ -234,7 +237,7 @@ class CatalogRepository:
                     )
                     for row in batch.genres[offset : offset + DEFAULT_BATCH_SIZE]
                 ]
-                await Genre.bulk_create(genres, batch_size=DEFAULT_BATCH_SIZE, using_db=transaction)
+                await _bulk_create_batched(Genre, genres, transaction)
             for offset in range(0, len(batch.series), DEFAULT_BATCH_SIZE):
                 series = [
                     Series(
@@ -245,9 +248,7 @@ class CatalogRepository:
                     )
                     for row in batch.series[offset : offset + DEFAULT_BATCH_SIZE]
                 ]
-                await Series.bulk_create(
-                    series, batch_size=DEFAULT_BATCH_SIZE, using_db=transaction
-                )
+                await _bulk_create_batched(Series, series, transaction)
             for offset in range(0, len(batch.books), DEFAULT_BATCH_SIZE):
                 books = [
                     Book(
@@ -271,7 +272,7 @@ class CatalogRepository:
                     )
                     for row in batch.books[offset : offset + DEFAULT_BATCH_SIZE]
                 ]
-                await Book.bulk_create(books, batch_size=DEFAULT_BATCH_SIZE, using_db=transaction)
+                await _bulk_create_batched(Book, books, transaction)
             for offset in range(0, len(batch.book_authors), DEFAULT_BATCH_SIZE):
                 book_authors = [
                     BookAuthor(
@@ -282,17 +283,13 @@ class CatalogRepository:
                     )
                     for row in batch.book_authors[offset : offset + DEFAULT_BATCH_SIZE]
                 ]
-                await BookAuthor.bulk_create(
-                    book_authors, batch_size=DEFAULT_BATCH_SIZE, using_db=transaction
-                )
+                await _bulk_create_batched(BookAuthor, book_authors, transaction)
             for offset in range(0, len(batch.book_genres), DEFAULT_BATCH_SIZE):
                 book_genres = [
                     BookGenre(id=row.id, book_id=row.book_id, genre_id=row.genre_id)
                     for row in batch.book_genres[offset : offset + DEFAULT_BATCH_SIZE]
                 ]
-                await BookGenre.bulk_create(
-                    book_genres, batch_size=DEFAULT_BATCH_SIZE, using_db=transaction
-                )
+                await _bulk_create_batched(BookGenre, book_genres, transaction)
             if batch.search_rows:
                 await transaction.execute_many(
                     "INSERT INTO book_fts(book_id,generation_id,title,authors,series,genres,language) "
@@ -1053,28 +1050,6 @@ class CatalogRepository:
             query = query.filter(series_id=None)
         return query
 
-    def _available_books(
-        self,
-        generation_id: int,
-        *,
-        language: str | None,
-        genre: str | None,
-        original_format: str | None,
-        author: str | None,
-        series: str | None,
-        without_series: bool = False,
-    ) -> QuerySet[Book]:
-        """Prevent optional web scope from changing navigation and facet choices."""
-        return self._visible_books(
-            generation_id,
-            language=language,
-            genre=genre,
-            original_format=original_format,
-            author=author,
-            series=series,
-            without_series=without_series,
-        )
-
     async def browse_book_ids(
         self,
         generation_id: int,
@@ -1349,7 +1324,7 @@ class CatalogRepository:
         return query
 
     async def author_book_counts(self, generation_id: int, author: str) -> AuthorBookCounts:
-        books = self._available_books(
+        books = self._visible_books(
             generation_id,
             language=None,
             genre=None,
@@ -1500,7 +1475,7 @@ class CatalogRepository:
                 for row in rows
             ]
         if kind == "titles":
-            title_query = self._available_books(
+            title_query = self._visible_books(
                 generation_id,
                 language=None,
                 genre=None,

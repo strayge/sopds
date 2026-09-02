@@ -634,7 +634,6 @@ def _validate_mapped_metadata(record: InpxRecord) -> None:
         _validate_max_length(normalize_sort_key(author), 512)
     for genre in record.genres:
         _validate_max_length(genre, 128)
-        _validate_max_length(genre, 256)
         _validate_max_length(normalize_sort_key(genre), 256)
     if record.series is not None:
         _validate_max_length(record.series, 512)

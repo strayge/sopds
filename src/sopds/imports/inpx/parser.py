@@ -38,6 +38,7 @@ _KNOWN_FIELDS = frozenset(_IMPLICIT_FIELDS)
 _INTEGER_PATTERN = re.compile(r"[0-9]+\Z")
 _MAX_RECORD_BYTES = 4 * 1024 * 1024
 _MAX_STRUCTURE_BYTES = 64 * 1024
+_INPX_READ_ERRORS = (OSError, BadZipFile, RuntimeError, NotImplementedError, EOFError, ZlibError)
 
 
 class InpxParserError(ValueError):
@@ -152,14 +153,7 @@ class InpxRecordIterator(AbstractContextManager["InpxRecordIterator"], Iterator[
                             yield _parse_line(line, schema, archive_path, source_entry, line_number)
                 except InpxParserError:
                     raise
-                except (
-                    OSError,
-                    BadZipFile,
-                    RuntimeError,
-                    NotImplementedError,
-                    EOFError,
-                    ZlibError,
-                ) as error:
+                except _INPX_READ_ERRORS as error:
                     raise InpxParserError(
                         "Could not read INPX entry", source_entry=source_entry
                     ) from error
@@ -187,14 +181,7 @@ def _read_schema(archive: ZipFile) -> _Schema:
     try:
         with archive.open(entry) as stream:
             raw = stream.read(_MAX_STRUCTURE_BYTES + 1)
-    except (
-        OSError,
-        BadZipFile,
-        RuntimeError,
-        NotImplementedError,
-        EOFError,
-        ZlibError,
-    ) as error:
+    except _INPX_READ_ERRORS as error:
         raise InpxParserError(
             "Could not read structure.info", source_entry="structure.info"
         ) from error
