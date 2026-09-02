@@ -1,9 +1,12 @@
 """Canonical reader-facing output formats and source-target decisions."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
 from sopds.conversion.contracts import normalize_format
+
+SupportsConversion = Callable[[str, str], bool]
 
 
 class OutputDecision(Enum):
@@ -52,6 +55,33 @@ class OutputPolicy:
     def choices(self) -> tuple[OutputChoice, ...]:
         return self._ordered_choices
 
+    def is_available(
+        self,
+        source_format: str,
+        target_format: str,
+        supports_conversion: SupportsConversion | None = None,
+    ) -> bool:
+        decision = self.decision(source_format, target_format)
+        if decision in {OutputDecision.ORIGINAL, OutputDecision.PASSTHROUGH}:
+            return True
+        if decision is not OutputDecision.CONVERT or supports_conversion is None:
+            return False
+        return supports_conversion(source_format, target_format)
+
+    def available_conversions(
+        self,
+        source_format: str,
+        supports_conversion: SupportsConversion | None,
+    ) -> tuple[OutputChoice, ...]:
+        if supports_conversion is None:
+            return ()
+        return tuple(
+            choice
+            for choice in self.choices()
+            if self.decision(source_format, choice.key) is OutputDecision.CONVERT
+            and self.is_available(source_format, choice.key, supports_conversion)
+        )
+
     def decision(self, source_format: str, target_format: str) -> OutputDecision:
         try:
             source = normalize_format(source_format)
@@ -69,4 +99,10 @@ class OutputPolicy:
 
 OUTPUT_POLICY = OutputPolicy()
 
-__all__ = ["OUTPUT_POLICY", "OutputChoice", "OutputDecision", "OutputPolicy"]
+__all__ = [
+    "OUTPUT_POLICY",
+    "OutputChoice",
+    "OutputDecision",
+    "OutputPolicy",
+    "SupportsConversion",
+]

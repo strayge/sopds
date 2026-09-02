@@ -50,6 +50,14 @@ class ConverterRegistry:
         except KeyError:
             raise UnsupportedConversionError("Requested conversion is unsupported") from None
 
+    def supports(self, source_format: str, target_format: str) -> bool:
+        """Report whether a converter is registered for a normalized format pair."""
+        try:
+            self.resolve(source_format, target_format)
+        except UnsupportedConversionError, ValueError:
+            return False
+        return True
+
     def __len__(self) -> int:
         return len(self._registrations)
 

@@ -100,11 +100,7 @@ class ConversionService:
 
     def supports(self, source_format: str, target_format: str) -> bool:
         """Report only capabilities backed by a registered converter."""
-        try:
-            self._registry.resolve(source_format, target_format)
-        except UnsupportedConversionError, ValueError:
-            return False
-        return True
+        return self._registry.supports(source_format, target_format)
 
     async def convert(
         self,

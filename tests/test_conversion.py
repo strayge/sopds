@@ -179,6 +179,34 @@ def test_output_policy_represents_canonical_choices_and_decision_table() -> None
     assert OUTPUT_POLICY.decision("pdf", "epub") is OutputDecision.UNSUPPORTED
 
 
+def test_output_policy_availability_preserves_choice_order() -> None:
+    supported = {("fb2", "epub"), ("epub", "azw3")}
+    calls: list[tuple[str, str]] = []
+
+    def supports(source_format: str, target_format: str) -> bool:
+        calls.append((source_format, target_format))
+        return (source_format, target_format) in supported
+
+    assert OUTPUT_POLICY.is_available("fb2", "original")
+    assert OUTPUT_POLICY.is_available("epub", "epub")
+    assert not OUTPUT_POLICY.is_available("fb2", "epub")
+    assert not OUTPUT_POLICY.is_available("fb2", "azw3", supports)
+    assert not OUTPUT_POLICY.is_available("pdf", "epub", supports)
+    assert tuple(choice.key for choice in OUTPUT_POLICY.available_conversions("fb2", supports)) == (
+        "epub",
+    )
+    assert tuple(
+        choice.key for choice in OUTPUT_POLICY.available_conversions("epub", supports)
+    ) == ("azw3",)
+    assert OUTPUT_POLICY.available_conversions("fb2", None) == ()
+    assert calls == [
+        ("fb2", "azw3"),
+        ("fb2", "epub"),
+        ("fb2", "azw3"),
+        ("epub", "azw3"),
+    ]
+
+
 def test_registry_is_empty_and_normalizes_without_execution() -> None:
     converter = _Converter()
     empty = ConverterRegistry()
@@ -186,6 +214,9 @@ def test_registry_is_empty_and_normalizes_without_execution() -> None:
 
     assert len(empty) == 0
     assert registry.resolve(" .FB2 ", "EPUB").converter is converter
+    assert registry.supports(" .FB2 ", "EPUB")
+    assert not registry.supports("fb2", "azw3")
+    assert not registry.supports("../fb2", "epub")
     assert converter.calls == 0
     with pytest.raises(UnsupportedConversionError):
         empty.resolve("fb2", "epub")

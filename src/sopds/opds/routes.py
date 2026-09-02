@@ -15,8 +15,7 @@ from sopds.catalog.contracts import (
     NavigationRequest,
 )
 from sopds.config import AppConfig
-from sopds.conversion.contracts import UnsupportedConversionError
-from sopds.conversion.policy import OUTPUT_POLICY, OutputDecision
+from sopds.conversion.policy import OUTPUT_POLICY
 from sopds.conversion.registry import ConverterRegistry
 from sopds.opds.render import (
     ACQUISITION_TYPE,
@@ -55,22 +54,17 @@ def _conversion_links(
     all_links: list[tuple[tuple[str, str], ...]] = []
     for book in books:
         links: list[tuple[str, str]] = []
-        if book.downloadable and registry is not None:
+        if book.downloadable:
             public_id = quote(book.public_id, safe="")
-            for choice in OUTPUT_POLICY.choices():
-                if (
-                    OUTPUT_POLICY.decision(book.original_format, choice.key)
-                    is not OutputDecision.CONVERT
-                ):
-                    continue
-                try:
-                    registration = registry.resolve(book.original_format, choice.key)
-                except UnsupportedConversionError, ValueError:
-                    continue
+            supports = registry.supports if registry is not None else None
+            for choice in OUTPUT_POLICY.available_conversions(book.original_format, supports):
+                media_type = choice.media_type
+                if media_type is None:
+                    raise AssertionError("Conversion output is missing a media type")
                 links.append(
                     (
                         f"{base_path}/books/{public_id}/download/{choice.key}",
-                        registration.capability.target_media_type,
+                        media_type,
                     )
                 )
         all_links.append(tuple(links))

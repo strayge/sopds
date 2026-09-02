@@ -27,7 +27,12 @@ from sopds.catalog.contracts import (
     CatalogSummaryBatch,
 )
 from sopds.conversion.contracts import ConversionResult, SourceUnavailableError
-from sopds.conversion.policy import OUTPUT_POLICY, OutputDecision, OutputPolicy
+from sopds.conversion.policy import (
+    OUTPUT_POLICY,
+    OutputDecision,
+    OutputPolicy,
+    SupportsConversion,
+)
 
 MAX_SELECTED_BOOKS = 10_000
 MAX_ELIGIBLE_SIZE = 10_000_000_000
@@ -545,20 +550,12 @@ def build_manifest(
     batch: CatalogSummaryBatch,
     *,
     output_policy: OutputPolicy = OUTPUT_POLICY,
-    supports_conversion: Callable[[str, str], bool] | None = None,
+    supports_conversion: SupportsConversion | None = None,
 ) -> ArchiveManifest:
     known = {book.public_id: book for book in batch.books}
     selected: list[tuple[str, CatalogBook | None, ArchiveEntryStatus, tuple[str, ...]]] = []
     downloadable: list[tuple[CatalogBook, OutputDecision]] = []
     total_size = 0
-
-    def is_supported(source_format: str, target_format: str) -> bool:
-        decision = output_policy.decision(source_format, target_format)
-        if decision is OutputDecision.CONVERT:
-            return supports_conversion is not None and supports_conversion(
-                source_format, target_format
-            )
-        return decision is not OutputDecision.UNSUPPORTED
 
     for public_id in request.ids:
         book = known.get(public_id)
@@ -572,11 +569,12 @@ def build_manifest(
         supported_formats = tuple(
             choice.key
             for choice in output_policy.choices()
-            if choice.key != "original" and is_supported(book.original_format, choice.key)
+            if choice.key != "original"
+            and output_policy.is_available(book.original_format, choice.key, supports_conversion)
         )
         decision = output_policy.decision(book.original_format, request.format)
-        if decision is OutputDecision.CONVERT and not is_supported(
-            book.original_format, request.format
+        if not output_policy.is_available(
+            book.original_format, request.format, supports_conversion
         ):
             decision = OutputDecision.UNSUPPORTED
         if decision is OutputDecision.UNSUPPORTED:

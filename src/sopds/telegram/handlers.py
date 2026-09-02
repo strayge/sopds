@@ -35,7 +35,7 @@ from sopds.conversion.contracts import (
     SourceUnavailableError,
     UnsupportedConversionError,
 )
-from sopds.conversion.policy import OUTPUT_POLICY, OutputDecision, OutputPolicy
+from sopds.conversion.policy import OUTPUT_POLICY, OutputPolicy
 from sopds.conversion.service import ConversionService
 from sopds.telegram.formatting import (
     button_label,
@@ -144,13 +144,9 @@ class TelegramHandlers:
             )
         ]
         if book.downloadable and self._conversion is not None:
-            for choice in self._output_policy.choices():
-                if self._output_policy.decision(
-                    book.original_format, choice.key
-                ) is not OutputDecision.CONVERT or not self._conversion.supports(
-                    book.original_format, choice.key
-                ):
-                    continue
+            for choice in self._output_policy.available_conversions(
+                book.original_format, self._conversion.supports
+            ):
                 token = await self._state.put_download(
                     message.chat.id, DownloadState(public_id, choice.key)
                 )

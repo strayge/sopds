@@ -66,7 +66,7 @@ from sopds.conversion.contracts import (
     UnsupportedConversionError,
     normalize_format,
 )
-from sopds.conversion.policy import OUTPUT_POLICY, OutputChoice, OutputDecision
+from sopds.conversion.policy import OUTPUT_POLICY, OutputChoice
 from sopds.conversion.registry import ConverterRegistry
 from sopds.conversion.service import ConversionService
 from sopds.imports.status import ImportState, ImportStatus, ImportStatusProvider
@@ -256,18 +256,9 @@ def _converter_registry(request: Request) -> ConverterRegistry | None:
 
 def _additional_download_formats(request: Request, source_format: str) -> tuple[OutputChoice, ...]:
     registry = _converter_registry(request)
-    if registry is None:
-        return ()
-    targets: list[OutputChoice] = []
-    for choice in OUTPUT_POLICY.choices():
-        if OUTPUT_POLICY.decision(source_format, choice.key) is not OutputDecision.CONVERT:
-            continue
-        try:
-            registry.resolve(source_format, choice.key)
-        except UnsupportedConversionError, ValueError:
-            continue
-        targets.append(choice)
-    return tuple(targets)
+    return OUTPUT_POLICY.available_conversions(
+        source_format, registry.supports if registry is not None else None
+    )
 
 
 def _shell_context(
