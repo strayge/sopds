@@ -110,7 +110,6 @@ _CATALOG_BROWSER_MESSAGES = {
     "title": N_("Title"),
     "author": N_("Author"),
     "seriesColumn": N_("Series"),
-    "number": N_("Number"),
     "ascending": N_("Ascending"),
     "descending": N_("Descending"),
     "sortAscending": N_("Sort ascending"),

@@ -265,10 +265,6 @@ msgstr "Автор"
 msgid "Series"
 msgstr "Серия"
 
-#: src/sopds/web/i18n.py:113
-msgid "Number"
-msgstr "Номер"
-
 #: src/sopds/web/i18n.py:114
 msgid "Ascending"
 msgstr "По возрастанию"

@@ -5,7 +5,7 @@
   const MAX_BOOKS = 1_000;
   const VIEWS = new Set(["flat", "tree", "table"]);
   const FLAT_SORTS = new Set(["title", "author", "series"]);
-  const TABLE_SORTS = new Set(["author", "title", "series", "number"]);
+  const TABLE_SORTS = new Set(["author", "title", "series"]);
   const DIRECTIONS = new Set(["asc", "desc"]);
   const DEFAULT_STATE = Object.freeze({
     view: "flat",
@@ -43,7 +43,6 @@
     title: "Title",
     author: "Author",
     seriesColumn: "Series",
-    number: "Number",
     ascending: "Ascending",
     descending: "Descending",
     sortAscending: "Sort ascending",

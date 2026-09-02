@@ -79,6 +79,10 @@
     return unicodeScalarCompare(left, right);
   }
 
+  function compareNaturalText(left, right) {
+    return naturalTextCompare(left, right) || unicodeScalarCompare(left, right);
+  }
+
   function parseSeriesNumber(value) {
     if (value === null || value === undefined || String(value).trim() === "") {
       return {bucket: "missing", raw: "", digits: "", suffix: ""};
@@ -120,16 +124,19 @@
     return book.series?.sortKey || null;
   }
 
+  function compareTitleKeys(left, right) {
+    return compareNaturalText(left.titleSortKey, right.titleSortKey);
+  }
+
   function compareTitle(left, right) {
-    return unicodeScalarCompare(left.titleSortKey, right.titleSortKey)
-      || unicodeScalarCompare(left.publicId, right.publicId);
+    return compareTitleKeys(left, right) || unicodeScalarCompare(left.publicId, right.publicId);
   }
 
   function compareAuthorChain(left, right) {
     return compareNullableText(firstAuthorKey(left), firstAuthorKey(right))
       || compareNullableText(seriesKey(left), seriesKey(right))
       || compareSeriesNumberValues(left.series?.number, right.series?.number)
-      || unicodeScalarCompare(left.titleSortKey, right.titleSortKey)
+      || compareTitleKeys(left, right)
       || unicodeScalarCompare(left.publicId, right.publicId);
   }
 
@@ -137,7 +144,7 @@
     return compareNullableText(seriesKey(left), seriesKey(right))
       || compareSeriesNumberValues(left.series?.number, right.series?.number)
       || compareNullableText(firstAuthorKey(left), firstAuthorKey(right))
-      || unicodeScalarCompare(left.titleSortKey, right.titleSortKey)
+      || compareTitleKeys(left, right)
       || unicodeScalarCompare(left.publicId, right.publicId);
   }
 
@@ -147,18 +154,10 @@
     return (left, right) => multiplier * base(left, right);
   }
 
-  function tableNumberCompare(left, right, direction) {
-    return compareSeriesNumberValues(left.series?.number, right.series?.number, direction)
-      || (direction === "desc" ? -1 : 1) * (
-        compareNullableText(seriesKey(left), seriesKey(right))
-        || unicodeScalarCompare(left.titleSortKey, right.titleSortKey)
-        || unicodeScalarCompare(left.publicId, right.publicId)
-      );
-  }
-
   function tableComparator(sort, direction = "asc") {
-    if (sort === "number") return (left, right) => tableNumberCompare(left, right, direction);
-    return flatComparator(sort, direction);
+    const base = sort === "author" ? compareAuthorChain : sort === "series" ? compareSeriesChain : compareTitle;
+    const multiplier = direction === "desc" ? -1 : 1;
+    return (left, right) => multiplier * base(left, right);
   }
 
   function treeComparator(left, right) {

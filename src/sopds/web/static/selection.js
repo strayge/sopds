@@ -12,6 +12,7 @@
   const SELECTED_TABLE_SORTS = new Set(["author", "title", "series"]);
   const SORT_DIRECTIONS = new Set(["asc", "desc"]);
   const BOOK_SORTING = globalThis.SOPDSBookSorting;
+  const SELECTED_FLAT_COMPARATOR = BOOK_SORTING.flatComparator("title", "asc");
   const SELECTION_MESSAGE_FALLBACKS = Object.freeze({
     savedSelectionRepaired: "Saved selection was repaired.",
     selectionUnavailable: "Book selection is unavailable in this browser.",
@@ -511,6 +512,10 @@
     return (left, right) => comparator(selectedEntryMetadata(left), selectedEntryMetadata(right));
   }
 
+  function compareSelectedFlatEntries(left, right) {
+    return SELECTED_FLAT_COMPARATOR(selectedEntryMetadata(left), selectedEntryMetadata(right));
+  }
+
   function selectedGroupKey(type, label) {
     return BOOK_SORTING.groupKey(type, label);
   }
@@ -662,7 +667,8 @@
 
   function renderSelectedFlat(entries) {
     const list = selectedElement("div", "result-list selected-result-list selected-flat-view catalog-flat-view");
-    entries.forEach((entry) => list.append(cloneSelectedEntry(entry)));
+    [...entries].sort(compareSelectedFlatEntries)
+      .forEach((entry) => list.append(cloneSelectedEntry(entry)));
     return list;
   }
 
@@ -897,6 +903,7 @@
   function updateSelectedEntry(entry, incoming) {
     const control = entry.querySelector(":scope > [data-selection-control]");
     entry.className = incoming.className;
+    entry.dataset.titleSortKey = incoming.dataset.titleSortKey;
     entry.dataset.status = incoming.dataset.status;
     entry.dataset.collision = incoming.dataset.collision;
     entry.dataset.sourceDownloadable = incoming.dataset.sourceDownloadable;

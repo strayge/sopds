@@ -21,6 +21,7 @@ const exportHook = `
     formatInteger,
     formatSize,
     compareSelectedMetadata,
+    compareSelectedFlatEntries,
     selectedEntryMetadata,
     selectedGroupKey,
     mergeSelectedSearchUrls,
@@ -81,7 +82,7 @@ function makeChild(kind, text = "") {
   };
 }
 
-function makeEntry(publicId, {status, outputFormats, bodyText, included = true}) {
+function makeEntry(publicId, {status, outputFormats, bodyText, titleSortKey = bodyText, included = true}) {
   const control = makeChild("control");
   control.hidden = false;
   const body = makeChild("body", bodyText);
@@ -91,6 +92,7 @@ function makeEntry(publicId, {status, outputFormats, bodyText, included = true})
     dataset: {
       publicId,
       status,
+      titleSortKey,
       collision: "false",
       sourceDownloadable: "true",
       sourceFormat: "FB2",
@@ -109,7 +111,7 @@ function makeEntry(publicId, {status, outputFormats, bodyText, included = true})
       this.children.push(child);
     },
     cloneNode() {
-      return makeEntry(publicId, {status, outputFormats, bodyText, included});
+      return makeEntry(publicId, {status, outputFormats, bodyText, titleSortKey, included});
     },
   };
   for (const child of entry.children) child.parent = entry;
@@ -448,6 +450,18 @@ test("selected Tree follows catalog series-number ordering before title", () => 
   );
 });
 
+test("selected Flat view sorts titles in natural ascending order", () => {
+  const entries = [
+    renderedSelectedEntry("ten", "downloadable", "Book 10"),
+    renderedSelectedEntry("two", "downloadable", "Book 2"),
+  ];
+
+  assert.deepEqual(
+    entries.sort(behavior.compareSelectedFlatEntries).map((entry) => entry.dataset.publicId),
+    ["two", "ten"],
+  );
+});
+
 test("selected comparators use the canonical catalog ordering contract", () => {
   const catalogBooks = [
     {publicId: "ten", titleSortKey: "еж 10", authors: [{sortKey: "елка"}], series: {sortKey: "серия", number: "10"}},
@@ -541,17 +555,19 @@ test("rendered unknown selections keep Table and Tree metadata order across loca
   }
 });
 
-test("a re-included preserved row takes the authoritative format state", () => {
+test("a re-included preserved row takes the authoritative format and title state", () => {
   const stale = makeEntry("book-1", {
     status: "downloadable",
     outputFormats: "epub,azw3",
     bodyText: "supported",
+    titleSortKey: "old title",
     included: false,
   });
   const incoming = makeEntry("book-1", {
     status: "unsupported",
     outputFormats: "azw3",
     bodyText: "unsupported",
+    titleSortKey: "new title",
   });
   const currentContent = makeContent([stale.entry]);
   const incomingContent = makeContent([incoming.entry]);
@@ -576,6 +592,7 @@ test("a re-included preserved row takes the authoritative format state", () => {
   assert.equal(behavior.mergeSelectedPreview(target, incomingContent), true);
   assert.equal(stale.entry.dataset.status, "unsupported");
   assert.equal(stale.entry.dataset.outputFormats, "azw3");
+  assert.equal(stale.entry.dataset.titleSortKey, "new title");
   assert.equal(stale.entry.children[0], stale.control, "the existing checkbox control is retained");
   assert.equal(stale.entry.children[1].text, "unsupported");
   assert.equal(checkbox.checked, true);

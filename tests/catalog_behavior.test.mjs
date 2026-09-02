@@ -279,7 +279,7 @@ test("fragment state is bounded, allowlisted, canonical, and fresh criteria clea
   const parsed = behavior.parseFragment(`#view=tree&flatSort=author&flatDir=desc&tableSort=number&tableDir=desc&title=${long}&author=A&series=S&unknown=yes`);
   assert.equal(parsed.view, "tree");
   assert.equal(parsed.flatSort, "author");
-  assert.equal(parsed.tableSort, "number");
+  assert.equal(parsed.tableSort, "author");
   assert.equal(parsed.title.length, 200);
   assert.equal(parsed.author, "A");
   assert.equal(behavior.parseFragment("#view=cards&flatSort=nope&flatDir=sideways").view, "flat");
@@ -291,19 +291,19 @@ test("fragment state is bounded, allowlisted, canonical, and fresh criteria clea
   const fresh = behavior.freshCriteriaState(parsed);
   assert.equal(fresh.view, "tree");
   assert.equal(fresh.flatDir, "desc");
-  assert.equal(fresh.tableSort, "number");
+  assert.equal(fresh.tableSort, "author");
   assert.equal(fresh.title, "");
   assert.equal(fresh.author, "");
   assert.equal(fresh.series, "");
 });
 
 test("criteria and HTMX history paths receive only validated view and sort state", () => {
-  const state = behavior.parseFragment("#view=table&flatSort=series&flatDir=desc&tableSort=number&tableDir=desc&title=typed");
+  const state = behavior.parseFragment("#view=table&flatSort=series&flatDir=desc&tableSort=series&tableDir=desc&title=typed");
   const path = behavior.appendPresentationFragment("/?q=A%26B&search_field=author", state, "https://catalog.test/?q=old");
   assert.match(path, /^\/\?q=A%26B&search_field=author#view=table/);
   const restored = behavior.parseFragment(new URL(path, "https://catalog.test").hash);
   assert.equal(restored.view, "table");
-  assert.equal(restored.tableSort, "number");
+  assert.equal(restored.tableSort, "series");
   assert.equal(restored.title, "");
   assert.equal(behavior.appendPresentationFragment("https://evil.test/", state, "https://catalog.test/"), "https://evil.test/");
 });
@@ -358,6 +358,34 @@ test("Unicode scalar and natural text helpers do not depend on ambient locale or
   assert.ok(behavior.compareSeriesNumberValues("9007199254740993", "9007199254740992") > 0);
 });
 
+test("Title uses natural order while Author and Series names stay lexical", () => {
+  const titles = books(
+    rawBook("ten", {titleSortKey: "book 10"}),
+    rawBook("two", {titleSortKey: "book 2"}),
+  );
+  for (const comparator of [
+    behavior.flatComparator("title", "asc"),
+    behavior.tableComparator("title", "asc"),
+    behavior.sorting.treeComparator,
+  ]) {
+    assert.deepEqual(ids([...titles].sort(comparator)), ["two", "ten"]);
+  }
+
+  const authors = books(
+    rawBook("ten", {authorName: "Author 10"}),
+    rawBook("two", {authorName: "Author 2"}),
+  );
+  assert.deepEqual(ids([...authors].sort(behavior.flatComparator("author", "asc"))), ["ten", "two"]);
+  assert.deepEqual(ids([...authors].sort(behavior.tableComparator("author", "asc"))), ["ten", "two"]);
+
+  const series = books(
+    rawBook("ten", {seriesName: "Series 10"}),
+    rawBook("two", {seriesName: "Series 2"}),
+  );
+  assert.deepEqual(ids([...series].sort(behavior.flatComparator("series", "asc"))), ["ten", "two"]);
+  assert.deepEqual(ids([...series].sort(behavior.tableComparator("series", "asc"))), ["ten", "two"]);
+});
+
 test("natural series numbers follow every ascending bucket and deterministic suffix rule", () => {
   const values = [null, " ", "0.6", "0", "Part 2", "10", "3.5", "2", "1-A", "01a", "1"];
   values.sort((left, right) => behavior.compareSeriesNumberValues(left, right, "asc"));
@@ -388,7 +416,6 @@ test("missing series numbers reach title and ID tie-breakers in Flat, Tree, and 
   assert.deepEqual(plain(ids([...values].sort(behavior.flatComparator("author", "asc")))), expected);
   assert.deepEqual(plain(ids([...values].sort(behavior.flatComparator("series", "asc")))), expected);
   assert.deepEqual(plain(ids(behavior.buildTreeModel(values)[0].series[0].books)), expected);
-  assert.deepEqual(plain(ids([...values].sort(behavior.tableComparator("number", "asc")))), expected);
 });
 
 test("compatibility digits remain in the text series-number bucket in both directions", () => {
@@ -447,7 +474,7 @@ test("Author and Series chains use natural number and subsequent metadata tie-br
   assert.deepEqual(ids([...values].sort(behavior.flatComparator("series", "asc"))), ["other-author", "one", "two", "other-series"]);
 });
 
-test("Table ordinary comparator chains work in both directions and Number uses series/title/ID ties", () => {
+test("Table comparator chains work in both directions", () => {
   const ordinary = books(
     rawBook("b", {titleSortKey: "same", authorName: "B", seriesName: "B"}),
     rawBook("a", {titleSortKey: "same", authorName: "A", seriesName: "A"}),
@@ -458,16 +485,6 @@ test("Table ordinary comparator chains work in both directions and Number uses s
     const desc = [...ordinary].sort(behavior.tableComparator(sort, "desc"));
     assert.deepEqual(ids(desc), ids(asc).reverse());
   }
-  const numbered = books(
-    rawBook("z", {titleSortKey: "a", seriesName: "B", seriesNumber: "2"}),
-    rawBook("b", {titleSortKey: "same", seriesName: "A", seriesNumber: "2"}),
-    rawBook("a", {titleSortKey: "same", seriesName: "A", seriesNumber: "2"}),
-    rawBook("text", {seriesName: "Z", seriesNumber: "Part 3"}),
-    rawBook("zero", {seriesName: "Z", seriesNumber: "0"}),
-    rawBook("none", {seriesName: null}),
-  );
-  assert.deepEqual(ids([...numbered].sort(behavior.tableComparator("number", "asc"))), ["a", "b", "z", "text", "zero", "none"]);
-  assert.deepEqual(ids([...numbered].sort(behavior.tableComparator("number", "desc"))), ["text", "z", "b", "a", "zero", "none"]);
 });
 
 test("Tree grouping applies no-author, one, duplicate 2–5, and Many authors 6+ rules", () => {
@@ -980,7 +997,7 @@ test("persistent and rendered criteria hrefs are ready for middle-click and cont
   const fixture = explorerRoot([rawBook("one")]);
   page.append(scopeRemoval, clearAll, fixture.root);
   documentStub.currentRoot = page;
-  location.href = "https://catalog.test/?q=book#view=table&flatSort=series&flatDir=desc&tableSort=number&tableDir=desc&title=title";
+  location.href = "https://catalog.test/?q=book#view=table&flatSort=series&flatDir=desc&tableSort=series&tableDir=desc&title=title";
   windowStub.history.replaceState = (_state, _title, value) => {
     location.href = new URL(value, location.href).href;
   };
@@ -991,7 +1008,7 @@ test("persistent and rendered criteria hrefs are ready for middle-click and cont
   for (const link of [scopeRemoval, clearAll, ...renderedLinks]) {
     const state = behavior.parseFragment(new URL(link.href, location.href).hash);
     assert.equal(state.view, "table");
-    assert.equal(state.tableSort, "number");
+    assert.equal(state.tableSort, "series");
     assert.equal(state.title, "", "quick filters are absent from criteria destinations");
   }
 
@@ -1018,7 +1035,7 @@ test("persistent and rendered criteria hrefs are ready for middle-click and cont
 test("real HTMX event sequence preserves presentation state and separates fresh swaps from history restoration", () => {
   const initial = explorerRoot([rawBook("initial")]);
   documentStub.currentRoot = initial.root;
-  location.href = "https://catalog.test/?q=initial#view=table&flatSort=series&flatDir=desc&tableSort=number&tableDir=desc&title=typed&author=writer&series=saga";
+  location.href = "https://catalog.test/?q=initial#view=table&flatSort=series&flatDir=desc&tableSort=series&tableDir=desc&title=typed&author=writer&series=saga";
   windowStub.history.replaceState = (_state, _title, value) => {
     location.href = new URL(value, location.href).href;
   };
@@ -1034,7 +1051,7 @@ test("real HTMX event sequence preserves presentation state and separates fresh 
   documentStub.dispatchEvent({type: "click", target: criteriaLink, defaultPrevented: false});
   const criteriaState = behavior.parseFragment(new URL(criteriaLink.href, location.href).hash);
   assert.equal(criteriaState.view, "table");
-  assert.equal(criteriaState.tableSort, "number");
+  assert.equal(criteriaState.tableSort, "series");
   assert.equal(criteriaState.title, "");
   assert.equal(criteriaState.author, "");
   assert.equal(criteriaState.series, "");
@@ -1062,7 +1079,7 @@ test("real HTMX event sequence preserves presentation state and separates fresh 
   assert.equal(initialController.abort.signal.aborted, true);
   assert.deepEqual(plain(ids(freshController.books)), ["fresh"]);
   assert.equal(freshController.state.view, "table");
-  assert.equal(freshController.state.tableSort, "number");
+  assert.equal(freshController.state.tableSort, "series");
   assert.equal(freshController.state.title, "");
 
   const swappedForm = new FakeNode("form");
@@ -1077,7 +1094,7 @@ test("real HTMX event sequence preserves presentation state and separates fresh 
   });
   const swappedClearState = behavior.parseFragment(new URL(swappedClear.href, location.href).hash);
   assert.equal(swappedClearState.view, "table");
-  assert.equal(swappedClearState.tableSort, "number");
+  assert.equal(swappedClearState.tableSort, "series");
   assert.equal(swappedClearState.title, "");
 
   const cached = explorerRoot([rawBook("cached")]);
