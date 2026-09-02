@@ -12,7 +12,7 @@ from datetime import UTC
 
 from sopds.catalog.contracts import (
     AuthorBookCounts,
-    BookDetail,
+    CatalogBook,
     CatalogFilters,
     CatalogInputError,
     CatalogPage,
@@ -377,7 +377,7 @@ class CatalogService:
         *,
         include_missed: bool = False,
         include_hidden: bool = False,
-    ) -> BookDetail | None:
+    ) -> CatalogBook | None:
         if (
             not public_id
             or len(public_id) > 64

@@ -53,7 +53,7 @@ from sopds.acquisition.contracts import (
 )
 from sopds.catalog.contracts import (
     BookAvailability,
-    BookSummary,
+    CatalogBook,
     CatalogSummaryBatch,
 )
 from sopds.conversion.contracts import (
@@ -75,8 +75,8 @@ def _book(
     size: int = 1,
     availability: BookAvailability = BookAvailability.ACTIVE,
     downloadable: bool = True,
-) -> BookSummary:
-    return BookSummary(
+) -> CatalogBook:
+    return CatalogBook(
         public_id=public_id,
         title=title,
         authors=authors,
@@ -92,7 +92,7 @@ def _book(
 
 def _manifest(
     ids: list[str],
-    books: Sequence[BookSummary],
+    books: Sequence[CatalogBook],
     preset: ArchivePreset | str = ArchivePreset.NESTED,
     *,
     generation_id: int | None = 7,
@@ -282,7 +282,7 @@ async def _archive_bytes(staged: StagedArchive) -> bytes:
     return b"".join([chunk async for chunk in staged])
 
 
-def _base_path(book: BookSummary, preset: ArchivePreset) -> str:
+def _base_path(book: CatalogBook, preset: ArchivePreset) -> str:
     return _manifest([book.public_id], [book], preset).members[0].base_path
 
 
@@ -590,7 +590,7 @@ def test_collapsed_suffix_family_uses_indexed_allocation(
 ) -> None:
     family_count = MAX_SELECTED_BOOKS // 2
     prefix = "A" * 192
-    books: list[BookSummary] = []
+    books: list[CatalogBook] = []
     ids: list[str] = []
     for index in range(family_count):
         title = f"{prefix}{index:04x}"

@@ -2,7 +2,7 @@
 
 import unicodedata
 
-from sopds.catalog.contracts import BookDetail, BookSummary
+from sopds.catalog.contracts import CatalogBook
 from sopds.conversion.contracts import normalize_format
 
 TELEGRAM_TEXT_LIMIT = 4_096
@@ -54,7 +54,7 @@ def source_format_label(value: str) -> str:
         return "FILE"
 
 
-def results_text(books: tuple[BookSummary, ...]) -> str:
+def results_text(books: tuple[CatalogBook, ...]) -> str:
     if not books:
         return "No books found."
     lines = ["Search results:"]
@@ -66,7 +66,7 @@ def results_text(books: tuple[BookSummary, ...]) -> str:
     return truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT)
 
 
-def detail_text(book: BookDetail) -> str:
+def detail_text(book: CatalogBook) -> str:
     values = [
         ("Title", book.title),
         ("Authors", ", ".join(book.authors)),

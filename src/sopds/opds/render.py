@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from xml.etree import ElementTree as ET
 
 from sopds.acquisition.service import media_type_for
-from sopds.catalog.contracts import BookSummary, NavigationItem
+from sopds.catalog.contracts import CatalogBook, NavigationItem
 
 ATOM = "http://www.w3.org/2005/Atom"
 DC = "http://purl.org/dc/terms/"
@@ -187,7 +187,7 @@ def acquisition_feed(
     up_url: str,
     search_url: str,
     next_url: str | None,
-    books: tuple[BookSummary, ...],
+    books: tuple[CatalogBook, ...],
     book_urls: tuple[str, ...],
     download_urls: tuple[str, ...],
     conversion_links: tuple[tuple[tuple[str, str], ...], ...],
@@ -209,7 +209,7 @@ def acquisition_feed(
         entry = _element(root, "entry")
         _element(entry, "id", stable_id("book", book.public_id))
         _element(entry, "title", book.title)
-        _element(entry, "updated", rfc3339(book.updated_at))
+        _element(entry, "updated", rfc3339(updated_at))
         authors = book.authors or ("Unknown author",)
         for name in authors:
             author = _element(entry, "author")

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from sopds.catalog.contracts import (
     AuthorBookCounts,
-    BookSummary,
+    CatalogBook,
     CatalogFilters,
     CatalogPage,
     CatalogRequest,
@@ -53,7 +53,7 @@ class _Catalog:
         self.requests.append(request)
         return CatalogPage(
             (
-                BookSummary(
+                CatalogBook(
                     public_id="book/one",
                     title="A & <Book>\x01",
                     authors=(),
@@ -68,7 +68,6 @@ class _Catalog:
                     libid="lib&1",
                     rating=5,
                     keywords="one, two",
-                    updated_at=_UPDATED,
                 ),
             ),
             "signed-next" if request.cursor is None else None,
@@ -104,7 +103,7 @@ class _Catalog:
                 None,
                 _UPDATED,
                 books=(
-                    BookSummary(
+                    CatalogBook(
                         public_id="book/one",
                         title="A & <Book>\x01",
                         authors=("Surname,Given,",),
@@ -119,7 +118,6 @@ class _Catalog:
                         libid="lib&1",
                         rating=5,
                         keywords="one, two",
-                        updated_at=_UPDATED,
                     ),
                 ),
             )
@@ -244,6 +242,9 @@ def test_acquisition_feed_has_complete_inline_original_metadata_and_safe_xml() -
     entry = root.find("atom:entry", {"atom": ATOM})
     assert entry is not None
     assert entry.findtext("atom:title", namespaces={"atom": ATOM}) == "A & <Book>�"
+    assert entry.findtext("atom:updated", namespaces={"atom": ATOM}) == (
+        "2025-02-03T04:05:06.123456+00:00"
+    )
     assert root.findtext("atom:author/atom:name", namespaces={"atom": ATOM}) == "SOPDS"
     assert (entry.findtext("atom:id", namespaces={"atom": ATOM}) or "").startswith(
         "urn:sopds:book:"
@@ -300,7 +301,7 @@ def test_opds_acquisitions_follow_registered_source_matrix_without_conversion() 
         catalog.requests.append(request)
         return CatalogPage(
             tuple(
-                BookSummary(
+                CatalogBook(
                     public_id=public_id,
                     title=public_id,
                     authors=("Author",),
@@ -310,7 +311,6 @@ def test_opds_acquisitions_follow_registered_source_matrix_without_conversion() 
                     original_format=source_format,
                     size=10,
                     downloadable=downloadable,
-                    updated_at=_UPDATED,
                 )
                 for public_id, source_format, downloadable in matrix
             ),

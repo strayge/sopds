@@ -7,8 +7,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 
 from sopds.catalog.contracts import (
-    BookSummary,
     Catalog,
+    CatalogBook,
     CatalogInputError,
     CatalogRequest,
     NavigationItem,
@@ -46,7 +46,7 @@ def _base_path(request: Request) -> str:
 
 
 def _conversion_links(
-    request: Request, base_path: str, books: tuple[BookSummary, ...]
+    request: Request, base_path: str, books: tuple[CatalogBook, ...]
 ) -> tuple[tuple[tuple[str, str], ...], ...]:
     """Advertise only registered conversions without opening or converting a source."""
     registry = cast(

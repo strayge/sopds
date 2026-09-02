@@ -16,8 +16,7 @@ from sopds.acquisition.contracts import AcquisitionTarget
 from sopds.catalog.contracts import (
     AuthorBookCounts,
     BookAvailability,
-    BookDetail,
-    BookSummary,
+    CatalogBook,
     CatalogFilters,
     CatalogSnapshot,
     CatalogStatistics,
@@ -1217,19 +1216,9 @@ class CatalogRepository:
         *,
         include_missed: bool = False,
         include_hidden: bool = False,
-    ) -> list[BookSummary]:
+    ) -> list[CatalogBook]:
         if not book_ids:
             return []
-        state = await (
-            CatalogState.filter(id=1, active_generation_id=generation_id)
-            .using_db(self._connection)
-            .values("updated_at")
-        )
-        if not state:
-            return []
-        updated_at = state[0]["updated_at"]
-        if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=UTC)
         books = await self._hydrated_books(
             self._visible_books(
                 generation_id,
@@ -1243,28 +1232,18 @@ class CatalogRepository:
             ).filter(id__in=book_ids),
             generation_id,
         )
-        by_id = {int(book.id): self._summary(book, updated_at) for book in books}
+        by_id = {int(book.id): self._catalog_book(book) for book in books}
         return [by_id[book_id] for book_id in book_ids if book_id in by_id]
 
     async def summaries_by_public_ids(
         self,
         generation_id: int,
         public_ids: Sequence[str],
-    ) -> list[BookSummary]:
+    ) -> list[CatalogBook]:
         if not public_ids:
             return []
-        state = await (
-            CatalogState.filter(id=1, active_generation_id=generation_id)
-            .using_db(self._connection)
-            .values("updated_at")
-        )
-        if not state:
-            return []
-        updated_at = state[0]["updated_at"]
-        if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=UTC)
 
-        by_public_id: dict[str, BookSummary] = {}
+        by_public_id: dict[str, CatalogBook] = {}
         for offset in range(0, len(public_ids), PUBLIC_ID_LOOKUP_BATCH_SIZE):
             chunk = public_ids[offset : offset + PUBLIC_ID_LOOKUP_BATCH_SIZE]
             books = await self._hydrated_books(
@@ -1276,7 +1255,7 @@ class CatalogRepository:
                 ).using_db(self._connection),
                 generation_id,
             )
-            by_public_id.update((book.public_id, self._summary(book, updated_at)) for book in books)
+            by_public_id.update((book.public_id, self._catalog_book(book)) for book in books)
         return [by_public_id[public_id] for public_id in public_ids if public_id in by_public_id]
 
     async def detail(
@@ -1286,7 +1265,7 @@ class CatalogRepository:
         *,
         include_missed: bool = False,
         include_hidden: bool = False,
-    ) -> BookDetail | None:
+    ) -> CatalogBook | None:
         books = await self._hydrated_books(
             self._visible_books(
                 generation_id,
@@ -1302,29 +1281,7 @@ class CatalogRepository:
         )
         if not books:
             return None
-        book = books[0]
-        return BookDetail(
-            public_id=book.public_id,
-            title=book.title,
-            authors=tuple(link.author.name for link in book.author_links),
-            genres=tuple(
-                sorted(
-                    ((link.genre.code, link.genre.label) for link in book.genre_links),
-                    key=lambda item: (item[1].casefold(), item[0]),
-                )
-            ),
-            series=book.series.name if book.series is not None else None,
-            series_number=book.series_number,
-            size=book.size,
-            libid=book.libid,
-            published_date=book.published_date,
-            language=book.language,
-            original_format=book.original_format,
-            rating=book.rating,
-            keywords=book.keywords,
-            availability=self._availability(book),
-            downloadable=book.archive.available,
-        )
+        return self._catalog_book(books[0])
 
     async def _hydrated_books(self, query: QuerySet[Book], generation_id: int) -> list[Book]:
         return await (
@@ -1351,8 +1308,8 @@ class CatalogRepository:
         )
 
     @staticmethod
-    def _summary(book: Book, updated_at: datetime) -> BookSummary:
-        return BookSummary(
+    def _catalog_book(book: Book) -> CatalogBook:
+        return CatalogBook(
             public_id=book.public_id,
             title=book.title,
             authors=tuple(link.author.name for link in book.author_links),
@@ -1372,7 +1329,6 @@ class CatalogRepository:
             libid=book.libid,
             rating=book.rating,
             keywords=book.keywords,
-            updated_at=updated_at,
             availability=CatalogRepository._availability(book),
             downloadable=book.archive.available,
         )

@@ -11,8 +11,7 @@ import pytest
 
 from sopds.catalog.contracts import (
     BookAvailability,
-    BookDetail,
-    BookSummary,
+    CatalogBook,
     CatalogFilters,
     CatalogInputError,
     CatalogRequest,
@@ -434,7 +433,7 @@ async def test_bulk_summaries_retry_one_activation_change(tmp_path: Path) -> Non
         async def activate_then_lookup(
             generation_id: int,
             public_ids: Sequence[str],
-        ) -> list[BookSummary]:
+        ) -> list[CatalogBook]:
             generation_ids.append(generation_id)
             books = await original_lookup(generation_id, public_ids)
             if generation_id == 1:
@@ -466,7 +465,7 @@ async def test_bulk_summaries_reject_repeated_activation_changes(tmp_path: Path)
         async def change_activation_after_lookup(
             generation_id: int,
             public_ids: Sequence[str],
-        ) -> list[BookSummary]:
+        ) -> list[CatalogBook]:
             generation_ids.append(generation_id)
             books = await original_lookup(generation_id, public_ids)
             await (
@@ -665,7 +664,7 @@ async def test_search_window_caps_and_reports_keyset_overflow(tmp_path: Path) ->
             *,
             include_missed: bool = False,
             include_hidden: bool = False,
-        ) -> list[BookSummary]:
+        ) -> list[CatalogBook]:
             hydrated_batches.append(book_ids)
             return await original_summaries(
                 generation_id,
@@ -726,7 +725,7 @@ async def test_hydration_omits_books_that_stop_being_visible(tmp_path: Path, cha
             *,
             include_missed: bool = False,
             include_hidden: bool = False,
-        ) -> list[BookSummary]:
+        ) -> list[CatalogBook]:
             nonlocal changed
             if not changed:
                 changed = True
@@ -767,7 +766,7 @@ async def test_browse_retries_activation_change_but_cursor_becomes_stale(tmp_pat
             *,
             include_missed: bool = False,
             include_hidden: bool = False,
-        ) -> list[BookSummary]:
+        ) -> list[CatalogBook]:
             nonlocal activated
             if not activated:
                 activated = True
@@ -815,7 +814,7 @@ async def test_details_retries_activation_change_during_hydration(
             *,
             include_missed: bool = False,
             include_hidden: bool = False,
-        ) -> BookDetail | None:
+        ) -> CatalogBook | None:
             generation_ids.append(generation_id)
             detail = await original_detail(
                 generation_id,
@@ -855,7 +854,7 @@ async def test_details_rejects_two_activation_changes(tmp_path: Path) -> None:
             *,
             include_missed: bool = False,
             include_hidden: bool = False,
-        ) -> BookDetail | None:
+        ) -> CatalogBook | None:
             generation_ids.append(generation_id)
             detail = await original_detail(
                 generation_id,

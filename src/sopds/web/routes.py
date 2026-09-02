@@ -44,8 +44,8 @@ from sopds.acquisition.contracts import (
 )
 from sopds.acquisition.service import content_disposition
 from sopds.catalog.contracts import (
-    BookSummary,
     Catalog,
+    CatalogBook,
     CatalogFilters,
     CatalogInputError,
     CatalogPage,
@@ -419,7 +419,7 @@ def _normalized_source_format(value: str) -> str | None:
 
 def _catalog_book_payload(
     request: Request,
-    book: BookSummary,
+    book: CatalogBook,
     catalog_request: CatalogRequest,
 ) -> dict[str, object]:
     path_id = quote(book.public_id, safe="")

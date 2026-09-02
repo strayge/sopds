@@ -23,7 +23,7 @@ from sopds.acquisition.contracts import (
 )
 from sopds.catalog.contracts import (
     BookAvailability,
-    BookSummary,
+    CatalogBook,
     CatalogSummaryBatch,
 )
 from sopds.conversion.contracts import ConversionResult, SourceUnavailableError
@@ -116,7 +116,7 @@ class ArchiveRequest:
 @dataclass(frozen=True, slots=True)
 class ArchivePreviewEntry:
     public_id: str
-    summary: BookSummary | None
+    summary: CatalogBook | None
     status: ArchiveEntryStatus
     collision: bool = False
     collision_group: str | None = None
@@ -126,7 +126,7 @@ class ArchivePreviewEntry:
 @dataclass(frozen=True, slots=True)
 class ArchiveMember:
     public_id: str
-    summary: BookSummary
+    summary: CatalogBook
     base_path: str
     path: str
     collision: bool = False
@@ -548,8 +548,8 @@ def build_manifest(
     supports_conversion: Callable[[str, str], bool] | None = None,
 ) -> ArchiveManifest:
     known = {book.public_id: book for book in batch.books}
-    selected: list[tuple[str, BookSummary | None, ArchiveEntryStatus, tuple[str, ...]]] = []
-    downloadable: list[tuple[BookSummary, OutputDecision]] = []
+    selected: list[tuple[str, CatalogBook | None, ArchiveEntryStatus, tuple[str, ...]]] = []
+    downloadable: list[tuple[CatalogBook, OutputDecision]] = []
     total_size = 0
 
     def is_supported(source_format: str, target_format: str) -> bool:
@@ -700,7 +700,7 @@ class _PathParts:
 @dataclass(slots=True)
 class _PathRecord:
     index: int
-    book: BookSummary
+    book: CatalogBook
     decision: OutputDecision
     base_parts: _PathParts
     base_path: str = ""
@@ -745,7 +745,7 @@ class _CollisionSets:
 
 
 def _book_path_parts(
-    book: BookSummary,
+    book: CatalogBook,
     preset: ArchivePreset,
     *,
     output_extension: str | None = None,

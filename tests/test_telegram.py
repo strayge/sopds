@@ -29,9 +29,8 @@ from sopds.acquisition.contracts import (
     SourceRevision,
 )
 from sopds.catalog.contracts import (
-    BookDetail,
-    BookSummary,
     Catalog,
+    CatalogBook,
     CatalogPage,
     CatalogRequest,
 )
@@ -141,7 +140,7 @@ def test_plain_text_formatting_normalizes_controls_and_bounds_output() -> None:
     assert len(button_label(hostile)) <= 64
 
     books = tuple(
-        BookSummary(
+        CatalogBook(
             public_id=f"book-{index}",
             title=hostile,
             authors=(hostile,),
@@ -294,7 +293,7 @@ class _FakeCatalog:
     def __init__(
         self,
         pages: list[CatalogPage],
-        detail: BookDetail | None = None,
+        detail: CatalogBook | None = None,
         *,
         browse_error: Exception | None = None,
     ) -> None:
@@ -310,7 +309,7 @@ class _FakeCatalog:
             raise self.browse_error
         return self.pages.pop(0)
 
-    async def details(self, public_id: str) -> BookDetail | None:
+    async def details(self, public_id: str) -> CatalogBook | None:
         self.detail_ids.append(public_id)
         return self.detail
 
@@ -355,8 +354,8 @@ class _FakeAcquisition:
         )
 
 
-def _summary(index: int) -> BookSummary:
-    return BookSummary(
+def _summary(index: int) -> CatalogBook:
+    return CatalogBook(
         public_id=f"book-{index}",
         title=f"Book {index}",
         authors=("Author",),
@@ -367,8 +366,8 @@ def _summary(index: int) -> BookSummary:
     )
 
 
-def _detail(source_format: str = "fb2") -> BookDetail:
-    return BookDetail(
+def _detail(source_format: str = "fb2") -> CatalogBook:
+    return CatalogBook(
         public_id="book-0",
         title="Book 0",
         authors=("Author",),

@@ -41,8 +41,7 @@ from sopds.acquisition.contracts import (
 )
 from sopds.catalog.contracts import (
     BookAvailability,
-    BookDetail,
-    BookSummary,
+    CatalogBook,
     CatalogFilters,
     CatalogInputError,
     CatalogPage,
@@ -137,7 +136,7 @@ class _Catalog:
         )
         return CatalogPage(
             books=(
-                BookSummary(
+                CatalogBook(
                     public_id="public-1",
                     title=title,
                     authors=authors,
@@ -170,7 +169,7 @@ class _Catalog:
         *,
         include_missed: bool = False,
         include_hidden: bool = False,
-    ) -> BookDetail | None:
+    ) -> CatalogBook | None:
         self.detail_requests.append((include_missed, include_hidden))
         if public_id != "public-1":
             return None
@@ -181,7 +180,7 @@ class _Catalog:
             if include_missed
             else BookAvailability.ACTIVE
         )
-        return BookDetail(
+        return CatalogBook(
             public_id=public_id,
             title=self.detail_title,
             authors=(
@@ -294,7 +293,7 @@ class _Archive:
             return self.preview_value
         if not request.ids:
             return ArchiveManifest(request, 7, (), (), 0)
-        summary = BookSummary(
+        summary = CatalogBook(
             public_id=request.ids[0],
             title="Selected Book",
             authors=("Reader,One,",),
@@ -1838,7 +1837,7 @@ def test_catalog_selection_hooks_only_render_for_downloadable_non_missed_books()
 def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_paths() -> None:
     app, _, _ = _app()
     archive: _Archive = app.state.archive
-    hidden = BookSummary(
+    hidden = CatalogBook(
         public_id="hidden-1",
         title="Hidden Book",
         authors=("Writer,Hidden,",),
@@ -1849,7 +1848,7 @@ def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_path
         size=456,
         availability=BookAvailability.HIDDEN,
     )
-    missed = BookSummary(
+    missed = CatalogBook(
         public_id="missed-1",
         title="Missed Book",
         authors=("Writer,Missed,",),
@@ -1927,7 +1926,7 @@ def test_selected_preview_reuses_rows_and_marks_all_excluded_states_without_path
 def test_selected_preview_distinguishes_unsupported_rows_and_capabilities() -> None:
     app, _, _ = _app()
     archive: _Archive = app.state.archive
-    unsupported = BookSummary(
+    unsupported = CatalogBook(
         public_id="azw3-1",
         title="Kindle Book",
         authors=("Writer,One,",),
@@ -1976,7 +1975,7 @@ def test_selected_preview_distinguishes_unsupported_rows_and_capabilities() -> N
 def test_selected_preview_omits_read_for_oversized_supported_books() -> None:
     app, _, _ = _app()
     archive: _Archive = app.state.archive
-    oversized = BookSummary(
+    oversized = CatalogBook(
         public_id="large-1",
         title="Large Book",
         authors=("Writer,Large,",),
@@ -3349,7 +3348,7 @@ def test_russian_selected_preview_uses_server_plural_forms(count: int, wording: 
     entries = tuple(
         ArchivePreviewEntry(
             public_id,
-            BookSummary(
+            CatalogBook(
                 public_id=public_id,
                 title=f"Book {index}",
                 authors=("Author,One,",),

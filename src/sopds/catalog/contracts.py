@@ -44,7 +44,7 @@ class CatalogRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class BookSummary:
+class CatalogBook:
     public_id: str
     title: str
     authors: tuple[str, ...]
@@ -59,26 +59,6 @@ class BookSummary:
     libid: str | None = None
     rating: int | None = None
     keywords: str | None = None
-    updated_at: datetime = datetime(1970, 1, 1, tzinfo=UTC)
-    availability: BookAvailability = BookAvailability.ACTIVE
-    downloadable: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class BookDetail:
-    public_id: str
-    title: str
-    authors: tuple[str, ...]
-    genres: tuple[tuple[str, str], ...]
-    series: str | None
-    series_number: str | None
-    size: int
-    libid: str | None
-    published_date: date | None
-    language: str | None
-    original_format: str
-    rating: int | None
-    keywords: str | None
     availability: BookAvailability = BookAvailability.ACTIVE
     downloadable: bool = True
 
@@ -86,12 +66,12 @@ class BookDetail:
 @dataclass(frozen=True, slots=True)
 class CatalogSummaryBatch:
     generation_id: int | None
-    books: tuple[BookSummary, ...]
+    books: tuple[CatalogBook, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class CatalogPage:
-    books: tuple[BookSummary, ...]
+    books: tuple[CatalogBook, ...]
     next_cursor: str | None
     updated_at: datetime = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -143,7 +123,7 @@ class NavigationPage:
     updated_at: datetime
     prefix: str = ""
     grouped: bool = False
-    books: tuple[BookSummary, ...] = ()
+    books: tuple[CatalogBook, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +152,7 @@ class Catalog(Protocol):
         *,
         include_missed: bool = False,
         include_hidden: bool = False,
-    ) -> BookDetail | None: ...
+    ) -> CatalogBook | None: ...
 
     async def filters(self) -> CatalogFilters: ...
 
