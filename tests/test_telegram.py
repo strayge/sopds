@@ -1,6 +1,7 @@
 """Network-free tests for Telegram authorization, state, rendering, and streaming."""
 
 import asyncio
+import base64
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -19,6 +20,7 @@ from telegram import (
     Update,
     User,
 )
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler
 
 from sopds.acquisition.contracts import (
@@ -34,6 +36,7 @@ from sopds.catalog.contracts import (
     CatalogBook,
     CatalogPage,
     CatalogRequest,
+    SearchField,
 )
 from sopds.config import TelegramConfig
 from sopds.conversion.contracts import (
@@ -46,9 +49,14 @@ from sopds.conversion.contracts import (
 from sopds.conversion.policy import OUTPUT_POLICY
 from sopds.conversion.service import ConversionService
 from sopds.telegram.formatting import (
+    author_command,
+    book_command,
     button_label,
+    catalog_id_from_command,
+    detail_text,
     results_text,
     sanitize,
+    series_command,
     truncate,
     utf16_length,
 )
@@ -102,18 +110,18 @@ async def test_update_processor_filters_private_group_callback_and_unknown_updat
 async def test_callback_state_ttl_lru_binding_opacity_and_concurrency() -> None:
     now = 100.0
     store = CallbackStateStore(ttl_seconds=10, max_entries=2, clock=lambda: now)
-    first = await store.put(1, PageState("secret title", "signed cursor"))
-    second = await store.put(-2, PageState("other", "cursor 2"))
+    first = await store.put(1, PageState("secret title", 1))
+    second = await store.put(-2, PageState("other", 2))
     assert "secret" not in first
     assert len(f"p:{first}".encode()) < 64
     assert await store.get(first, -2) is None
-    assert await store.get(first, 1) == PageState("secret title", "signed cursor")
+    assert await store.get(first, 1) == PageState("secret title", 1)
 
-    third = await store.put(3, PageState("third", "cursor 3"))
+    third = await store.put(3, PageState("third", 3))
     assert await store.get(second, -2) is None
     assert await store.get(third, 3) is not None
     tokens = await asyncio.gather(
-        *(store.put(4, PageState(str(index), str(index))) for index in range(20))
+        *(store.put(4, PageState(str(index), index)) for index in range(20))
     )
     assert len(set(tokens)) == 20
     now = 111.0
@@ -155,7 +163,108 @@ def test_plain_text_formatting_normalizes_controls_and_bounds_output() -> None:
         )
         for index in range(10)
     )
-    assert len(results_text(books)) <= 4_096
+    rendered = results_text(books)
+    assert len(rendered) <= 4_096
+    assert "&lt;b&gt;title&lt;/b&gt;" in rendered
+
+
+def test_search_results_render_authors_series_bold_title_date_size_and_command() -> None:
+    books = (
+        CatalogBook(
+            public_id=_public_id(1),
+            book_id=1,
+            title="Название",
+            authors=("Фамилия, Имя, Отчество,",),
+            series="Серия",
+            series_number="2",
+            language="ru",
+            original_format="FB2",
+            published_date=date(2010, 1, 2),
+            size=1_970_688,
+        ),
+        CatalogBook(
+            public_id=_public_id(2),
+            book_id=2,
+            title="Другое название",
+            authors=("Иванов, Иван, Иванович,", "Петров, Петр, Петрович,"),
+            series=None,
+            series_number=None,
+            language="ru",
+            original_format="fb2",
+        ),
+        CatalogBook(
+            public_id=_public_id(3),
+            book_id=3,
+            title="Много авторов",
+            authors=tuple(f"Автор, {index}," for index in range(7)),
+            series=None,
+            series_number=None,
+            language="ru",
+            original_format="fb2",
+        ),
+    )
+
+    assert results_text(books).splitlines() == [
+        "Фамилия Имя Отчество",
+        "Серия #2 <b>Название</b>",
+        "<i>2010-01-02</i> • 1925KB • /b1",
+        "",
+        "Иванов Иван Иванович, Петров Петр Петрович",
+        "<b>Другое название</b>",
+        "/b2",
+        "",
+        "Автор 0, Автор 1, +5",
+        "<b>Много авторов</b>",
+        "/b3",
+    ]
+
+
+def test_catalog_commands_use_internal_entity_ids() -> None:
+    assert book_command(123) == "/b123"
+    assert author_command(456) == "/a456"
+    assert series_command(789) == "/s789"
+    assert catalog_id_from_command("/b123", "b") == 123
+    assert book_command(None) is None
+    assert book_command(0) is None
+    assert catalog_id_from_command("/b0", "b") is None
+    assert catalog_id_from_command("/b0123", "b") is None
+    assert catalog_id_from_command(f"/b{2**63}", "b") is None
+
+
+def test_detail_is_label_free_with_linked_authors_and_numbered_series() -> None:
+    public_id = _public_id(4)
+    book = CatalogBook(
+        public_id=public_id,
+        book_id=4,
+        title="Название",
+        authors=tuple(f"Автор, {index}," for index in range(7)),
+        author_ids=tuple(range(10, 17)),
+        series="Серия",
+        series_id=20,
+        series_number="2",
+        language="ru",
+        original_format="FB2",
+        size=1_970_688,
+        genres=(("sf", "Фантастика"),),
+        published_date=date(2010, 1, 2),
+        libid="hidden-library-id",
+        rating=5,
+        keywords="ключевые слова",
+    )
+
+    assert detail_text(book).splitlines() == [
+        "<b>Название</b>",
+        "Автор 0 /a10",
+        "Автор 1 /a11",
+        "Автор 2 /a12",
+        "Автор 3 /a13",
+        "Автор 4 /a14",
+        "+2",
+        "Серия #2 /s20",
+        "2010-01-02 • 1925KB • ru",
+        "Фантастика",
+        "ключевые слова",
+    ]
 
 
 class _Stream:
@@ -275,15 +384,31 @@ class _FakeMessage:
         if not block_document:
             self.document_release.set()
         self.answers: list[tuple[str, object | None]] = []
+        self.answer_parse_modes: list[object | None] = []
         self.edits: list[tuple[str, object | None]] = []
+        self.edit_parse_modes: list[object | None] = []
         self.documents: list[tuple[InputFile, str]] = []
         self.document_payloads: list[bytes] = []
 
-    async def reply_text(self, text: str, *, reply_markup: object | None = None) -> None:
+    async def reply_text(
+        self,
+        text: str,
+        *,
+        reply_markup: object | None = None,
+        parse_mode: object | None = None,
+    ) -> None:
         self.answers.append((text, reply_markup))
+        self.answer_parse_modes.append(parse_mode)
 
-    async def edit_text(self, text: str, *, reply_markup: object | None = None) -> None:
+    async def edit_text(
+        self,
+        text: str,
+        *,
+        reply_markup: object | None = None,
+        parse_mode: object | None = None,
+    ) -> None:
         self.edits.append((text, reply_markup))
+        self.edit_parse_modes.append(parse_mode)
 
     async def reply_document(self, document: InputFile, *, caption: str) -> None:
         self.documents.append((document, caption))
@@ -318,6 +443,9 @@ class _FakeCatalog:
         self.browse_error = browse_error
         self.requests: list[CatalogRequest] = []
         self.detail_ids: list[str] = []
+        self.detail_book_ids: list[int] = []
+        self.author_ids: list[int] = []
+        self.series_ids: list[int] = []
 
     async def browse(self, request: CatalogRequest) -> CatalogPage:
         self.requests.append(request)
@@ -328,6 +456,22 @@ class _FakeCatalog:
     async def details(self, public_id: str) -> CatalogBook | None:
         self.detail_ids.append(public_id)
         return self.detail
+
+    async def details_by_id(self, book_id: int) -> CatalogBook | None:
+        self.detail_book_ids.append(book_id)
+        return self.detail
+
+    async def author_name_by_id(self, author_id: int) -> str | None:
+        self.author_ids.append(author_id)
+        if self.detail is None or author_id not in self.detail.author_ids:
+            return None
+        return self.detail.authors[self.detail.author_ids.index(author_id)]
+
+    async def series_name_by_id(self, series_id: int) -> str | None:
+        self.series_ids.append(series_id)
+        if self.detail is None or self.detail.series_id != series_id:
+            return None
+        return self.detail.series
 
 
 class _FakeAcquisition:
@@ -370,9 +514,14 @@ class _FakeAcquisition:
         )
 
 
+def _public_id(index: int) -> str:
+    return base64.urlsafe_b64encode(index.to_bytes(16, "big")).rstrip(b"=").decode("ascii")
+
+
 def _summary(index: int) -> CatalogBook:
     return CatalogBook(
-        public_id=f"book-{index}",
+        public_id=_public_id(index),
+        book_id=index + 1,
         title=f"Book {index}",
         authors=("Author",),
         series=None,
@@ -385,8 +534,10 @@ def _summary(index: int) -> CatalogBook:
 def _detail(source_format: str = "fb2") -> CatalogBook:
     return CatalogBook(
         public_id="book-0",
+        book_id=1,
         title="Book 0",
         authors=("Author",),
+        author_ids=(1,),
         genres=(("sf", "Science fiction"),),
         series=None,
         series_number=None,
@@ -435,13 +586,13 @@ class _FakeConversion:
 
 
 async def test_handlers_start_plain_text_search_detail_and_pagination() -> None:
-    first = CatalogPage(tuple(_summary(index) for index in range(10)), "cursor")
-    second = CatalogPage((_summary(10),), None)
-    catalog = _FakeCatalog([first, second], _detail())
+    results = CatalogPage(tuple(_summary(index) for index in reversed(range(21))), "ignored")
+    catalog = _FakeCatalog([results, results, results], _detail())
+    state = CallbackStateStore()
     handlers = TelegramHandlers(
         cast(Catalog, catalog),
         cast(Acquisition, _FakeAcquisition(1)),
-        CallbackStateStore(),
+        state,
     )
 
     start_message = _FakeMessage("/start", chat_id=-20)
@@ -451,19 +602,31 @@ async def test_handlers_start_plain_text_search_detail_and_pagination() -> None:
     search_message = _FakeMessage("terms")
     await handlers.on_plain_text(cast(Message, search_message))
     assert catalog.requests[0].query == "terms"
-    assert catalog.requests[0].page_size == 10
+    assert catalog.requests[0].page_size == 100
+    assert catalog.requests[0].cursor is None
     assert len(search_message.answers) == 1
+    assert search_message.answer_parse_modes == [ParseMode.HTML]
     markup = search_message.answers[0][1]
     assert markup is not None
     keyboard = markup.inline_keyboard  # type: ignore[attr-defined]
-    assert len(keyboard) == 11
-    assert all(len(button.callback_data.encode()) <= 64 for row in keyboard for button in row)
+    assert len(keyboard) == 1
+    assert keyboard[0][0].text == "→"
+    assert len(keyboard[0][0].callback_data.encode()) <= 64
+
+    command = book_command(1)
+    assert command is not None
+    command_message = _FakeMessage(command)
+    await handlers.on_book_command(cast(Message, command_message))
+    assert catalog.detail_book_ids == [1]
+    assert len(command_message.answers) == 1
+    assert command_message.answer_parse_modes == [ParseMode.HTML]
 
     detail_message = _FakeMessage()
     detail_callback = _FakeCallback("d:book-0", detail_message)
     await handlers.on_callback(cast(CallbackQuery, detail_callback))
     assert detail_callback.answers == [(None, False)]
     assert len(detail_message.answers) == 1
+    assert detail_message.answer_parse_modes == [ParseMode.HTML]
     detail_markup = detail_message.answers[0][1]
     assert detail_markup is not None
     assert len(detail_markup.inline_keyboard) == 1  # type: ignore[attr-defined]
@@ -474,8 +637,167 @@ async def test_handlers_start_plain_text_search_detail_and_pagination() -> None:
     page_callback = _FakeCallback(page_data, page_message)
     await handlers.on_callback(cast(CallbackQuery, page_callback))
     assert page_callback.answers == [(None, False)]
-    assert catalog.requests[-1].cursor == "cursor"
+    assert catalog.requests[1].cursor is None
+    assert catalog.requests[1].page_size == 100
+    assert "<b>Book 10</b>" in page_message.edits[0][0]
     assert len(page_message.edits) == 1
+    previous_markup = page_message.edits[0][1]
+    assert previous_markup is not None
+    assert previous_markup.inline_keyboard[0][0].text == "←"  # type: ignore[attr-defined]
+
+    previous_data = previous_markup.inline_keyboard[0][0].callback_data  # type: ignore[attr-defined]
+    previous_message = _FakeMessage()
+    await handlers.on_callback(cast(CallbackQuery, _FakeCallback(previous_data, previous_message)))
+    assert catalog.requests[2].cursor is None
+    assert catalog.requests[2].page_size == 100
+    assert "<b>Book 0</b>" in previous_message.edits[0][0]
+    assert len(previous_message.edits) == 1
+
+
+async def test_search_orders_by_first_author_then_natural_title_with_authorless_last() -> None:
+    def book(book_id: int, title: str, authors: tuple[str, ...]) -> CatalogBook:
+        return CatalogBook(
+            public_id=_public_id(book_id),
+            book_id=book_id,
+            title=title,
+            authors=authors,
+            series=None,
+            series_number=None,
+            language="en",
+            original_format="fb2",
+        )
+
+    catalog = _FakeCatalog(
+        [
+            CatalogPage(
+                (
+                    book(1, "Book 0", ()),
+                    book(2, "Book 1", ("Beta Author",)),
+                    book(3, "Book 10", ("Alpha, Author,",)),
+                    book(4, "Book 2", ("Alpha Author",)),
+                ),
+                None,
+            )
+        ]
+    )
+    handlers = TelegramHandlers(
+        cast(Catalog, catalog),
+        cast(Acquisition, _FakeAcquisition(1)),
+        CallbackStateStore(),
+    )
+    message = _FakeMessage("query")
+
+    await handlers.on_plain_text(cast(Message, message))
+
+    text = message.answers[0][0]
+    assert text.index("<b>Book 2</b>") < text.index("<b>Book 10</b>")
+    assert text.index("<b>Book 10</b>") < text.index("<b>Book 1</b>")
+    assert text.index("<b>Book 1</b>") < text.index("<b>Book 0</b>")
+
+
+async def test_search_orders_series_number_and_title_naturally_with_missing_values_last() -> None:
+    def book(
+        book_id: int,
+        title: str,
+        series: str | None,
+        series_number: str | None,
+    ) -> CatalogBook:
+        return CatalogBook(
+            public_id=_public_id(book_id),
+            book_id=book_id,
+            title=title,
+            authors=("Author",),
+            series=series,
+            series_number=series_number,
+            language="en",
+            original_format="fb2",
+        )
+
+    catalog = _FakeCatalog(
+        [
+            CatalogPage(
+                (
+                    book(1, "Standalone", None, None),
+                    book(2, "Volume 10", "Saga", "2"),
+                    book(3, "Volume 2", "Saga", "2"),
+                    book(4, "Volume 1", "Saga", "10"),
+                    book(5, "Unnumbered", "Saga", None),
+                    book(6, "Other series", "Zebra", "1"),
+                ),
+                None,
+            )
+        ]
+    )
+    handlers = TelegramHandlers(
+        cast(Catalog, catalog),
+        cast(Acquisition, _FakeAcquisition(1)),
+        CallbackStateStore(),
+    )
+    message = _FakeMessage("query")
+
+    await handlers.on_plain_text(cast(Message, message))
+
+    text = message.answers[0][0]
+    ordered_titles = (
+        "<b>Volume 2</b>",
+        "<b>Volume 10</b>",
+        "<b>Volume 1</b>",
+        "<b>Unnumbered</b>",
+        "<b>Other series</b>",
+        "<b>Standalone</b>",
+    )
+    positions = [text.index(title) for title in ordered_titles]
+    assert positions == sorted(positions)
+
+
+async def test_linked_author_and_series_commands_start_scoped_searches() -> None:
+    public_id = _public_id(20)
+    book = CatalogBook(
+        public_id=public_id,
+        book_id=20,
+        title="Book",
+        authors=("First Author", "Second Author"),
+        author_ids=(21, 22),
+        series="Series Name",
+        series_id=23,
+        series_number="2",
+        language="en",
+        original_format="fb2",
+    )
+    author_results = CatalogPage(tuple(_summary(index) for index in reversed(range(11))), None)
+    series_results = CatalogPage((_summary(3),), None)
+    catalog = _FakeCatalog([author_results, author_results, series_results], book)
+    handlers = TelegramHandlers(
+        cast(Catalog, catalog),
+        cast(Acquisition, _FakeAcquisition(1)),
+        CallbackStateStore(),
+    )
+
+    author = author_command(book.author_ids[1])
+    assert author is not None
+    author_message = _FakeMessage(author)
+    await handlers.on_linked_search_command(cast(Message, author_message))
+    assert catalog.author_ids == [22]
+    assert catalog.requests[-1].query == "Second Author"
+    assert catalog.requests[-1].search_field is SearchField.AUTHOR
+
+    author_markup = author_message.answers[0][1]
+    assert author_markup is not None
+    page_callback = _FakeCallback(
+        author_markup.inline_keyboard[0][0].callback_data,  # type: ignore[attr-defined]
+        _FakeMessage(),
+    )
+    await handlers.on_callback(cast(CallbackQuery, page_callback))
+    assert catalog.requests[-1].cursor is None
+    assert catalog.requests[-1].page_size == 100
+    assert catalog.requests[-1].search_field is SearchField.AUTHOR
+
+    series = series_command(book.series_id)
+    assert series is not None
+    await handlers.on_linked_search_command(cast(Message, _FakeMessage(series)))
+    assert catalog.series_ids == [23]
+    assert catalog.requests[2].query == "Series Name"
+    assert catalog.requests[2].search_field is SearchField.SERIES
 
 
 async def test_expired_pagination_alerts_without_catalog_use() -> None:
@@ -785,7 +1107,7 @@ async def test_inaccessible_callback_is_answered_once(data: str) -> None:
 
 async def test_pagination_failure_uses_message_after_single_acknowledgement() -> None:
     store = CallbackStateStore()
-    token = await store.put(10, PageState("query", "cursor"))
+    token = await store.put(10, PageState("query", 1))
     message = _FakeMessage()
     callback = _FakeCallback(f"p:{token}", message)
     handlers = TelegramHandlers(
@@ -1013,7 +1335,7 @@ async def test_runner_builds_ptb_application_without_network_access() -> None:
     )
 
     assert runner.processor.max_concurrent_updates == 4
-    assert sum(len(group) for group in runner.application.handlers.values()) == 3
+    assert sum(len(group) for group in runner.application.handlers.values()) == 5
     await runner.shutdown()
 
 

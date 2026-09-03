@@ -87,6 +87,7 @@ class _BookValueRow(TypedDict):
     id: int
     public_id: str
     title: str
+    series_id: int | None
     series_name: str | None
     series_number: str | None
     language: str | None
@@ -1246,6 +1247,38 @@ class CatalogRepository:
             return None
         return next(iter(books.values()))
 
+    async def detail_by_id(self, generation_id: int, book_id: int) -> CatalogBook | None:
+        books = await self._catalog_books(
+            self._visible_books(
+                generation_id,
+                language=None,
+                genre=None,
+                original_format=None,
+                author=None,
+                series=None,
+                include_missed=False,
+                include_hidden=False,
+            ).filter(id=book_id),
+            generation_id,
+        )
+        return books.get(book_id)
+
+    async def author_name_by_id(self, generation_id: int, author_id: int) -> str | None:
+        author = (
+            await Author.filter(id=author_id, generation_id=generation_id)
+            .using_db(self._connection)
+            .first()
+        )
+        return None if author is None else author.name
+
+    async def series_name_by_id(self, generation_id: int, series_id: int) -> str | None:
+        series = (
+            await Series.filter(id=series_id, generation_id=generation_id)
+            .using_db(self._connection)
+            .first()
+        )
+        return None if series is None else series.name
+
     async def _catalog_books(
         self, query: QuerySet[Book], generation_id: int
     ) -> dict[int, CatalogBook]:
@@ -1256,6 +1289,7 @@ class CatalogRepository:
                 "id",
                 "public_id",
                 "title",
+                "series_id",
                 "series_number",
                 "language",
                 "original_format",
@@ -1275,7 +1309,7 @@ class CatalogRepository:
 
         book_ids = [row["id"] for row in rows]
         author_rows = cast(
-            list[tuple[int, str]],
+            list[tuple[int, int, str]],
             await BookAuthor.filter(
                 book_id__in=book_ids,
                 book__generation_id=generation_id,
@@ -1283,7 +1317,7 @@ class CatalogRepository:
             )
             .using_db(self._connection)
             .order_by("book_id", "position")
-            .values_list("book_id", "author__name"),
+            .values_list("book_id", "author_id", "author__name"),
         )
         genre_rows = cast(
             list[tuple[int, str, str]],
@@ -1296,9 +1330,9 @@ class CatalogRepository:
             .values_list("book_id", "genre__code", "genre__label"),
         )
 
-        authors_by_book: dict[int, list[str]] = {}
-        for book_id, name in author_rows:
-            authors_by_book.setdefault(book_id, []).append(name)
+        authors_by_book: dict[int, list[tuple[int, str]]] = {}
+        for book_id, author_id, name in author_rows:
+            authors_by_book.setdefault(book_id, []).append((author_id, name))
         genres_by_book: dict[int, list[tuple[str, str]]] = {}
         for book_id, code, label in genre_rows:
             genres_by_book.setdefault(book_id, []).append((code, label))
@@ -1307,11 +1341,15 @@ class CatalogRepository:
         for row in rows:
             book_id = row["id"]
             archive_available = row["archive_available"]
+            authors = authors_by_book.get(book_id, ())
             books[book_id] = CatalogBook(
                 public_id=row["public_id"],
+                book_id=book_id,
                 title=row["title"],
-                authors=tuple(authors_by_book.get(book_id, ())),
+                authors=tuple(name for _author_id, name in authors),
+                author_ids=tuple(author_id for author_id, _name in authors),
                 series=row["series_name"],
+                series_id=row["series_id"],
                 series_number=row["series_number"],
                 language=row["language"],
                 original_format=row["original_format"],

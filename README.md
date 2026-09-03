@@ -80,8 +80,10 @@ supports browsing, search, metadata, and available download formats.
 ## Telegram
 
 Approved chats can search, open book details, and request available formats.
-Other chats are ignored. Telegram files are limited to 50 MiB; larger files are
-reported as too large.
+Telegram searches show up to 100 matching books across ten pages. Other chats
+are ignored. Telegram files are limited to 50 MiB; larger files are reported as
+too large. Book, author, and series links from older messages expire when the
+catalog is updated; run the search again to get current links.
 
 ## Catalog management
 

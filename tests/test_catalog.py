@@ -861,6 +861,33 @@ async def test_details_retries_activation_change_during_hydration(
         assert actual_title == expected_title
 
 
+async def test_details_by_id_only_resolves_the_active_generation(tmp_path: Path) -> None:
+    async with _catalog() as (catalog, repository):
+        await _seed(repository)
+        original = await catalog.details("book-001")
+        assert original is not None
+        assert original.book_id is not None
+        assert original.author_ids == (2, 1)
+        assert original.series_id == 1
+        assert await catalog.details_by_id(original.book_id) == original
+        assert await catalog.author_name_by_id(2) == "First Ёжов"
+        assert await catalog.series_name_by_id(1) == "Ёлки"
+
+        await (
+            CatalogState.filter(id=1)
+            .using_db(repository._connection)
+            .update(active_generation_id=2)
+        )
+        assert await catalog.details_by_id(original.book_id) is None
+        assert await catalog.author_name_by_id(2) is None
+        assert await catalog.series_name_by_id(1) is None
+
+        staged = await catalog.details("staged")
+        assert staged is not None
+        assert staged.book_id is not None
+        assert await catalog.details_by_id(staged.book_id) == staged
+
+
 async def test_details_rejects_two_activation_changes(tmp_path: Path) -> None:
     async with _catalog() as (
         catalog,

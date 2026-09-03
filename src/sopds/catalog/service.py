@@ -404,6 +404,57 @@ class CatalogService:
 
         raise AssertionError("Catalog detail retry bound was bypassed")
 
+    async def details_by_id(self, book_id: int) -> CatalogBook | None:
+        if type(book_id) is not int or not 1 <= book_id <= 2**63 - 1:
+            return None
+        for attempt in range(2):
+            snapshot = await self._repository.active_snapshot()
+            generation_id = snapshot.generation_id
+            if generation_id is None:
+                return None
+            detail = await self._repository.detail_by_id(generation_id, book_id)
+            if await self._repository.active_snapshot() != snapshot:
+                if attempt == 0:
+                    continue
+                raise CatalogInputError("Catalog changed while loading; retry the request")
+            return detail
+
+        raise AssertionError("Catalog detail retry bound was bypassed")
+
+    async def author_name_by_id(self, author_id: int) -> str | None:
+        if type(author_id) is not int or not 1 <= author_id <= 2**63 - 1:
+            return None
+        for attempt in range(2):
+            snapshot = await self._repository.active_snapshot()
+            generation_id = snapshot.generation_id
+            if generation_id is None:
+                return None
+            name = await self._repository.author_name_by_id(generation_id, author_id)
+            if await self._repository.active_snapshot() != snapshot:
+                if attempt == 0:
+                    continue
+                raise CatalogInputError("Catalog changed while loading; retry the request")
+            return name
+
+        raise AssertionError("Catalog author lookup retry bound was bypassed")
+
+    async def series_name_by_id(self, series_id: int) -> str | None:
+        if type(series_id) is not int or not 1 <= series_id <= 2**63 - 1:
+            return None
+        for attempt in range(2):
+            snapshot = await self._repository.active_snapshot()
+            generation_id = snapshot.generation_id
+            if generation_id is None:
+                return None
+            name = await self._repository.series_name_by_id(generation_id, series_id)
+            if await self._repository.active_snapshot() != snapshot:
+                if attempt == 0:
+                    continue
+                raise CatalogInputError("Catalog changed while loading; retry the request")
+            return name
+
+        raise AssertionError("Catalog series lookup retry bound was bypassed")
+
     async def filters(self) -> CatalogFilters:
         snapshot = await self._repository.active_snapshot()
         cached = self._filters_cache

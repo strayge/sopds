@@ -7,11 +7,14 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sopds.catalog.contracts import SearchField
+
 
 @dataclass(frozen=True, slots=True)
 class PageState:
     query: str
-    cursor: str
+    page: int
+    search_field: SearchField = SearchField.ALL
 
 
 @dataclass(frozen=True, slots=True)

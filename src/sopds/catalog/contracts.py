@@ -61,6 +61,9 @@ class CatalogBook:
     keywords: str | None = None
     availability: BookAvailability = BookAvailability.ACTIVE
     downloadable: bool = True
+    book_id: int | None = None
+    author_ids: tuple[int, ...] = ()
+    series_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +156,12 @@ class Catalog(Protocol):
         include_missed: bool = False,
         include_hidden: bool = False,
     ) -> CatalogBook | None: ...
+
+    async def details_by_id(self, book_id: int) -> CatalogBook | None: ...
+
+    async def author_name_by_id(self, author_id: int) -> str | None: ...
+
+    async def series_name_by_id(self, series_id: int) -> str | None: ...
 
     async def filters(self) -> CatalogFilters: ...
 

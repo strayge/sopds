@@ -13,6 +13,7 @@ from telegram import (
     Message,
     Update,
 )
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackContext,
@@ -32,7 +33,8 @@ from sopds.acquisition.contracts import (
     AsyncByteStream,
     OriginalDescription,
 )
-from sopds.catalog.contracts import Catalog, CatalogPage, CatalogRequest
+from sopds.catalog.contracts import Catalog, CatalogBook, CatalogRequest, SearchField
+from sopds.catalog.search import normalize_text
 from sopds.conversion.contracts import (
     ConversionShutdownError,
     ConversionSourceError,
@@ -46,7 +48,7 @@ from sopds.conversion.contracts import (
 from sopds.conversion.policy import OUTPUT_POLICY, OutputPolicy
 from sopds.conversion.service import ConversionService
 from sopds.telegram.formatting import (
-    button_label,
+    catalog_id_from_command,
     detail_text,
     results_text,
     safe_filename,
@@ -59,7 +61,15 @@ from sopds.telegram.upload import StagedInputFile, close_stream
 
 _LOGGER = logging.getLogger(__name__)
 _PUBLIC_ID = re.compile(r"[A-Za-z0-9._~-]{1,62}\Z")
+_BOOK_ID_PATTERN = r"[1-9][0-9]{0,18}"
+_BOOK_COMMAND = re.compile(rf"/b{_BOOK_ID_PATTERN}\Z")
+_AUTHOR_COMMAND = re.compile(rf"/a({_BOOK_ID_PATTERN})\Z")
+_SERIES_COMMAND = re.compile(rf"/s({_BOOK_ID_PATTERN})\Z")
+_LINKED_SEARCH_COMMAND = re.compile(rf"/[as]{_BOOK_ID_PATTERN}\Z")
 _UPLOAD_LIMIT = 50 * 1024 * 1024
+_SEARCH_LIMIT = 100
+_SEARCH_PAGE_SIZE = 10
+_NATURAL_PARTS = re.compile(r"(\d+)")
 
 
 class TelegramHandlers:
@@ -79,6 +89,10 @@ class TelegramHandlers:
 
     def register(self, application: Application[Any, Any, Any, Any, Any, Any]) -> None:
         application.add_handler(CommandHandler("start", self._dispatch_start))
+        application.add_handler(MessageHandler(filters.Regex(_BOOK_COMMAND), self._dispatch_book))
+        application.add_handler(
+            MessageHandler(filters.Regex(_LINKED_SEARCH_COMMAND), self._dispatch_linked_search)
+        )
         application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._dispatch_plain_text)
         )
@@ -98,6 +112,20 @@ class TelegramHandlers:
         if update.message is not None:
             await self.on_plain_text(update.message)
 
+    async def _dispatch_book(
+        self, update: Update, context: CallbackContext[Any, Any, Any, Any]
+    ) -> None:
+        del context
+        if update.message is not None:
+            await self.on_book_command(update.message)
+
+    async def _dispatch_linked_search(
+        self, update: Update, context: CallbackContext[Any, Any, Any, Any]
+    ) -> None:
+        del context
+        if update.message is not None:
+            await self.on_linked_search_command(update.message)
+
     async def _dispatch_callback(
         self, update: Update, context: CallbackContext[Any, Any, Any, Any]
     ) -> None:
@@ -115,6 +143,39 @@ class TelegramHandlers:
         query = text.strip()
         if query:
             await self._search_message(message, query)
+
+    async def on_book_command(self, message: Message) -> None:
+        book_id = catalog_id_from_command(message.text or "", "b")
+        if book_id is not None:
+            await self._send_detail_by_id(message, book_id)
+
+    async def on_linked_search_command(self, message: Message) -> None:
+        text = message.text or ""
+        author_match = _AUTHOR_COMMAND.fullmatch(text)
+        series_match = _SERIES_COMMAND.fullmatch(text)
+        match = author_match or series_match
+        if match is None:
+            return
+        entity_id = catalog_id_from_command(text, "a" if author_match is not None else "s")
+        if entity_id is None:
+            return
+        try:
+            query = (
+                await self._catalog.author_name_by_id(entity_id)
+                if author_match is not None
+                else await self._catalog.series_name_by_id(entity_id)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _LOGGER.warning(f"Telegram linked search failed failure_type={type(error).__name__}")
+            await message.reply_text("Search is temporarily unavailable.")
+            return
+        if query is None:
+            await message.reply_text("Search link is no longer available.")
+            return
+        search_field = SearchField.AUTHOR if author_match is not None else SearchField.SERIES
+        await self._search_message(message, query, search_field)
 
     async def on_callback(self, callback: CallbackQuery) -> None:
         data = callback.data
@@ -140,23 +201,29 @@ class TelegramHandlers:
         else:
             await self._download_original(callback, value)
 
-    async def _search_message(self, message: Message, query: str) -> None:
+    async def _search_message(
+        self, message: Message, query: str, search_field: SearchField = SearchField.ALL
+    ) -> None:
         try:
-            page = await self._catalog.browse(CatalogRequest(query=query, page_size=10))
+            books, page, page_count = await self._search_page(query, search_field, 0)
         except asyncio.CancelledError:
             raise
         except Exception as error:
             _LOGGER.warning(f"Telegram search failed failure_type={type(error).__name__}")
             await message.reply_text("Search is temporarily unavailable.")
             return
-        markup = await self._result_markup(message.chat.id, query, page)
-        await message.reply_text(results_text(page.books), reply_markup=markup)
+        markup = await self._result_markup(message.chat.id, query, search_field, page, page_count)
+        await message.reply_text(
+            results_text(books), reply_markup=markup, parse_mode=ParseMode.HTML
+        )
 
     async def _detail(self, callback: CallbackQuery, public_id: str) -> None:
         message = callback.message
         if message is None or isinstance(message, InaccessibleMessage):
             return
-        message = cast(Message, message)
+        await self._send_detail(cast(Message, message), public_id)
+
+    async def _send_detail(self, message: Message, public_id: str) -> None:
         try:
             book = await self._catalog.details(public_id)
         except asyncio.CancelledError:
@@ -165,9 +232,24 @@ class TelegramHandlers:
             _LOGGER.warning(f"Telegram detail failed failure_type={type(error).__name__}")
             await message.reply_text("Book details are temporarily unavailable.")
             return
+        await self._reply_with_detail(message, book)
+
+    async def _send_detail_by_id(self, message: Message, book_id: int) -> None:
+        try:
+            book = await self._catalog.details_by_id(book_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _LOGGER.warning(f"Telegram detail failed failure_type={type(error).__name__}")
+            await message.reply_text("Book details are temporarily unavailable.")
+            return
+        await self._reply_with_detail(message, book)
+
+    async def _reply_with_detail(self, message: Message, book: CatalogBook | None) -> None:
         if book is None:
             await message.reply_text("Book is no longer available.")
             return
+        public_id = book.public_id
         buttons = [
             InlineKeyboardButton(
                 text=source_format_label(book.original_format), callback_data=f"x:{public_id}"
@@ -185,7 +267,7 @@ class TelegramHandlers:
                     raise AssertionError("Callback state token exceeds Telegram's limit")
                 buttons.append(InlineKeyboardButton(text=choice.label, callback_data=callback_data))
         markup = InlineKeyboardMarkup(inline_keyboard=[buttons]) if book.downloadable else None
-        await message.reply_text(detail_text(book), reply_markup=markup)
+        await message.reply_text(detail_text(book), reply_markup=markup, parse_mode=ParseMode.HTML)
 
     async def _page(self, callback: CallbackQuery, token: str) -> None:
         message = callback.message
@@ -204,8 +286,8 @@ class TelegramHandlers:
             return
         await callback.answer()
         try:
-            page = await self._catalog.browse(
-                CatalogRequest(query=state.query, cursor=state.cursor, page_size=10)
+            books, page, page_count = await self._search_page(
+                state.query, state.search_field, state.page
             )
         except asyncio.CancelledError:
             raise
@@ -213,8 +295,10 @@ class TelegramHandlers:
             _LOGGER.warning(f"Telegram pagination failed failure_type={type(error).__name__}")
             await message.reply_text("Search is temporarily unavailable.")
             return
-        markup = await self._result_markup(message.chat.id, state.query, page)
-        await message.edit_text(results_text(page.books), reply_markup=markup)
+        markup = await self._result_markup(
+            message.chat.id, state.query, state.search_field, page, page_count
+        )
+        await message.edit_text(results_text(books), reply_markup=markup, parse_mode=ParseMode.HTML)
 
     async def _converted_callback(self, callback: CallbackQuery, token: str) -> None:
         message = callback.message
@@ -415,25 +499,79 @@ class TelegramHandlers:
                 f"failure_type={type(error).__name__}"
             )
 
+    async def _search_page(
+        self, query: str, search_field: SearchField, requested_page: int
+    ) -> tuple[tuple[CatalogBook, ...], int, int]:
+        result = await self._catalog.browse(
+            CatalogRequest(query=query, search_field=search_field, page_size=_SEARCH_LIMIT)
+        )
+        ordered = tuple(sorted(result.books, key=_telegram_book_sort_key))
+        page_count = max(1, (len(ordered) + _SEARCH_PAGE_SIZE - 1) // _SEARCH_PAGE_SIZE)
+        page = min(max(requested_page, 0), page_count - 1)
+        offset = page * _SEARCH_PAGE_SIZE
+        return ordered[offset : offset + _SEARCH_PAGE_SIZE], page, page_count
+
     async def _result_markup(
         self,
         chat_id: int,
         query: str,
-        page: CatalogPage,
+        search_field: SearchField,
+        page: int,
+        page_count: int,
     ) -> InlineKeyboardMarkup | None:
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=button_label(book.title), callback_data=f"d:{book.public_id}"
-                )
-            ]
-            for book in page.books
-            if _valid_public_id(book.public_id)
-        ]
-        if page.next_cursor is not None:
-            token = await self._state.put(chat_id, PageState(query=query, cursor=page.next_cursor))
-            rows.append([InlineKeyboardButton(text="Next page", callback_data=f"p:{token}")])
-        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+        controls: list[InlineKeyboardButton] = []
+        if page > 0:
+            token = await self._state.put(
+                chat_id,
+                PageState(query=query, page=page - 1, search_field=search_field),
+            )
+            controls.append(InlineKeyboardButton(text="←", callback_data=f"p:{token}"))
+        if page + 1 < page_count:
+            token = await self._state.put(
+                chat_id,
+                PageState(query=query, page=page + 1, search_field=search_field),
+            )
+            controls.append(InlineKeyboardButton(text="→", callback_data=f"p:{token}"))
+        return InlineKeyboardMarkup(inline_keyboard=[controls]) if controls else None
+
+
+def _natural_sort_key(value: str) -> tuple[str, ...]:
+    parts: list[str] = []
+    for part in _NATURAL_PARTS.split(normalize_text(value)):
+        if part.isdecimal():
+            number = str(int(part))
+            parts.append(f"1{len(number):04d}:{number}:{len(part):04d}")
+        else:
+            parts.append(f"0{part}")
+    return tuple(parts)
+
+
+def _telegram_book_sort_key(
+    book: CatalogBook,
+) -> tuple[
+    bool,
+    str,
+    bool,
+    str,
+    bool,
+    tuple[str, ...],
+    tuple[str, ...],
+    str,
+]:
+    first_author = " ".join(book.authors[0].replace(",", " ").split()) if book.authors else ""
+    author_sort = normalize_text(first_author)
+    series_sort = normalize_text(book.series or "")
+    series_number = book.series_number or "" if series_sort else ""
+    return (
+        not bool(author_sort),
+        author_sort,
+        not bool(series_sort),
+        series_sort,
+        not bool(series_number),
+        _natural_sort_key(series_number),
+        _natural_sort_key(book.title),
+        book.public_id,
+    )
 
 
 def _normalized_source_format(value: str) -> str:
