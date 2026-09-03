@@ -115,20 +115,35 @@ async def test_runner_times_out_and_reaps_process(
 async def test_timeout_includes_draining_pipes_inherited_by_an_exited_parents_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(process, "PROCESS_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(process, "_TERMINATE_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(process, "PROCESS_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(process, "_TERMINATE_GRACE_SECONDS", 0.5)
     ready = tmp_path / "child-ready"
-    survived = tmp_path / "child-survived"
+    terminated = tmp_path / "child-terminated"
     code = """
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+child_code = '''
+import signal
+import sys
+import time
+from pathlib import Path
+
+ready = Path(sys.argv[1])
+terminated = Path(sys.argv[2])
+def terminate(*_args):
+    terminated.write_text('terminated')
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, terminate)
+ready.write_text('ready')
+time.sleep(30)
+'''
 subprocess.Popen([
     sys.executable,
     '-c',
-    "import sys,time; from pathlib import Path; Path(sys.argv[1]).write_text('ready'); time.sleep(0.4); Path(sys.argv[2]).write_text('survived')",
+    child_code,
     sys.argv[1],
     sys.argv[2],
 ])
@@ -139,13 +154,12 @@ while not ready.exists():
 
     with pytest.raises(ConversionTimeoutError, match=r"^Converter timed out$"):
         await asyncio.wait_for(
-            run_process((sys.executable, "-c", code, os.fspath(ready), os.fspath(survived))),
-            1,
+            run_process((sys.executable, "-c", code, os.fspath(ready), os.fspath(terminated))),
+            2,
         )
 
-    await asyncio.sleep(0.45)
     assert ready.exists()
-    assert not survived.exists()
+    assert terminated.exists()
 
 
 async def test_runner_escalates_for_a_process_group_child_ignoring_term(
