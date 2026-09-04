@@ -1294,7 +1294,10 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert 'flow="scrolled"' in paginator.text
     assert "#adjacentIndex(direction)" in paginator.text
     assert "async nextScreen()" in paginator.text
+    assert "-webkit-overflow-scrolling: touch" in paginator.text
     assert "scrollbar-width: none" in paginator.text
+    assert "if (!this.#touchBoundary) return" in paginator.text
+    assert "if (logicalDelta) this.#scrollByLogical(logicalDelta)" not in paginator.text
     assert "this.#container.addEventListener('wheel', this.#boundWheel" in paginator.text
     assert "this.addEventListener('wheel'" not in paginator.text
     assert "min-width: 20rem" not in stylesheet.text

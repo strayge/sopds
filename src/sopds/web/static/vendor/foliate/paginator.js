@@ -576,6 +576,7 @@ export class Paginator extends HTMLElement {
             grid-column: 1 / -1;
             grid-row: 1 / -1;
             overflow: auto;
+            -webkit-overflow-scrolling: touch;
             scrollbar-width: none;
         }
         :host([flow="scrolled"]) #container::-webkit-scrollbar {
@@ -1010,22 +1011,14 @@ export class Paginator extends HTMLElement {
                 if (logicalDelta < 0 && state.atStart) this.#touchBoundary = -1
                 else if (logicalDelta > 0 && state.atEnd) this.#touchBoundary = 1
             }
-            if (this.#touchBoundary) {
-                if (logicalDelta * this.#touchBoundary < 0)
-                    this.#touchBoundary = 0
-                else if (this.#touchTravel(state, touch) * this.#touchBoundary >= 48)
-                    state.thresholdPassed = true
-                if (this.#touchBoundary && !state.thresholdPassed) {
-                    e.preventDefault()
-                    return
-                }
-                if (state.thresholdPassed) {
-                    e.preventDefault()
-                    return
-                }
+            if (!this.#touchBoundary) return
+            if (logicalDelta * this.#touchBoundary < 0) {
+                this.#touchBoundary = 0
+                return
             }
+            if (this.#touchTravel(state, touch) * this.#touchBoundary >= 48)
+                state.thresholdPassed = true
             e.preventDefault()
-            if (logicalDelta) this.#scrollByLogical(logicalDelta)
             return
         }
 
