@@ -737,7 +737,8 @@ def test_full_page_catalog_error_uses_shared_shell() -> None:
     assert "/static/vendor/htmx/htmx-2.0.10.min.js" in response.text
     assert "Application is healthy" not in response.text
     assert "/health-fragment" not in response.text
-    assert 'href="https://catalog.example/root/opds/"' in response.text
+    assert response.text.count('href="/root/opds/"') == 2
+    assert "https://catalog.example/root/opds/" not in response.text
 
 
 def test_htmx_catalog_validation_error_swaps_complete_form_and_updates_history() -> None:

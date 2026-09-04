@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import Any, Literal, cast, override
-from urllib.parse import parse_qsl, quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -266,9 +266,10 @@ def _shell_context(
     active_navigation: Literal["catalog", "selected", "manage"],
 ) -> dict[str, object]:
     config = getattr(request.app.state, "config", None)
-    opds_url = (
-        str(config.server.base_url).rstrip("/") + "/opds/" if config is not None else "/opds/"
+    base_path = (
+        urlsplit(str(config.server.base_url)).path.rstrip("/") if config is not None else ""
     )
+    opds_url = f"{base_path}/opds/"
     translations = request_translation_context(request)
     return {
         "request": request,
