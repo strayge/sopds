@@ -281,6 +281,7 @@ button:disabled {
   writing-mode: vertical-lr;
   direction: ltr;
   background: transparent;
+  -webkit-tap-highlight-color: transparent;
   cursor: pointer;
 }
 
@@ -723,6 +724,33 @@ foliate-view {
     border: 0;
     border-radius: 0;
     background: transparent;
+  }
+
+  [data-reader-state="reader"][data-reader-mode="scroll"] [data-reader-surface] {
+    padding-right: 1rem;
+  }
+
+  .reader-book-scrollbar {
+    width: 1rem;
+    background: transparent;
+  }
+
+  .reader-book-scrollbar::before {
+    width: 4px;
+  }
+
+  .reader-book-scrollbar::after {
+    width: 10px;
+    height: 24px;
+  }
+
+  [data-reader-book-position] {
+    width: 2.75rem;
+    transform: translateX(-1.75rem);
+  }
+
+  .reader-book-scrollbar__preview {
+    right: 1rem;
   }
 
   .reader-edge-control {

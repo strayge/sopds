@@ -1258,6 +1258,10 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "'Spacebar'" in javascript.text
     assert "activeView.renderer.nextScreen()" in javascript.text
     assert "await view.goToFraction(fraction)" in javascript.text
+    assert "bookPositionPointerSeeking" in javascript.text
+    assert "finishBookPositionPointerInteraction" in javascript.text
+    assert "bookPosition.addEventListener('lostpointercapture'" in javascript.text
+    assert "if (restoreFocus) bookPosition.focus()" in javascript.text
     assert "BOOK_POSITION_MAX = 10_000" in javascript.text
     assert "configureBookPositionMarkers" in javascript.text
     assert "previewText = label" in javascript.text
@@ -1274,6 +1278,10 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert ".reader-toolbar-menu[data-open] .reader-toolbar-popover" in stylesheet.text
     assert ".reader-mode-icon--pages" in stylesheet.text
     assert ".reader-language-icon" in stylesheet.text
+    assert 'data-reader-mode="scroll"] [data-reader-surface] {\n    padding-right: 1rem' in (
+        stylesheet.text
+    )
+    assert ".reader-book-scrollbar {\n    width: 1rem" in stylesheet.text
     toolbar_css = stylesheet.text.split("[data-reader-toolbar] {", 1)[1].split("}", 1)[0]
     assert "z-index: 4" in toolbar_css
     assert "@media (max-width: 24rem)" in stylesheet.text
@@ -1290,6 +1298,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert ".reader-language-control" in stylesheet.text
     assert "data-reader-book-position" in stylesheet.text
     assert "writing-mode: vertical-lr" in stylesheet.text
+    assert "-webkit-tap-highlight-color: transparent" in stylesheet.text
     assert "grid-column: 4 / 6" not in stylesheet.text
     assert 'flow="scrolled"' in paginator.text
     assert "#adjacentIndex(direction)" in paginator.text

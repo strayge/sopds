@@ -66,6 +66,7 @@ let lifecycle = Promise.resolve()
 let modeSwitch = Promise.resolve()
 let modeSwitching = false
 let bookSeeking = false
+let bookPositionPointerSeeking = false
 let lastProgress = 0
 let lastChapter = ''
 let bookPositionMarkers = []
@@ -227,6 +228,7 @@ const cleanup = async () => {
     dockProgressOutput.value = progressOutput.value
     dockProgressOutput.textContent = progressOutput.value
     bookSeeking = false
+    bookPositionPointerSeeking = false
     lastProgress = 0
     lastChapter = ''
     bookPositionMarkers = []
@@ -714,7 +716,7 @@ const cancelBookSeek = () => {
     if (activeView && !unloading) modeToggle.disabled = false
 }
 
-const seekToBookPosition = async () => {
+const seekToBookPosition = async restoreFocus => {
     const view = activeView
     if (!view || readerMode !== 'scroll' || unloading) return cancelBookSeek()
     const requested = Number(bookPosition.value) / BOOK_POSITION_MAX
@@ -748,7 +750,7 @@ const seekToBookPosition = async () => {
             updateFontControls()
             modeToggle.disabled = false
             bookPosition.disabled = false
-            bookPosition.focus()
+            if (restoreFocus) bookPosition.focus()
         }
         delete readerState.dataset.readerSeeking
     }
@@ -760,8 +762,34 @@ bookPosition.addEventListener('input', () => {
     modeToggle.disabled = true
     updateBookPosition(Number(bookPosition.value) / BOOK_POSITION_MAX, true)
 })
-bookPosition.addEventListener('change', () => void seekToBookPosition())
-bookPosition.addEventListener('pointercancel', cancelBookSeek)
+bookPosition.addEventListener('pointerdown', () => {
+    bookPositionPointerSeeking = true
+})
+bookPosition.addEventListener('keydown', () => {
+    bookPositionPointerSeeking = false
+})
+bookPosition.addEventListener('change', () => {
+    const restoreFocus = !bookPositionPointerSeeking
+        && bookPosition.matches(':focus-visible')
+    bookPositionPointerSeeking = false
+    void seekToBookPosition(restoreFocus)
+})
+bookPosition.addEventListener('pointercancel', () => {
+    bookPositionPointerSeeking = false
+    cancelBookSeek()
+})
+const finishBookPositionPointerInteraction = () => {
+    setTimeout(() => {
+        bookPositionPointerSeeking = false
+        cancelBookSeek()
+    }, 0)
+}
+bookPosition.addEventListener('pointerup', finishBookPositionPointerInteraction)
+bookPosition.addEventListener('lostpointercapture', finishBookPositionPointerInteraction)
+bookPosition.addEventListener('blur', () => {
+    bookPositionPointerSeeking = false
+    cancelBookSeek()
+})
 
 for (const menu of toolbarMenus) {
     const toggle = menu.querySelector('[data-reader-toolbar-menu-toggle]')
