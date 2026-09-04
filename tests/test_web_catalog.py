@@ -1591,7 +1591,7 @@ def test_utility_workspace_structure_keeps_catalog_and_management_separate() -> 
     assert "management-introduction" not in management.text
 
 
-def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() -> None:
+def test_inline_author_overflow_stays_compact_with_touch_safe_row_actions() -> None:
     app, _, _ = _app()
     with TestClient(app) as client:
         stylesheet = client.get("/static/css/app.css")
@@ -1673,11 +1673,12 @@ def test_inline_catalog_actions_are_compact_with_touch_safe_pointer_overrides() 
         ".catalog-quick-filters label",
         ".catalog-availability-filters .checkbox",
         ".catalog-clear",
-        ".author-overflow summary",
+        ".catalog-table .author-overflow summary",
         ".result-row__action",
         ".result-row__download",
     ):
         assert selector in coarse_rules.group(1)
+    assert "\n  .author-overflow summary," not in coarse_rules.group(1)
     assert "min-height: 2.75rem;" in coarse_rules.group(1)
 
 

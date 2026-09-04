@@ -2314,7 +2314,6 @@ dd {
   .catalog-quick-filters label,
   .catalog-quick-filters select,
   .catalog-clear,
-  .author-overflow summary,
   .result-row__action,
   .result-row__download,
   .download-menu summary {
@@ -2459,7 +2458,7 @@ dd {
   .catalog-quick-filters select,
   .catalog-availability-filters .checkbox,
   .catalog-clear,
-  .author-overflow summary,
+  .catalog-table .author-overflow summary,
   .result-row__action,
   .result-row__download,
   .download-menu summary,
