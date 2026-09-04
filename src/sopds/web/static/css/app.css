@@ -2386,13 +2386,68 @@ dd {
   .tree-book-row,
   .selected-tree-view .result-row,
   .result-row {
-    grid-template-columns: 2rem minmax(0, 1fr);
-    gap: var(--space-2);
-    padding: var(--space-2);
+    grid-template-columns: 1.75rem minmax(0, 1fr);
+    column-gap: 0.4rem;
+    row-gap: var(--space-1);
+    padding: 0.375rem;
   }
 
-  .result-row--catalog:has(.selection-control:not([hidden])) {
-    padding-left: 3.3rem;
+  .result-row--catalog:has(.selection-control:not([hidden])),
+  .result-row--selected:has(.selection-control:not([hidden])) {
+    padding-left: 2.9rem;
+  }
+
+  .result-row .selection-control {
+    top: 0.0625rem;
+  }
+
+  .result-row .book-tile {
+    width: 1.75rem;
+    height: 2.125rem;
+    font-size: 0.75rem;
+  }
+
+  .result-row__body {
+    display: contents;
+  }
+
+  .result-row__heading {
+    grid-column: 2;
+    align-self: center;
+  }
+
+  .result-row__authors,
+  .result-row__series,
+  .selected-entry-note {
+    grid-column: 1 / -1;
+  }
+
+  .result-row__authors {
+    margin-top: 0;
+  }
+
+  .result-row__series {
+    margin-top: 0;
+  }
+
+  .result-metadata {
+    display: flex;
+    overflow: hidden;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: 0.68rem;
+    overflow-wrap: normal;
+    white-space: nowrap;
+  }
+
+  .result-metadata__line {
+    flex-wrap: nowrap;
+  }
+
+  .result-metadata__line + .result-metadata__line::before {
+    margin-right: var(--space-1);
+    color: var(--color-border-strong);
+    content: "·";
   }
 
   .selected-download-form {
@@ -2406,17 +2461,22 @@ dd {
 
   .result-metadata,
   .result-row__actions {
-    grid-column: 2;
+    grid-column: 1 / -1;
     grid-row: auto;
   }
 
   .result-row__actions {
     width: 100%;
-    margin-top: var(--space-1);
+    gap: 0.35rem;
+    margin-top: 0.15rem;
   }
 
-  .catalog-flat-view .result-row__actions {
-    grid-column: 1 / -1;
+  .result-row .result-row__action,
+  .result-row .result-row__download,
+  .result-row .download-menu summary {
+    min-height: 2.5rem;
+    padding-block: 0.25rem;
+    font-size: 0.74rem;
   }
 
   .book-detail__header {

@@ -1281,7 +1281,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert ".reader-mode-icon--pages" in stylesheet.text
     assert ".reader-language-icon" in stylesheet.text
     assert "--reader-menu-surface: #183f33" in stylesheet.text
-    assert ".reader-language-control--menu button[aria-pressed=\"true\"]" in stylesheet.text
+    assert '.reader-language-control--menu button[aria-pressed="true"]' in stylesheet.text
     assert 'data-reader-mode="scroll"] [data-reader-surface] {\n    padding-right: 1rem' in (
         stylesheet.text
     )
@@ -1752,7 +1752,21 @@ def test_mobile_navigation_is_compact_and_keeps_secondary_links_in_overflow() ->
     )[0]
     assert re.search(
         r"\.selected-tree-view \.result-row,\s*\.result-row \{[^}]*"
-        r"grid-template-columns: 2rem minmax\(0, 1fr\);",
+        r"grid-template-columns: 1\.75rem minmax\(0, 1fr\);[^}]*"
+        r"row-gap: var\(--space-1\);[^}]*padding: 0\.375rem;",
+        narrow_rules,
+        re.S,
+    )
+    assert re.search(r"\.result-row__body \{[^}]*display: contents;", narrow_rules, re.S)
+    assert re.search(r"\.result-row__authors \{[^}]*margin-top: 0;", narrow_rules, re.S)
+    assert re.search(
+        r"\.result-metadata \{[^}]*display: flex;[^}]*white-space: nowrap;",
+        narrow_rules,
+        re.S,
+    )
+    assert re.search(
+        r"\.result-row \.result-row__action,[^{]*"
+        r"\.result-row \.download-menu summary \{[^}]*min-height: 2\.5rem;",
         narrow_rules,
         re.S,
     )

@@ -266,9 +266,7 @@ def _shell_context(
     active_navigation: Literal["catalog", "selected", "manage"],
 ) -> dict[str, object]:
     config = getattr(request.app.state, "config", None)
-    base_path = (
-        urlsplit(str(config.server.base_url)).path.rstrip("/") if config is not None else ""
-    )
+    base_path = urlsplit(str(config.server.base_url)).path.rstrip("/") if config is not None else ""
     opds_url = f"{base_path}/opds/"
     translations = request_translation_context(request)
     return {
