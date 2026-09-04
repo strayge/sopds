@@ -10,6 +10,7 @@
     <script src="{{ url_for('static', path='/vendor/htmx/htmx-2.0.10.min.js') }}"></script>
     <script defer src="{{ url_for('static', path='/csrf.js') }}"></script>
     <script defer src="{{ url_for('static', path='/locale.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/navigation.js') }}"></script>
     <script defer src="{{ url_for('static', path='/book_sorting.js') }}"></script>
     <script defer src="{{ url_for('static', path='/selection.js') }}"></script>
     <script defer src="{{ url_for('static', path='/catalog.js') }}"></script>
@@ -23,7 +24,7 @@
           <span class="site-brand__name">SOPDS</span>
           <span class="site-brand__tagline">{{ gettext("Large library, simple discovery") }}</span>
         </a>
-        <nav class="site-navigation" aria-label="{{ gettext('Primary navigation') }}">
+        <nav class="site-navigation" data-more-navigation-label="{{ gettext('More navigation') }}" aria-label="{{ gettext('Primary navigation') }}">
           <a href="/"{% if active_navigation == "catalog" %} aria-current="page"{% endif %}>{{ gettext("Catalog") }}</a>
           <a href="/selected"{% if active_navigation == "selected" %} aria-current="page"{% endif %}>{{ gettext("Selected") }} <span data-selection-count hidden>0</span></a>
           <a href="{{ opds_url }}">OPDS</a>

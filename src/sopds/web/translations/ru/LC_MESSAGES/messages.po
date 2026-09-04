@@ -510,6 +510,10 @@ msgstr "Управление"
 msgid "Interface language"
 msgstr "Язык интерфейса"
 
+#: src/sopds/web/templates/base.html
+msgid "More navigation"
+msgstr "Дополнительная навигация"
+
 #: src/sopds/web/templates/base.html:37
 msgid "Browse your private library."
 msgstr "Просматривайте личную библиотеку."

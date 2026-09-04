@@ -530,6 +530,7 @@ def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
     assert "result-row--catalog" not in page.text
     assert "catalog-pagination" not in page.text
     assert "next-token" not in page.text
+    assert "/static/navigation.js" in page.text
     assert "/static/book_sorting.js" in page.text
     assert "/static/catalog.js" in page.text
     assert "private/archive/member.fb2" not in page.text
@@ -1703,29 +1704,48 @@ def test_expanded_tree_rows_use_hierarchical_backgrounds() -> None:
     )
 
 
-def test_narrow_navigation_uses_two_touch_safe_rows_without_count_overflow() -> None:
+def test_mobile_navigation_is_compact_and_keeps_secondary_links_in_overflow() -> None:
     app, _, _ = _app()
     with TestClient(app) as client:
+        page = client.get("/")
         stylesheet = client.get("/static/css/app.css")
+        navigation = client.get("/static/navigation.js")
 
-    assert stylesheet.status_code == 200
+    assert page.status_code == stylesheet.status_code == navigation.status_code == 200
+    assert 'data-more-navigation-label="More navigation"' in page.text
+    assert '<aside class="app-sidebar">' in page.text
+    assert '<nav class="site-navigation" data-more-navigation-label=' in page.text
+    assert page.text.count('class="site-navigation__secondary"') == 0
+    assert "/static/navigation.js" in page.text
+    assert 'createMenu(\n    "mobile-language-menu"' in navigation.text
+    assert '"mobile-secondary-navigation"' in navigation.text
+    assert "secondaryLinks.forEach((link) => moreMenu.panel.append(link))" in navigation.text
+    assert "closeMenus(menu)" in navigation.text
+    assert 'event.key !== "Escape"' in navigation.text
+
+    mobile_rules = stylesheet.text.split("@media (max-width: 48rem) {", 1)[1].split(
+        "@media (max-width: 40rem)", 1
+    )[0]
+    assert re.search(
+        r"\.app-sidebar \{[^}]*padding: var\(--space-1\) var\(--space-2\);",
+        mobile_rules,
+        re.S,
+    )
+    assert re.search(r"\.site-brand \{[^}]*align-self: center;", mobile_rules, re.S)
+    assert re.search(r"\.site-navigation a \{[^}]*min-height: 2\.75rem;", mobile_rules, re.S)
+    assert re.search(
+        r"\.app-sidebar\[data-mobile-navigation-ready\]\s*"
+        r"\.site-navigation a:nth-child\(n\+3\) \{[^}]*display: none;",
+        mobile_rules,
+        re.S,
+    )
+    assert re.search(r"\.mobile-navigation-actions \{[^}]*display: flex;", mobile_rules, re.S)
+    assert ".mobile-navigation-menu[data-open] .mobile-navigation-menu__popover" in mobile_rules
+    assert not re.search(r"\.site-navigation \{[^}]*display: grid;", mobile_rules, re.S)
+
     narrow_rules = stylesheet.text.split("@media (max-width: 34rem) {", 1)[1].split(
         "@media (pointer: coarse)", 1
     )[0]
-    assert re.search(
-        r"\.site-navigation \{[^}]*width: 100%;[^}]*flex: 1 0 100%;[^}]*"
-        r"grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);",
-        narrow_rules,
-        re.S,
-    )
-    assert re.search(r"\.site-navigation a \{[^}]*min-width: 0;", narrow_rules, re.S)
-    assert re.search(
-        r"\.site-navigation \[data-selection-count\] \{[^}]*flex: 0 0 auto;"
-        r"[^}]*margin-left: var\(--space-1\);",
-        narrow_rules,
-        re.S,
-    )
-    assert re.search(r"\.site-navigation a \{[^}]*min-height: 2\.75rem;", stylesheet.text, re.S)
     assert re.search(
         r"\.selected-tree-view \.result-row,\s*\.result-row \{[^}]*"
         r"grid-template-columns: 2rem minmax\(0, 1fr\);",
