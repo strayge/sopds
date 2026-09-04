@@ -14,12 +14,13 @@
     data-ui-locale="{{ locale }}"
     data-reader-locale="{{ reader_locale }}"
     data-reader-messages="{{ reader_messages|tojson|forceescape }}"
+    data-reader-visible-state="{{ 'error' if reader_error else 'loading' }}"
     data-public-id="{{ book.public_id }}"
     data-source-format="{{ source_format }}"
     data-source-url="{{ source_url }}"
   >
     <a class="reader-skip-link" href="#reader-main">{{ gettext("Skip to reader") }}</a>
-    <div class="reader-language-control" role="group" aria-label="{{ gettext('Interface language') }}"><button type="button" data-locale-choice="en" aria-pressed="{{ 'true' if locale == 'en' else 'false' }}">EN</button><button type="button" data-locale-choice="ru" aria-pressed="{{ 'true' if locale == 'ru' else 'false' }}">RU</button></div>
+    <div class="reader-language-control reader-language-control--standalone" role="group" aria-label="{{ gettext('Interface language') }}"><button type="button" data-locale-choice="en" aria-pressed="{{ 'true' if locale == 'en' else 'false' }}">EN</button><button type="button" data-locale-choice="ru" aria-pressed="{{ 'true' if locale == 'ru' else 'false' }}">RU</button></div>
     <main id="reader-main">
       <section class="reader-message" data-reader-state="loading" role="status" aria-live="polite"{% if reader_error %} hidden{% endif %}>
         <div>
@@ -31,11 +32,33 @@
       <section data-reader-state="reader" data-reader-mode="scroll" aria-label="{{ gettext('Book reader') }}" hidden>
         <header data-reader-toolbar role="toolbar" aria-label="{{ gettext('Reading controls') }}">
           <strong data-reader-title title="{{ book.title }}">{{ book.title }}</strong>
-          <button type="button" data-reader-contents-button aria-controls="reader-contents" aria-expanded="false" disabled>{{ gettext("Contents") }}</button>
-          <button type="button" data-reader-mode-toggle data-reader-mode="scroll" aria-label="{{ gettext('Switch to pages view') }}" disabled>{{ pgettext("reader mode", "Pages") }}</button>
+          <button type="button" data-reader-contents-button aria-controls="reader-contents" aria-expanded="false" aria-label="{{ gettext('Contents') }}" disabled>
+            <svg class="reader-toolbar-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="3" cy="5" r="1"></circle><path d="M6 5h11M6 10h11M6 15h11"></path><circle cx="3" cy="10" r="1"></circle><circle cx="3" cy="15" r="1"></circle>
+            </svg>
+            <span class="reader-toolbar-label">{{ gettext("Contents") }}</span>
+          </button>
           <output data-reader-progress aria-label="{{ gettext('Reading progress') }}" aria-live="polite">0%</output>
-          <button type="button" data-reader-font-decrease aria-label="{{ gettext('Decrease font size') }}" disabled>{{ gettext("Smaller text") }}</button>
-          <button type="button" data-reader-font-increase aria-label="{{ gettext('Increase font size') }}" disabled>{{ gettext("Larger text") }}</button>
+          <button type="button" data-reader-mode-toggle data-reader-mode="scroll" aria-label="{{ gettext('Switch to pages view') }}" disabled>
+            <svg class="reader-mode-icon reader-mode-icon--pages" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M3.5 4.5c2.4-.8 4.5-.4 6.5 1.2v11c-2-1.6-4.1-2-6.5-1.2zM16.5 4.5c-2.4-.8-4.5-.4-6.5 1.2v11c2-1.6 4.1-2 6.5-1.2z"></path></svg>
+            <svg class="reader-mode-icon reader-mode-icon--scroll" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M5 3.5h10M5 7.5h10M5 11.5h7M10 14.5l2.5 2.5 2.5-2.5M12.5 13v4"></path></svg>
+            <span class="reader-mode-label">{{ pgettext("reader mode", "Pages") }}</span>
+          </button>
+          <div class="reader-toolbar-menu reader-toolbar-menu--typography" data-reader-toolbar-menu>
+            <button class="reader-toolbar-menu-toggle" type="button" data-reader-toolbar-menu-toggle aria-controls="reader-typography-controls" aria-expanded="false" aria-label="{{ gettext('Text size') }}"><span aria-hidden="true">Aa</span></button>
+            <div id="reader-typography-controls" class="reader-toolbar-popover" role="group" aria-label="{{ gettext('Text size') }}">
+              <button type="button" data-reader-font-decrease aria-label="{{ gettext('Decrease font size') }}" disabled>{{ gettext("Smaller text") }}</button>
+              <button type="button" data-reader-font-increase aria-label="{{ gettext('Increase font size') }}" disabled>{{ gettext("Larger text") }}</button>
+            </div>
+          </div>
+          <div class="reader-toolbar-menu reader-toolbar-menu--language" data-reader-toolbar-menu>
+            <button class="reader-toolbar-menu-toggle" type="button" data-reader-toolbar-menu-toggle aria-controls="reader-language-controls" aria-expanded="false" aria-label="{{ gettext('Interface language') }}">
+              <svg class="reader-language-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="7.5"></circle><path d="M2.5 10h15M10 2.5c2 2.1 3 4.6 3 7.5s-1 5.4-3 7.5c-2-2.1-3-4.6-3-7.5s1-5.4 3-7.5z"></path></svg>
+            </button>
+            <div id="reader-language-controls" class="reader-toolbar-popover">
+              <div class="reader-language-control reader-language-control--menu" role="group" aria-label="{{ gettext('Interface language') }}"><button type="button" data-locale-choice="en" aria-pressed="{{ 'true' if locale == 'en' else 'false' }}">EN</button><button type="button" data-locale-choice="ru" aria-pressed="{{ 'true' if locale == 'ru' else 'false' }}">RU</button></div>
+            </div>
+          </div>
         </header>
         <button type="button" class="reader-edge-control reader-edge-control--left" data-reader-edge-left data-reader-page-control aria-label="{{ gettext('Previous page') }}" hidden>‹</button>
         <button type="button" class="reader-edge-control reader-edge-control--right" data-reader-edge-right data-reader-page-control aria-label="{{ gettext('Next page') }}" hidden>›</button>

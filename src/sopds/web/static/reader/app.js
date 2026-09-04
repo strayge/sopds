@@ -28,6 +28,7 @@ const contentsButton = document.querySelector('[data-reader-contents-button]')
 const contentsDialog = document.querySelector('[data-reader-contents]')
 const contentsNavigation = document.querySelector('[data-reader-contents-navigation]')
 const modeToggle = document.querySelector('[data-reader-mode-toggle]')
+const modeToggleLabel = modeToggle.querySelector('.reader-mode-label')
 const previousButton = document.querySelector('[data-reader-previous]')
 const nextButton = document.querySelector('[data-reader-next]')
 const previousEdgeButton = document.querySelector('[data-reader-edge-left]')
@@ -41,6 +42,7 @@ const seekPreview = document.querySelector('[data-reader-seek-preview]')
 const decreaseButton = document.querySelector('[data-reader-font-decrease]')
 const increaseButton = document.querySelector('[data-reader-font-increase]')
 const retryLink = document.querySelector('[data-reader-retry]')
+const toolbarMenus = [...document.querySelectorAll('[data-reader-toolbar-menu]')]
 
 const publicId = root?.dataset.publicId ?? ''
 const format = root?.dataset.sourceFormat ?? ''
@@ -147,7 +149,7 @@ const applyModeUI = mode => {
     readerState.dataset.readerMode = mode
     modeToggle.dataset.readerMode = mode
     const control = readerModeControl(readerI18n, mode)
-    modeToggle.textContent = control.text
+    modeToggleLabel.textContent = control.text
     modeToggle.setAttribute('aria-label', control.ariaLabel)
     progressOutput.hidden = pages
     dockProgressOutput.hidden = !pages
@@ -158,10 +160,24 @@ const applyModeUI = mode => {
     applyPageControlState(pages)
 }
 
+const setToolbarMenuOpen = (menu, open) => {
+    menu.toggleAttribute('data-open', open)
+    menu.querySelector('[data-reader-toolbar-menu-toggle]')
+        ?.setAttribute('aria-expanded', String(open))
+}
+
+const closeToolbarMenus = (except = null) => {
+    for (const menu of toolbarMenus) {
+        if (menu !== except) setToolbarMenuOpen(menu, false)
+    }
+}
+
 const showState = state => {
     loadingState.hidden = state !== 'loading'
     readerState.hidden = state !== 'reader'
     errorState.hidden = state !== 'error'
+    root.dataset.readerVisibleState = state
+    if (state !== 'reader') closeToolbarMenus()
 }
 
 const removeViewListeners = () => {
@@ -302,7 +318,8 @@ const addViewListener = (target, type, listener, options) => {
 
 const keyboardNavigation = event => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey
-        || event.shiftKey || contentsDialog.open || modeSwitching || bookSeeking) return
+        || event.shiftKey || contentsDialog.open || modeSwitching || bookSeeking
+        || toolbarMenus.some(menu => menu.hasAttribute('data-open'))) return
     const target = event.target
     if (target?.closest?.('a, button, input, select, textarea, [contenteditable="true"]')) return
     if (!activeView) return
@@ -745,6 +762,25 @@ bookPosition.addEventListener('input', () => {
 bookPosition.addEventListener('change', () => void seekToBookPosition())
 bookPosition.addEventListener('pointercancel', cancelBookSeek)
 
+for (const menu of toolbarMenus) {
+    const toggle = menu.querySelector('[data-reader-toolbar-menu-toggle]')
+    toggle.addEventListener('click', () => {
+        const open = !menu.hasAttribute('data-open')
+        closeToolbarMenus(menu)
+        setToolbarMenuOpen(menu, open)
+    })
+}
+document.addEventListener('click', event => {
+    if (!event.target.closest?.('[data-reader-toolbar-menu]')) closeToolbarMenus()
+})
+document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return
+    const openMenu = toolbarMenus.find(menu => menu.hasAttribute('data-open'))
+    if (!openMenu) return
+    setToolbarMenuOpen(openMenu, false)
+    openMenu.querySelector('[data-reader-toolbar-menu-toggle]')?.focus()
+})
+
 contentsButton.addEventListener('click', () => {
     if (contentsButton.disabled || modeSwitching || bookSeeking) return
     contentsDialog.showModal()
@@ -758,6 +794,7 @@ contentsDialog.addEventListener('click', event => {
 })
 modeToggle.addEventListener('click', () => {
     if (modeToggle.disabled || modeSwitching) return
+    closeToolbarMenus()
     const requestedMode = readerMode === 'scroll' ? 'pages' : 'scroll'
     modeSwitch = modeSwitch.then(
         () => switchReaderMode(requestedMode),

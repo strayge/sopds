@@ -1177,7 +1177,18 @@ def test_reader_shell_is_standalone_and_preserves_availability_context() -> None
         in response.text
     )
     assert 'data-reader-toolbar role="toolbar" aria-label="Reading controls"' in response.text
+    assert 'data-reader-visible-state="loading"' in response.text
+    assert response.text.count("data-reader-toolbar-menu-toggle") == 2
+    assert 'aria-label="Text size"' in response.text
+    assert response.text.count('aria-label="Interface language"') == 3
+    assert "reader-language-icon" in response.text
+    assert "reader-language-control--menu" in response.text
+    assert "reader-mode-icon--pages" in response.text
+    assert "reader-mode-icon--scroll" in response.text
     assert "data-reader-mode-toggle" in response.text
+    assert response.text.index("data-reader-mode-toggle") < response.text.index(
+        "reader-toolbar-menu--language"
+    )
     assert "data-reader-page-dock" in response.text
     assert "data-reader-edge-left" in response.text
     assert (
@@ -1239,6 +1250,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "event.stopImmediatePropagation()" in javascript.text
     assert "getReaderMode" in javascript.text
     assert "setReaderMode" in javascript.text
+    assert "modeToggleLabel.textContent = control.text" in javascript.text
     assert "view.renderer.goTo(resolved)" in javascript.text
     assert "view.renderer.inert = true" in javascript.text
     assert "event.code === 'Space'" in javascript.text
@@ -1256,7 +1268,12 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "export const setReaderMode" in state.text
     assert "foliate-view" in stylesheet.text
     assert "prefers-color-scheme: dark" in stylesheet.text
-    assert "@media (max-width: 35rem)" in stylesheet.text
+    assert "grid-template-columns: minmax(0, 1fr) auto repeat(4, 2.75rem)" in stylesheet.text
+    assert ".reader-toolbar-menu[data-open] .reader-toolbar-popover" in stylesheet.text
+    assert ".reader-mode-icon--pages" in stylesheet.text
+    assert ".reader-language-icon" in stylesheet.text
+    toolbar_css = stylesheet.text.split("[data-reader-toolbar] {", 1)[1].split("}", 1)[0]
+    assert "z-index: 4" in toolbar_css
     assert "@media (max-width: 24rem)" in stylesheet.text
     assert "@media (max-width: 14rem)" in stylesheet.text
     assert "max-height: 50vh" in stylesheet.text
@@ -1388,7 +1405,7 @@ def test_russian_reader_localizes_shell_switcher_payload_and_known_error() -> No
     assert "читалка SOPDS</title>" not in reader.text
     assert 'aria-label="Элементы управления чтением"' in reader.text
     assert 'data-reader-mode-toggle data-reader-mode="scroll"' in reader.text
-    assert ">Страницы</button>" in reader.text
+    assert ">Страницы</span>" in reader.text
     assert "Книга &lt;unsafe&gt; &amp; &#34;raw title&#34;" in reader.text
     assert "Книга <unsafe>" not in reader.text
 

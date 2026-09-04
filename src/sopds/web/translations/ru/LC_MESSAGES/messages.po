@@ -660,6 +660,10 @@ msgstr "Увеличить размер шрифта"
 msgid "Larger text"
 msgstr "Больше"
 
+#: src/sopds/web/templates/book_reader.html
+msgid "Text size"
+msgstr "Размер текста"
+
 #: src/sopds/web/templates/book_reader.html:44
 msgid "Book contents"
 msgstr "Содержание книги"
