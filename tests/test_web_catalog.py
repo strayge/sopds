@@ -1279,6 +1279,8 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert ".reader-toolbar-menu[data-open] .reader-toolbar-popover" in stylesheet.text
     assert ".reader-mode-icon--pages" in stylesheet.text
     assert ".reader-language-icon" in stylesheet.text
+    assert "--reader-menu-surface: #183f33" in stylesheet.text
+    assert ".reader-language-control--menu button[aria-pressed=\"true\"]" in stylesheet.text
     assert 'data-reader-mode="scroll"] [data-reader-surface] {\n    padding-right: 1rem' in (
         stylesheet.text
     )

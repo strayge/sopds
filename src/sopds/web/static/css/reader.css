@@ -27,6 +27,10 @@
   --reader-focus: #166f9d;
   --reader-error: #a21b1b;
   --reader-error-surface: #f9e7e4;
+  --reader-menu-surface: #183f33;
+  --reader-menu-ink: #fffdf8;
+  --reader-menu-current: #ebe2d2;
+  --reader-menu-border: rgb(255 253 248 / 28%);
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 
@@ -696,6 +700,9 @@ foliate-view {
 
   .reader-toolbar-menu--language .reader-toolbar-popover {
     width: 7.25rem;
+    border-color: var(--reader-menu-border);
+    background: var(--reader-menu-surface);
+    box-shadow: 0 0.5rem 1.4rem rgb(23 27 20 / 28%);
   }
 
   .reader-mode-icon {
@@ -724,6 +731,27 @@ foliate-view {
     border: 0;
     border-radius: 0;
     background: transparent;
+  }
+
+  .reader-language-control--menu button {
+    min-width: 2.75rem;
+    min-height: 2.25rem;
+    border-color: rgb(255 253 248 / 45%);
+    background: transparent;
+    color: var(--reader-menu-ink);
+  }
+
+  .reader-language-control--menu button:hover:not(:disabled) {
+    border-color: var(--reader-menu-ink);
+    background: rgb(255 255 255 / 8%);
+    color: var(--reader-menu-ink);
+  }
+
+  .reader-language-control--menu button[aria-pressed="true"],
+  .reader-language-control--menu button[aria-pressed="true"]:hover {
+    border-color: var(--reader-menu-current);
+    background: var(--reader-menu-current);
+    color: var(--reader-menu-surface);
   }
 
   [data-reader-state="reader"][data-reader-mode="scroll"] [data-reader-surface] {
