@@ -63,7 +63,12 @@
         <button type="button" class="reader-edge-control reader-edge-control--left" data-reader-edge-left data-reader-page-control aria-label="{{ gettext('Previous page') }}" hidden>‹</button>
         <button type="button" class="reader-edge-control reader-edge-control--right" data-reader-edge-right data-reader-page-control aria-label="{{ gettext('Next page') }}" hidden>›</button>
         <dialog id="reader-contents" data-reader-contents aria-labelledby="reader-contents-title">
-          <h2 id="reader-contents-title">{{ gettext("Contents") }}</h2>
+          <header class="reader-contents-header">
+            <h2 id="reader-contents-title">{{ gettext("Contents") }}</h2>
+            <button type="button" data-reader-contents-close aria-label="{{ gettext('Close contents') }}">
+              <svg class="reader-contents-close-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M5 5l10 10M15 5 5 15"></path></svg>
+            </button>
+          </header>
           <nav aria-label="{{ gettext('Book contents') }}" data-reader-contents-navigation></nav>
         </dialog>
         <div data-reader-surface tabindex="0" aria-label="{{ gettext('Reading surface') }}"></div>

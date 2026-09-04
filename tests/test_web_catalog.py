@@ -1197,6 +1197,7 @@ def test_reader_shell_is_standalone_and_preserves_availability_context() -> None
     )
     assert "data-reader-seek-preview" in response.text
     assert 'data-reader-contents aria-labelledby="reader-contents-title"' in response.text
+    assert 'data-reader-contents-close aria-label="Close contents"' in response.text
     assert 'data-reader-state="error" role="alert" hidden' in response.text
     assert response.text.count("<script") == 2
     assert '<script defer src="/static/locale.js"></script>' in response.text
@@ -1263,6 +1264,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "setAttribute('aria-current', 'location')" in javascript.text
     assert "data-reader-current-parent" in javascript.text
     assert "requestAnimationFrame(centerCurrentContentsEntry)" in javascript.text
+    assert "contentsCloseButton.addEventListener('click'" in javascript.text
     assert "sopds.reader.v1" in state.text
     assert "export const getReaderMode" in state.text
     assert "export const setReaderMode" in state.text
@@ -1281,6 +1283,7 @@ def test_reader_static_assets_expose_only_the_local_reader_entry_contract() -> N
     assert "overscroll-behavior-y: contain" in stylesheet.text
     assert 'button[aria-current="location"]' in stylesheet.text
     assert "[data-reader-current-parent]" in stylesheet.text
+    assert "[data-reader-contents-close]" in stylesheet.text
     contents_css = stylesheet.text.split("[data-reader-contents] {", 1)[1].split("}", 1)[0]
     assert "overflow: hidden" in contents_css
     assert "data-reader-mode-toggle" in stylesheet.text

@@ -409,15 +409,42 @@ foliate-view {
   background: rgb(38 37 31 / 38%);
 }
 
-[data-reader-contents] h2 {
+.reader-contents-header {
   position: sticky;
   top: 0;
   z-index: 1;
-  margin: 0;
-  padding: 0.8rem 1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   border-bottom: 1px solid var(--reader-border);
   background: var(--reader-surface);
+}
+
+[data-reader-contents] h2 {
+  min-width: 0;
+  margin: 0;
+  padding: 0.8rem 1rem;
   font-size: 1rem;
+}
+
+[data-reader-contents-close] {
+  display: inline-grid;
+  width: 2.75rem;
+  min-height: 2.75rem;
+  place-items: center;
+  margin-right: 0.35rem;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+.reader-contents-close-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
 }
 
 [data-reader-contents-navigation] {

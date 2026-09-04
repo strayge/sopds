@@ -26,6 +26,7 @@ const errorMessage = document.querySelector('[data-reader-error-message]')
 const surface = document.querySelector('[data-reader-surface]')
 const contentsButton = document.querySelector('[data-reader-contents-button]')
 const contentsDialog = document.querySelector('[data-reader-contents]')
+const contentsCloseButton = document.querySelector('[data-reader-contents-close]')
 const contentsNavigation = document.querySelector('[data-reader-contents-navigation]')
 const modeToggle = document.querySelector('[data-reader-mode-toggle]')
 const modeToggleLabel = modeToggle.querySelector('.reader-mode-label')
@@ -789,6 +790,7 @@ contentsButton.addEventListener('click', () => {
 })
 contentsDialog.addEventListener('close', () =>
     contentsButton.setAttribute('aria-expanded', 'false'))
+contentsCloseButton.addEventListener('click', () => contentsDialog.close())
 contentsDialog.addEventListener('click', event => {
     if (event.target === contentsDialog) contentsDialog.close()
 })
