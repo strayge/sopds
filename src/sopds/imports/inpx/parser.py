@@ -11,6 +11,7 @@ from typing import IO, override
 from zipfile import BadZipFile, ZipFile, ZipInfo
 from zlib import error as ZlibError
 
+from sopds.catalog.languages import normalize_language
 from sopds.imports.inpx.records import (
     InpxExtensionField,
     InpxRecord,
@@ -427,7 +428,7 @@ def _make_record(
         deleted=deleted_value == "1",
         extension=extension,
         date=_optional(fields.get("DATE", "")),
-        language=_optional(fields.get("LANG", "")),
+        language=normalize_language(fields.get("LANG")),
         library_rating=rating,
         keywords=_optional(fields.get("KEYWORDS", "")),
         extension_fields=tuple(

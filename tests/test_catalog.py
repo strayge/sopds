@@ -666,7 +666,8 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         assert deleted.books[0].downloadable is True
 
         assert [
-            book.public_id for book in (await catalog.browse(CatalogRequest(language="ru"))).books
+            book.public_id
+            for book in (await catalog.browse(CatalogRequest(language=" RU-RU "))).books
         ] == ["book-001"]
         assert [
             book.public_id for book in (await catalog.browse(CatalogRequest(genre="sf"))).books

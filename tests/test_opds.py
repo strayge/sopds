@@ -234,7 +234,8 @@ def test_acquisition_feed_has_complete_inline_original_metadata_and_safe_xml() -
     app, catalog = _app()
     with TestClient(app) as client:
         response = client.get(
-            "/opds/books/?q=term&author=A%20%26%20B&series=S&genre=sf&language=ru&original_format=fb2"
+            "/opds/books/?q=term&author=A%20%26%20B&series=S&genre=sf"
+            "&language=%20EN-US%20&original_format=fb2"
         )
 
     assert response.headers["content-type"] == f"{ACQUISITION_TYPE}; charset=UTF-8"
@@ -277,6 +278,7 @@ def test_acquisition_feed_has_complete_inline_original_metadata_and_safe_xml() -
     request = catalog.requests[0]
     assert request.author == "A & B"
     assert request.series == "S"
+    assert request.language == "en"
 
 
 def test_opds_acquisitions_follow_registered_source_matrix_without_conversion() -> None:

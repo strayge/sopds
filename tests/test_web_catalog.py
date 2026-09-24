@@ -459,7 +459,9 @@ def _csrf_form_suffix(app: FastAPI) -> str:
 def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
     app, catalog, _ = _app()
     with TestClient(app) as client:
-        page = client.get("/?q=book&search_field=title&language=en&genre=sf&original_format=fb2")
+        page = client.get(
+            "/?q=book&search_field=title&language=%20EN-US%20&genre=sf&original_format=fb2"
+        )
         fragment = client.get("/catalog-fragment?q=book&search_field=author&language=en&genre=sf")
         ignored_cursor = client.get("/?q=book&cursor=next-token")
         detail = client.get("/books/public-1")

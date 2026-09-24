@@ -78,6 +78,16 @@ def test_title_and_series_replace_em_dashes_with_en_dashes(tmp_path: Path) -> No
     assert record.authors == ("Writer\N{EM DASH}Name",)
 
 
+def test_language_is_normalized_to_primary_subtag(tmp_path: Path) -> None:
+    line = _implicit_line(LANG=" EN-US ")
+    archive_path = _write_archive(tmp_path / "language.inpx", [("books.inp", line)])
+
+    with parse_inpx(archive_path) as records:
+        record = _record(next(records))
+
+    assert record.language == "en"
+
+
 def test_declared_layout_maps_by_normalized_name_and_preserves_unknown_fields() -> None:
     with parse_inpx(FIXTURES / "declared.inpx") as records:
         first_event, second_event = tuple(records)

@@ -52,6 +52,7 @@ from sopds.catalog.contracts import (
     FilterOption,
     SearchField,
 )
+from sopds.catalog.languages import normalize_language
 from sopds.catalog.search import normalize_text
 from sopds.conversion.contracts import (
     ConversionResult,
@@ -306,7 +307,7 @@ def _catalog_request(
     return CatalogRequest(
         query=q,
         search_field=search_field,
-        language=language or None,
+        language=normalize_language(language),
         genre=genre or None,
         original_format=original_format or None,
         include_missed=include_missed,

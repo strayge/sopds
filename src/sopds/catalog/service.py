@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC
 
 from sopds.catalog.contracts import (
@@ -26,6 +26,7 @@ from sopds.catalog.contracts import (
     NavigationRequest,
     SearchField,
 )
+from sopds.catalog.languages import normalize_language
 from sopds.catalog.search import normalize_text, query_tokens
 from sopds.db.repository import CatalogRepository
 
@@ -62,6 +63,7 @@ class CatalogService:
 
     async def browse(self, request: CatalogRequest) -> CatalogPage:
         _validate_filters(request)
+        request = replace(request, language=normalize_language(request.language))
         tokens = query_tokens(request.query)
         normalized = " ".join(tokens)
         fingerprint = _request_fingerprint(request, normalized)

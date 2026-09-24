@@ -15,6 +15,7 @@ from sopds.catalog.contracts import (
     NavigationItem,
     NavigationRequest,
 )
+from sopds.catalog.languages import normalize_language
 from sopds.config import AppConfig
 from sopds.conversion.policy import OUTPUT_POLICY
 from sopds.conversion.registry import ConverterRegistry
@@ -187,7 +188,7 @@ async def books(
         genre=genre or None,
         series=series or None,
         without_series=without_series,
-        language=language or None,
+        language=normalize_language(language),
         original_format=original_format or None,
         cursor=cursor or None,
     )
