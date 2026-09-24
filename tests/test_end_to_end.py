@@ -173,6 +173,11 @@ def test_real_application_acceptance_path(app_config: AppConfig) -> None:
         assert book["originalDownload"]["url"] == f"/books/{public_id}/download"
         assert "return_to" not in search.text
 
+        size_filtered = client.get("/", params={"q": "Beacon", "minimum_size_kb": "1"})
+        assert size_filtered.status_code == 200
+        assert "No books found" in size_filtered.text
+        assert "catalog-result-payload" not in size_filtered.text
+
         detail = client.get(book["detailUrl"])
         assert detail.status_code == 200
         assert "Acceptance Author" in detail.text

@@ -41,6 +41,7 @@ class CatalogRequest:
     include_missed: bool = False
     include_hidden: bool = False
     page_size: int = 50
+    minimum_size_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

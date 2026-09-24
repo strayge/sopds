@@ -529,6 +529,26 @@ dd {
   font-weight: 400;
 }
 
+.catalog-filter--minimum-size input {
+  width: 5rem;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0.25rem 0.55rem;
+  border-width: 0 0 0 1px;
+  border-color: var(--color-border);
+  border-radius: 0;
+  background-color: transparent;
+  font-family: var(--font-utility);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+
+.catalog-filter__unit {
+  padding-right: 0.65rem;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+}
+
 .catalog-filter--genre select {
   width: 8.5rem;
   min-width: 8.5rem;
@@ -2290,8 +2310,10 @@ dd {
     justify-content: space-between;
   }
 
-  .catalog-quick-filters select {
+  .catalog-quick-filters select,
+  .catalog-filter--minimum-size input {
     flex: 1 1 auto;
+    width: auto;
     min-width: 0;
   }
 
@@ -2313,6 +2335,7 @@ dd {
 
   .catalog-quick-filters label,
   .catalog-quick-filters select,
+  .catalog-filter--minimum-size input,
   .catalog-clear,
   .result-row__action,
   .result-row__download,
@@ -2516,6 +2539,7 @@ dd {
   .catalog-table__sort,
   .catalog-quick-filters label,
   .catalog-quick-filters select,
+  .catalog-filter--minimum-size input,
   .catalog-availability-filters .checkbox,
   .catalog-clear,
   .catalog-table .author-overflow summary,

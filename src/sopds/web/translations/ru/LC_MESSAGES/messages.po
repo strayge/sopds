@@ -1035,6 +1035,10 @@ msgstr "Все жанры"
 msgid "All formats"
 msgstr "Все форматы"
 
+#: src/sopds/web/templates/partials/catalog_search_form.html:30
+msgid "Minimum size"
+msgstr "Минимальный размер"
+
 #: src/sopds/web/templates/partials/catalog_search_form.html:31
 msgid "Availability options"
 msgstr "Параметры доступности"

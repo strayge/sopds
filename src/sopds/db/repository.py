@@ -1037,6 +1037,7 @@ class CatalogRepository:
         without_series: bool = False,
         include_missed: bool = False,
         include_hidden: bool = False,
+        minimum_size_bytes: int | None = None,
     ) -> QuerySet[Book]:
         visibility = Q(hidden=False, archive__available=True)
         if include_missed:
@@ -1067,6 +1068,8 @@ class CatalogRepository:
             query = query.filter(series__generation_id=generation_id, series__name=series)
         if without_series:
             query = query.filter(series_id=None)
+        if minimum_size_bytes is not None:
+            query = query.filter(size__gte=minimum_size_bytes)
         return query
 
     async def browse_book_ids(
@@ -1083,6 +1086,7 @@ class CatalogRepository:
         include_hidden: bool = False,
         after: tuple[str, str] | None,
         limit: int,
+        minimum_size_bytes: int | None = None,
     ) -> list[tuple[int, str, str]]:
         query = self._visible_books(
             generation_id,
@@ -1094,6 +1098,7 @@ class CatalogRepository:
             without_series=without_series,
             include_missed=include_missed,
             include_hidden=include_hidden,
+            minimum_size_bytes=minimum_size_bytes,
         )
         if after is not None:
             title_sort, public_id = after
@@ -1127,6 +1132,7 @@ class CatalogRepository:
         include_hidden: bool = False,
         after: tuple[str, str] | None,
         limit: int,
+        minimum_size_bytes: int | None = None,
     ) -> list[tuple[int, str, str]]:
         vector = _SEARCH_VECTORS[search_field]
         sql = (
@@ -1153,7 +1159,8 @@ class CatalogRepository:
             "AND (NOT $10::boolean OR b.series_id IS NULL) "
             "AND ($11::text IS NULL OR b.title_sort>$11 "
             "OR (b.title_sort=$12 AND b.public_id>$13)) "
-            "ORDER BY b.title_sort,b.public_id LIMIT $14"
+            "AND ($14::bigint IS NULL OR b.size >= $14) "
+            "ORDER BY b.title_sort,b.public_id LIMIT $15"
         )
         parameters: list[object] = [
             " ".join(tokens),
@@ -1169,6 +1176,7 @@ class CatalogRepository:
             after[0] if after is not None else None,
             after[0] if after is not None else None,
             after[1] if after is not None else None,
+            minimum_size_bytes,
             limit,
         ]
         _, rows = await self._connection.execute_query(sql, parameters)

@@ -567,6 +567,128 @@ def test_full_page_and_fragment_serve_capped_catalog_payload() -> None:
     assert missing.status_code == 404
 
 
+def test_minimum_size_filter_parses_canonicalizes_and_renders_compact_control() -> None:
+    app, catalog, _ = _app()
+    with TestClient(app) as client:
+        blank = client.get("/", params={"minimum_size_kb": ""})
+        filtered = client.get("/", params={"q": "book", "minimum_size_kb": "500"})
+        leading_zeroes = client.get("/", params={"q": "book", "minimum_size_kb": "000500"})
+        maximum = client.get("/", params={"minimum_size_kb": "9007199254740991"})
+        fragment = client.get(
+            "/catalog-fragment",
+            params={"q": "book", "minimum_size_kb": "000500"},
+            headers={"HX-Request": "true"},
+        )
+        stylesheet = client.get("/static/css/app.css")
+
+    assert blank.status_code == filtered.status_code == leading_zeroes.status_code == 200
+    assert maximum.status_code == fragment.status_code == stylesheet.status_code == 200
+    assert catalog.requests[0].minimum_size_bytes is None
+    assert catalog.requests[1].minimum_size_bytes == 512_000
+    assert catalog.requests[2].minimum_size_bytes == 512_000
+    assert catalog.requests[3].minimum_size_bytes == 9_223_372_036_854_774_784
+    assert catalog.requests[4].minimum_size_bytes == 512_000
+    assert 'name="minimum_size_kb" type="number" min="1" step="1" value=""' in blank.text
+    control = re.search(
+        r'<label class="catalog-filter--minimum-size"[^>]*>(.*?)</label>',
+        filtered.text,
+        re.S,
+    )
+    assert control is not None
+    assert "Minimum size" in control.group(1)
+    assert 'id="catalog-minimum-size"' in control.group(1)
+    assert 'name="minimum_size_kb" type="number" min="1" step="1" value="500"' in (control.group(1))
+    assert "required" not in control.group(1)
+    assert '<span class="catalog-filter__unit">KB</span>' in control.group(1)
+    assert leading_zeroes.history == []
+    assert parse_qs(urlsplit(str(leading_zeroes.request.url)).query) == {
+        "q": ["book"],
+        "minimum_size_kb": ["000500"],
+    }
+    assert 'value="500"' in leading_zeroes.text
+    assert fragment.headers["HX-Push-Url"] == (
+        "/?q=book&search_field=all&language=&genre=&original_format=&minimum_size_kb=500"
+    )
+    fragment_form = fragment.text[fragment.text.index("<form") :]
+    assert 'hx-swap-oob="outerHTML"' in fragment_form
+    assert 'name="minimum_size_kb" type="number" min="1" step="1" value="500"' in (fragment_form)
+    fragment_book = _catalog_payload(fragment.text)["books"][0]
+    assert parse_qs(urlsplit(fragment_book["authors"][0]["scopeUrl"]).query)["minimum_size_kb"] == [
+        "500"
+    ]
+    assert parse_qs(urlsplit(fragment_book["series"]["scopeUrl"]).query)["minimum_size_kb"] == [
+        "500"
+    ]
+    assert fragment_book["detailUrl"] == "/books/public-1"
+    assert (
+        'id="catalog-clear-action" class="catalog-clear" href="/" '
+        'data-catalog-criteria-link aria-label="Clear search and filters">Clear all</a>'
+        in fragment_form
+    )
+    assert re.search(
+        r"\.catalog-filter--minimum-size input \{[^}]*width: 5rem;[^}]*"
+        r"min-height: 2rem;",
+        stylesheet.text,
+        re.S,
+    )
+    narrow_rules = stylesheet.text.split("@media (max-width: 34rem) {", 1)[1].split(
+        "@media (pointer: coarse)", 1
+    )[0]
+    assert re.search(
+        r"\.catalog-quick-filters,\s*\.catalog-quick-filters label \{[^}]*width: 100%;",
+        narrow_rules,
+        re.S,
+    )
+    assert re.search(
+        r"\.catalog-quick-filters select,\s*\.catalog-filter--minimum-size input "
+        r"\{[^}]*flex: 1 1 auto;[^}]*min-width: 0;",
+        narrow_rules,
+        re.S,
+    )
+    assert ".catalog-filter--minimum-size input," in narrow_rules
+    assert "min-height: 2.75rem;" in narrow_rules
+
+
+@pytest.mark.parametrize(
+    "minimum_size_kb",
+    [
+        "0",
+        "-1",
+        "+1",
+        "1.5",
+        " 1",
+        "1 ",
+        "book",
+        "\N{ARABIC-INDIC DIGIT FIVE}",
+        "9007199254740992",
+        "9" * 1_000,
+    ],
+)
+def test_malformed_minimum_size_never_reaches_catalog(
+    minimum_size_kb: str,
+) -> None:
+    app, catalog, _ = _app()
+    params = {"minimum_size_kb": minimum_size_kb}
+    headers = {"Accept-Language": "ru"}
+    with TestClient(app) as client:
+        full_page = client.get("/", params=params, headers=headers)
+        htmx = client.get(
+            "/catalog-fragment",
+            params=params,
+            headers={**headers, "HX-Request": "true"},
+        )
+
+    assert full_page.status_code == 400
+    assert "Некорректный фильтр каталога" in full_page.text
+    assert htmx.status_code == 200
+    assert 'class="error" role="alert">Некорректный фильтр каталога</p>' in htmx.text
+    assert "HX-Push-Url" not in htmx.headers
+    assert 'id="catalog-search-form"' not in htmx.text
+    assert 'hx-swap-oob="outerHTML"' not in htmx.text
+    assert catalog.requests == []
+    assert catalog.filter_calls == 0
+
+
 @pytest.mark.parametrize(
     ("source_format", "size", "readable"),
     [
@@ -752,6 +874,7 @@ def test_htmx_catalog_validation_error_swaps_complete_form_and_updates_history()
                 "language": "en",
                 "genre": "sf",
                 "original_format": "fb2",
+                "minimum_size_kb": "000500",
                 "include_missed": "true",
                 "include_hidden": "true",
             },
@@ -763,7 +886,7 @@ def test_htmx_catalog_validation_error_swaps_complete_form_and_updates_history()
     assert 'class="error" role="alert">Invalid catalog search</p>' in htmx_response.text
     assert htmx_response.headers["HX-Push-Url"] == (
         "/?q=invalid&search_field=title&language=en&genre=sf&original_format=fb2"
-        "&include_missed=true&include_hidden=true"
+        "&minimum_size_kb=500&include_missed=true&include_hidden=true"
     )
     form = htmx_response.text[htmx_response.text.index("<form") :]
     assert 'id="catalog-search-form"' in form
@@ -773,6 +896,7 @@ def test_htmx_catalog_validation_error_swaps_complete_form_and_updates_history()
     assert '<option value="en" selected>en</option>' in form
     assert '<option value="sf" selected>Science fiction</option>' in form
     assert '<option value="fb2" selected>fb2</option>' in form
+    assert 'name="minimum_size_kb" type="number" min="1" step="1" value="500"' in form
     assert 'name="include_missed" value="true" checked' in form
     assert 'name="include_hidden" value="true" checked' in form
     assert "catalog-more-filters" not in form

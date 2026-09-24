@@ -86,6 +86,7 @@ class CatalogService:
                     without_series=request.without_series,
                     include_missed=request.include_missed,
                     include_hidden=request.include_hidden,
+                    minimum_size_bytes=request.minimum_size_bytes,
                     after=after,
                     limit=request.page_size + 1,
                 )
@@ -102,6 +103,7 @@ class CatalogService:
                     without_series=request.without_series,
                     include_missed=request.include_missed,
                     include_hidden=request.include_hidden,
+                    minimum_size_bytes=request.minimum_size_bytes,
                     after=after,
                     limit=request.page_size + 1,
                 )
@@ -511,23 +513,31 @@ def _validate_filters(request: CatalogRequest) -> None:
         raise CatalogInputError("Invalid series filter")
     if type(request.include_missed) is not bool or type(request.include_hidden) is not bool:
         raise CatalogInputError("Invalid availability filter")
+    if request.minimum_size_bytes is not None and (
+        type(request.minimum_size_bytes) is not int
+        or not 1 <= request.minimum_size_bytes <= 2**63 - 1
+    ):
+        raise CatalogInputError("Invalid catalog filter")
 
 
 def _request_fingerprint(request: CatalogRequest, normalized: str) -> str:
+    fingerprint_values: list[object] = [
+        normalized,
+        request.language,
+        request.genre,
+        request.original_format,
+        request.author,
+        request.series,
+        request.without_series,
+        request.search_field.value,
+        request.include_missed,
+        request.include_hidden,
+        request.page_size,
+    ]
+    if request.minimum_size_bytes is not None:
+        fingerprint_values.append(request.minimum_size_bytes)
     payload = json.dumps(
-        [
-            normalized,
-            request.language,
-            request.genre,
-            request.original_format,
-            request.author,
-            request.series,
-            request.without_series,
-            request.search_field.value,
-            request.include_missed,
-            request.include_hidden,
-            request.page_size,
-        ],
+        fingerprint_values,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()

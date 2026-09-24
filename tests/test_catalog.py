@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import gc
+import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -509,6 +510,73 @@ def test_normalization_and_safe_search_terms() -> None:
         query_tokens(" ".join(f"w{index}" for index in range(17)))
 
 
+async def test_minimum_size_filters_browse_search_and_existing_criteria(tmp_path: Path) -> None:
+    async with _catalog() as (catalog, repository):
+        await _seed(repository)
+
+        boundary = await catalog.browse(CatalogRequest(minimum_size_bytes=154))
+        assert [book.public_id for book in boundary.books] == ["book-054"]
+        including_one_byte_below = await catalog.browse(CatalogRequest(minimum_size_bytes=153))
+        assert [book.public_id for book in including_one_byte_below.books] == [
+            "book-053",
+            "book-054",
+        ]
+
+        searched = await catalog.browse(CatalogRequest(query="book", minimum_size_bytes=154))
+        assert [book.public_id for book in searched.books] == ["book-054"]
+        combined = await catalog.browse(
+            CatalogRequest(
+                query="ежик",
+                language="ru",
+                genre="sf",
+                original_format="fb2",
+                author="First Ёжов",
+                series="Ёлки",
+                minimum_size_bytes=101,
+            )
+        )
+        assert [book.public_id for book in combined.books] == ["book-001"]
+
+        missed = await catalog.browse(
+            CatalogRequest(query="hidden", include_missed=True, minimum_size_bytes=1)
+        )
+        assert [book.public_id for book in missed.books] == ["hidden"]
+        assert not (
+            await catalog.browse(
+                CatalogRequest(query="hidden", include_missed=True, minimum_size_bytes=2)
+            )
+        ).books
+        hidden = await catalog.browse(
+            CatalogRequest(query="deleted", include_hidden=True, minimum_size_bytes=1)
+        )
+        assert [book.public_id for book in hidden.books] == ["deleted"]
+        assert not (
+            await catalog.browse(
+                CatalogRequest(query="deleted", include_hidden=True, minimum_size_bytes=2)
+            )
+        ).books
+
+        first = await catalog.browse(CatalogRequest(page_size=10, minimum_size_bytes=100))
+        assert first.next_cursor is not None
+        with pytest.raises(CatalogInputError, match="does not match"):
+            await catalog.browse(
+                CatalogRequest(
+                    cursor=first.next_cursor,
+                    page_size=10,
+                    minimum_size_bytes=101,
+                )
+            )
+
+
+async def test_minimum_size_rejects_invalid_domain_values(tmp_path: Path) -> None:
+    async with _catalog() as (catalog, _repository):
+        invalid_values: tuple[object, ...] = (True, False, 1.0, "1", 0, -1, 2**63)
+        for value in invalid_values:
+            request = CatalogRequest(minimum_size_bytes=value)  # type: ignore[arg-type]
+            with pytest.raises(CatalogInputError, match="Invalid catalog filter"):
+                await catalog.browse(request)
+
+
 async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Path) -> None:
     async with _catalog() as (catalog, repository):
         await _seed(repository)
@@ -643,6 +711,7 @@ async def test_catalog_visibility_search_filters_details_and_keyset(tmp_path: Pa
         raw = bytearray(
             base64.urlsafe_b64decode(first.next_cursor + "=" * (-len(first.next_cursor) % 4))
         )
+        assert json.loads(raw[:-32])["f"] == "39bf08476324c72ad4484b92"
         raw[5] ^= 1
         tampered = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
         with pytest.raises(CatalogInputError, match="Invalid catalog cursor"):

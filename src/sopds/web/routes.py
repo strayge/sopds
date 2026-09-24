@@ -85,6 +85,8 @@ router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _LOGGER = logging.getLogger(__name__)
 _WEB_RESULT_LIMIT = 1_000
+_MAXIMUM_SIZE_KB = 9_007_199_254_740_991
+_MAXIMUM_SIZE_KB_DIGITS = len(str(_MAXIMUM_SIZE_KB))
 _MAX_SELECTED_BODY_BYTES = 8_388_608
 _SELECTED_ARCHIVE_FILENAME = "selected-books.zip"
 _CSRF_ERROR_MESSAGE = "This page has expired. Reload it and try again."
@@ -277,6 +279,20 @@ def _shell_context(
     }
 
 
+def _parse_minimum_size_kb(value: str | None) -> int | None:
+    if value is None or value == "":
+        return None
+    if len(value) > _MAXIMUM_SIZE_KB_DIGITS or not value.isascii() or not value.isdecimal():
+        raise CatalogInputError("Invalid catalog filter")
+    try:
+        size_kb = int(value)
+    except (ValueError, OverflowError) as error:
+        raise CatalogInputError("Invalid catalog filter") from error
+    if not 1 <= size_kb <= _MAXIMUM_SIZE_KB:
+        raise CatalogInputError("Invalid catalog filter")
+    return size_kb * 1024
+
+
 def _catalog_request(
     q: str,
     search_field: SearchField,
@@ -285,6 +301,7 @@ def _catalog_request(
     original_format: str | None,
     include_missed: bool,
     include_hidden: bool,
+    minimum_size_bytes: int | None,
 ) -> CatalogRequest:
     return CatalogRequest(
         query=q,
@@ -296,6 +313,7 @@ def _catalog_request(
         include_hidden=include_hidden,
         cursor=None,
         page_size=_WEB_RESULT_LIMIT,
+        minimum_size_bytes=minimum_size_bytes,
     )
 
 
@@ -324,6 +342,11 @@ def _catalog_query(
         "language": catalog_request.language or "",
         "genre": catalog_request.genre or "",
         "original_format": catalog_request.original_format or "",
+        **(
+            {"minimum_size_kb": str(catalog_request.minimum_size_bytes // 1024)}
+            if catalog_request.minimum_size_bytes is not None
+            else {}
+        ),
         **_availability_values(catalog_request.include_missed, catalog_request.include_hidden),
     }
     return urlencode(values)
@@ -342,6 +365,7 @@ def _catalog_filter_state_context(catalog_request: CatalogRequest) -> dict[str, 
                 catalog_request.language is not None,
                 catalog_request.genre is not None,
                 catalog_request.original_format is not None,
+                catalog_request.minimum_size_bytes is not None,
                 catalog_request.include_missed,
                 catalog_request.include_hidden,
             )
@@ -378,6 +402,11 @@ async def _catalog_form_context(
     return {
         **_catalog_filter_state_context(catalog_request),
         "filters": form_filters,
+        "minimum_size_kb": (
+            catalog_request.minimum_size_bytes // 1024
+            if catalog_request.minimum_size_bytes is not None
+            else None
+        ),
     }
 
 
@@ -552,31 +581,34 @@ async def index(
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
+    minimum_size_kb: str | None = None,
     include_missed: bool = False,
     include_hidden: bool = False,
 ) -> Response:
-    catalog_request = _catalog_request(
-        q,
-        search_field,
-        language,
-        genre,
-        original_format,
-        include_missed,
-        include_hidden,
-    )
-    searched = any(
-        name in request.query_params
-        for name in (
-            "q",
-            "search_field",
-            "language",
-            "genre",
-            "original_format",
-            "include_missed",
-            "include_hidden",
-        )
-    )
     try:
+        catalog_request = _catalog_request(
+            q,
+            search_field,
+            language,
+            genre,
+            original_format,
+            include_missed,
+            include_hidden,
+            _parse_minimum_size_kb(minimum_size_kb),
+        )
+        searched = any(
+            name in request.query_params
+            for name in (
+                "q",
+                "search_field",
+                "language",
+                "genre",
+                "original_format",
+                "minimum_size_kb",
+                "include_missed",
+                "include_hidden",
+            )
+        )
         context = await _results_context(request, catalog_request, searched=searched)
         context.update(_shell_context(request, active_navigation="catalog"))
         context.update(await _catalog_form_context(request, catalog_request))
@@ -1167,19 +1199,30 @@ async def catalog_fragment(
     language: str | None = None,
     genre: str | None = None,
     original_format: str | None = None,
+    minimum_size_kb: str | None = None,
     include_missed: bool = False,
     include_hidden: bool = False,
 ) -> Response:
-    catalog_request = _catalog_request(
-        q,
-        search_field,
-        language,
-        genre,
-        original_format,
-        include_missed,
-        include_hidden,
-    )
     is_htmx = request.headers.get("HX-Request") == "true"
+    try:
+        catalog_request = _catalog_request(
+            q,
+            search_field,
+            language,
+            genre,
+            original_format,
+            include_missed,
+            include_hidden,
+            _parse_minimum_size_kb(minimum_size_kb),
+        )
+    except CatalogInputError as error:
+        return _localized_template_response(
+            request,
+            "partials/catalog_error.html",
+            context={"message": _catalog_error_message(request, error)},
+            status_code=200 if is_htmx else 400,
+        )
+
     push_url = _catalog_url("/", catalog_request)
     try:
         context = await _results_context(request, catalog_request)

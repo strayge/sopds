@@ -49,8 +49,9 @@ Docker image supports `linux/amd64`.
 ## Using the catalog
 
 Search by title, author, or series and filter by language, genre, format, or
-availability. **Flat** shows a reading list, **Tree** groups books by author and
-series, and **Table** provides sortable columns.
+availability. **Minimum size** shows books whose original source file is at
+least the entered size in KB. **Flat** shows a reading list, **Tree** groups
+books by author and series, and **Table** provides sortable columns.
 
 Open a book to view its metadata. Its format button downloads the original
 file, while the adjacent menu offers available EPUB or AZW3 versions. SOPDS can
